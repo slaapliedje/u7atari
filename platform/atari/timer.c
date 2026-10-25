@@ -61,6 +61,16 @@ void plat_pump(void)
 	uint32_t now = plat_ticks();
 
 	input_pump();
+#ifdef U7_VIDEO_DEBUG
+	{
+		static uint32_t last_report;
+
+		if (now - last_report >= 5 * PLAT_TICKS_PER_SECOND) {
+			last_report = now;
+			plat_log("pump\r\n");
+		}
+	}
+#endif
 	/* Catch up on missed ticks, as the DOS timer interrupt would have. */
 	while (timers_ran_to < now) {
 		timers_ran_to++;
@@ -84,7 +94,7 @@ void plat_pump(void)
 void plat_yield(void)
 {
 	plat_pump();
-	/* TODO: re-present the last frame (the game may have drawn into it). */
+	video_refresh();
 }
 
 void plat_game_timer_add(plat_timer_fn fn)

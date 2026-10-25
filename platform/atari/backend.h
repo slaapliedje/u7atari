@@ -22,6 +22,8 @@ void timer_shutdown(void);
 void video_init(void);
 void video_shutdown(void);
 void video_reset(void);
+/* Shows the last presented frame again. */
+void video_refresh(void);
 void input_init(void);
 void input_shutdown(void);
 void input_reset(void);

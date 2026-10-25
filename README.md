@@ -27,6 +27,7 @@ platform/atari/      the backend: implements upstream's platform/plat.h
   video.c            chunky-to-planar present, palette, retrace, 8x8 console
   input.c            IKBD keyboard and mouse, software pointer
   sound.c            MIDI out, DMA speech; AdLib reported absent
+  c2p.h              chunky-to-planar for 16 pixels (tests/c2p_test.c checks it on the host)
   files.c            GEMDOS file access for the game's DOS names
 CMakeLists.txt       builds upstream's u7_game library + this backend → ULTIMA7.PRG
 ```
@@ -58,8 +59,10 @@ the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
 - [x] Links to `ULTIMA7.PRG` (1.6 MB code, 145 KB BSS) against a stub backend
 - [x] Runs to its first file open under Hatari (TT and Falcon)
 - [x] Files (MiNTLib on GEMDOS): boots, checks the data folder, launcher starts the intro
-- [ ] Timing, input
-- [ ] Video: c2p, palette, both machines
+- [ ] Input (IKBD keyboard and mouse)
+- [ ] Timing: sound tick on its own MFP interrupt
+- [x] Video: c2p into double-buffered ST-RAM screens, palette, TT low and Falcon VGA/RGB;
+      the game reaches Trinsic and draws it correctly under Hatari on both machines
 - [x] Endian audit (30 findings), fixes in the fork: the main game builds a new game and loads its
       starting regions under Hatari on both machines
 - [ ] Save formats still written in host order (round-trip on the Atari, not PC-compatible)
@@ -100,6 +103,11 @@ fast RAM on both targets. ST RAM holds only the screens (TT low: 150 KB each) an
 sound buffer.
 
 ## Testing
+
+`tools/hatari-test.sh <tt|falcon> <hd-dir>` runs the game headless (MIDI off unless
+`U7_TEST_MIDI=1`); add `--avirecord --avi-vcodec png --avi-file f.avi` to record frames. Configure
+with `-DU7_VIDEO_DEBUG=ON` to log frame statistics and a pump heartbeat to the console, and use
+`build/ULTIMA7.map` or `nm` on the PRG to turn Hatari debugger addresses into functions.
 
 Hatari emulates both targets: `--machine tt --ttram 256` and `--machine falcon` (with
 `--ttram` for the fast RAM). Its frame timing is not trustworthy for profiling, so measure

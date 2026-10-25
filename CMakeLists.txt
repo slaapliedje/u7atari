@@ -18,10 +18,16 @@ file(GLOB U7_ATARI_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/*.S")
 add_executable(u7 ${U7_ATARI_SOURCES})
 set_target_properties(u7 PROPERTIES OUTPUT_NAME ULTIMA7)
+# A link map, to turn addresses from Hatari's debugger into function names.
+target_link_options(u7 PRIVATE "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/ULTIMA7.map")
 target_include_directories(u7 PRIVATE
     "${U7_UPSTREAM_DIR}/platform"
     "${U7_UPSTREAM_DIR}/platform/matoya")   # vgafont8.h
 target_compile_options(u7 PRIVATE -Wall -Wextra)
+option(U7_VIDEO_DEBUG "Log frame statistics to the console" OFF)
+if(U7_VIDEO_DEBUG)
+    target_compile_definitions(u7 PRIVATE U7_VIDEO_DEBUG)
+endif()
 target_link_libraries(u7 PRIVATE u7_game)
 set_target_properties(u7 PROPERTIES SUFFIX ".PRG")
 
