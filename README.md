@@ -47,29 +47,39 @@ cmake --build build -j
 # → build/ULTIMA7.PRG
 ```
 
-`-DU7_GAME="Serpent Isle"` selects the other game. Code is built with `-m68020-60 -mtune=68030`;
-the game has no floating point, so an FPU is not required. The PRG header asks TOS to load
+`-DU7_GAME="Serpent Isle"` selects the other game. Code is built with `-m68020-60 -mtune=68030`,
+which links MiNTLib's 68020-60 multilib; its startup code refuses to run without a 68881/68882,
+so an FPU is required (both targets have one). The game itself has no floating point. The PRG header asks TOS to load
 the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
 
 ## Status
 
 - [x] All of the game (351 objects) cross-compiles for the 68030 with no source changes
 - [x] Links to `ULTIMA7.PRG` (1.6 MB code, 145 KB BSS) against a stub backend
-- [ ] Runs to its first file open under Hatari (TT and Falcon)
-- [ ] Files (GEMDOS), timing, input
+- [x] Runs to its first file open under Hatari (TT and Falcon)
+- [x] Files (MiNTLib on GEMDOS): boots, checks the data folder, launcher starts the intro
+- [ ] Timing, input
 - [ ] Video: c2p, palette, both machines
-- [ ] Endian audit: the game reads correctly on a big-endian CPU
+- [x] Endian audit (30 findings), fixes in the fork: the main game builds a new game and loads its
+      starting regions under Hatari on both machines
+- [ ] Save formats still written in host order (round-trip on the Atari, not PC-compatible)
 - [ ] MIDI to MT-32, speech on DMA sound
 - [ ] Performance: 68030 assembly for the hot paths
 
 ## Known work
 
-**Endianness.** The game's data and save files are little-endian. Upstream's linear arena
-already goes through byte-order-safe accessors (`include/arena.h`, ~107 uses), but other code
-reads raw structs from files (`DosRead` in 24 files, ~69 calls) and casts pointers into loaded
-data. Each site needs a byte swap on load and save. Save files should stay little-endian so
-they still work with PC saves. Fixing these means patching upstream, so `upstream/` will move
-to a fork with an `atari` branch once the first patch is needed.
+**Endianness.** The game's data and save files are little-endian. The fixes live in the fork
+(`slaapliedje/Ultima7_Decomp`, branch `atari`) and compile to nothing on x86. `game/include/byteorder.h` holds:
+- `LE16`/`LE32`/`SWAP_LE` for values that cross between files and native structs, where each site
+  converts on load and save (Flex headers and entries, the item tables, schedules, maps, scripts).
+- `LittleEndian<T>` (`le_int16` and friends): fields kept little-endian in memory and converted on every
+  access. The item buffer, its list heads and the NPC records use these, because their unions and
+  their raw save files only work in the PC's byte order.
+- `U7_BITS(type, fields...)`: GCC fills bitfields from the high bit on m68k, so packed flag bytes are
+  declared in reverse there. `tests/layout_check.cpp` checks these layouts at compile time.
+
+Still to do: the smaller save files (timers, weather, missiles, party, routes, ITEMNODE/OSTIA
+scalars) are written in host order. They round-trip on the Atari but are not PC-compatible yet.
 
 **Performance.** U7 was hand-tuned for a 386, with assembly for shape blitting, the depth
 buffer and palette work. The portable build replaced that assembly with C, and every arena

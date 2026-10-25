@@ -44,17 +44,29 @@ void plat_exit(int16_t code)
 	end_process(code);
 }
 
+/* Console text for TOS, which needs \r before each \n. */
+static void console_text(const char *text)
+{
+	for (; *text != '\0'; text++) {
+		if (*text == '\n')
+			Cconout('\r');
+		Cconout(*text);
+	}
+}
+
 void plat_fatal(const char *message)
 {
 	shutdown_all();
-	fprintf(stderr, "u7: %s\r\n", message);
-	fflush(NULL);
+	console_text("u7: ");
+	console_text(message);
+	console_text("\n\nPress any key.\n");
+	Cnecin();
 	exit(1);
 }
 
 void plat_log(const char *text)
 {
-	fputs(text, stderr);
+	console_text(text);
 }
 
 int16_t plat_run_program(const char *name, int16_t argc, char **argv)
@@ -94,24 +106,80 @@ static void detect_machine(void)
 	}
 }
 
+static const char *program_name;
+
+/* Takes the backend's own options out of the arguments:
+ *   --data <folder>     the game folder; U7_DATA is the default, then the current folder,
+ *                       which the desktop sets to the program's own
+ *   --program <name>    runs just that program ("u7", "intro", "mainmenu", "endgame")
+ *                       instead of the launcher */
+static const char *take_options(int *argc, char **argv)
+{
+	const char *dir = getenv("U7_DATA");
+	int kept = 1;
+
+	for (int i = 1; i < *argc; i++) {
+		if (strcmp(argv[i], "--data") == 0 && i + 1 < *argc)
+			dir = argv[++i];
+		else if (strcmp(argv[i], "--program") == 0 && i + 1 < *argc)
+			program_name = argv[++i];
+		else
+			argv[kept++] = argv[i];
+	}
+	*argc = kept;
+	argv[kept] = NULL;
+	return dir != NULL && dir[0] != '\0' ? dir : ".";
+}
+
+/* Started with no arguments (from the desktop, or Hatari's --auto), the program takes them
+ * from ULTIMA7.ARG in its folder when there is one: words separated by blanks or lines.
+ * Renaming the program to ULTIMA7.TTP asks for them instead. */
+static char **arguments_from_file(int *argc, char **argv)
+{
+	static char text[512];
+	static char *words[32];
+	FILE *f = fopen("ULTIMA7.ARG", "r");
+	size_t length;
+	int count = 1;
+
+	if (f == NULL)
+		return argv;
+	length = fread(text, 1, sizeof text - 1, f);
+	fclose(f);
+	text[length] = '\0';
+	words[0] = argv[0];
+	for (char *w = strtok(text, " \t\r\n"); w != NULL && count < 31; w = strtok(NULL, " \t\r\n"))
+		words[count++] = w;
+	words[count] = NULL;
+	*argc = count;
+	return words;
+}
+
 int main(int argc, char **argv)
 {
+	char problem[1024];
 	int16_t code;
 
+	if (argc <= 1)
+		argv = arguments_from_file(&argc, argv);
 	detect_machine();
-	if (atari_machine == MACHINE_OTHER) {
-		fputs("Ultima VII needs a TT030 or Falcon030.\r\n", stderr);
-		return 1;
-	}
+	if (atari_machine == MACHINE_OTHER)
+		plat_fatal("Ultima VII needs a TT030 or Falcon030.");
+	files_set_root(take_options(&argc, argv));
+	if (!files_check_data(problem, sizeof problem))
+		plat_fatal(problem);
+
 	/* The game owns the machine: video, IKBD, MFP timers and the sound DMA. */
 	Super(0L);
-	files_init(NULL);
 	timer_init();
 	video_init();
 	input_init();
 	sound_init();
 
-	code = Ultima7Main((int16_t) argc, argv);
+	if (program_name != NULL)
+		code = plat_run_program(program_name, (int16_t) (argc - 1), argv + 1);
+	else
+		code = Ultima7Main((int16_t) argc, argv);
 	end_process(code);
 	return code;
 }

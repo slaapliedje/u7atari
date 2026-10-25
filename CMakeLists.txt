@@ -21,6 +21,7 @@ set_target_properties(u7 PROPERTIES OUTPUT_NAME ULTIMA7)
 target_include_directories(u7 PRIVATE
     "${U7_UPSTREAM_DIR}/platform"
     "${U7_UPSTREAM_DIR}/platform/matoya")   # vgafont8.h
+target_compile_options(u7 PRIVATE -Wall -Wextra)
 target_link_libraries(u7 PRIVATE u7_game)
 set_target_properties(u7 PROPERTIES SUFFIX ".PRG")
 
@@ -42,3 +43,10 @@ endif()
 add_custom_command(TARGET u7 POST_BUILD
     COMMAND sh -c "printf '\\000\\000\\000\\007' | dd of='$<TARGET_FILE:u7>' bs=1 seek=22 conv=notrunc status=none"
     VERBATIM)
+
+# Compile-time checks that structs read from the game's files keep the PC's layout here.
+add_library(u7_layout_check OBJECT tests/layout_check.cpp)
+target_link_libraries(u7_layout_check PRIVATE u7_game)
+target_compile_options(u7_layout_check PRIVATE -fpermissive -w
+    -include "${U7_UPSTREAM_DIR}/game/include/u7port.h")
+add_dependencies(u7 u7_layout_check)
