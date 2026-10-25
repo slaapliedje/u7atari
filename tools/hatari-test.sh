@@ -3,6 +3,8 @@
 #   tools/hatari-test.sh <tt|falcon> <hd-dir> [vbls] [extra hatari options...]
 # <hd-dir> becomes drive C: and must hold the game in U7\ (STATIC\ and U7.CFG); the PRG is
 # copied there first. Use a copy of the game: the run can write saves into it.
+# MIDI is off: Hatari otherwise loads the user's own hatari.cfg, MIDI device included, and the
+# test would play into a real synth. U7_TEST_MIDI=1 turns it back on.
 set -eu
 machine=$1 hd=$2 vbls=${3:-1500}
 shift 2; [ $# -gt 0 ] && shift
@@ -20,5 +22,6 @@ esac
 SDL_VIDEODRIVER=${SDL_VIDEODRIVER:-dummy} SDL_AUDIODRIVER=dummy \
 hatari -c "$cfg" --tos /usr/share/hatari/etos512us.img --addr24 off --monitor vga \
 	--drive-a off --drive-b off -d "$hd" --auto 'C:\U7\ULTIMA7.PRG' --conout 2 \
-	--fast-forward on --sound off --run-vbls "$vbls" --log-level fatal "$@" 2>&1 \
+	--fast-forward on --sound off --midi "$( [ "${U7_TEST_MIDI:-0}" = 1 ] && echo on || echo off)" \
+	--run-vbls "$vbls" --log-level fatal "$@" 2>&1 \
 	| tr -d '\033' | grep -v '^\s*$' || true

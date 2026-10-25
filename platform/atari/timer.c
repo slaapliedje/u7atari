@@ -1,8 +1,9 @@
 /* Time: 60 Hz game ticks from the 200 Hz system timer (MFP Timer C, _hz_200), game timers
  * run from plat_pump, and the sound tick.
  *
- * TODO: the sound tick should run from its own MFP interrupt (Timer A or B is free once
- * the game owns the machine) at 60 Hz, with plat_sound_lock raising the IPL.
+ * The sound tick runs from plat_pump for now, so music only advances while the game pumps.
+ * TODO: give it its own MFP interrupt (Timer A or B is free once the game owns the machine)
+ * at 60 Hz, with plat_sound_lock raising the IPL.
  */
 #include <mint/osbind.h>
 #include <mint/sysvars.h>
@@ -19,7 +20,12 @@ static uint32_t start_200;
 static plat_timer_fn game_timers[MAX_GAME_TIMERS];
 static uint32_t timers_ran_to;
 static plat_timer_fn sound_tick;
+static uint32_t sound_ran_to;
 static int16_t sound_lock_depth;
+
+/* Ticks the sound may fall behind before it skips ahead instead of catching up: a long load
+ * would otherwise replay seconds of music events at once. */
+#define MAX_SOUND_CATCH_UP 6
 
 void timer_init(void)
 {
@@ -62,7 +68,17 @@ void plat_pump(void)
 			if (game_timers[i] != NULL)
 				game_timers[i]();
 	}
-	/* TODO: until the sound tick has its own interrupt, run it here. */
+	/* Not while the game holds the sound lock: the tick would run inside the code it guards. */
+	if (sound_tick != NULL && sound_lock_depth == 0) {
+		if (now - sound_ran_to > MAX_SOUND_CATCH_UP)
+			sound_ran_to = now - MAX_SOUND_CATCH_UP;
+		while (sound_ran_to < now) {
+			sound_ran_to++;
+			sound_lock_depth++;
+			sound_tick();
+			sound_lock_depth--;
+		}
+	}
 }
 
 void plat_yield(void)
@@ -91,6 +107,7 @@ void plat_game_timer_remove(plat_timer_fn fn)
 void plat_sound_tick_set(plat_timer_fn fn)
 {
 	sound_tick = fn;
+	sound_ran_to = plat_ticks();
 }
 
 void plat_sound_lock(void)

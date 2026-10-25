@@ -19,9 +19,39 @@
 
 #define BIOS_MIDI 3
 
-void sound_init(void) {}
-void sound_shutdown(void) {}
-void sound_reset(void) {}
+/* Silences every channel: sustain off, all notes off, reset controllers. A real MT-32 keeps
+ * sounding whatever it was told last, so this runs at start-up (after a crash or a reset in a
+ * previous run), between programs, and on every way out. */
+static void midi_all_off(void)
+{
+	for (uint8_t channel = 0; channel < 16; channel++) {
+		const uint8_t messages[3][3] = {
+			{ 0xb0 | channel, 0x40, 0 },    /* sustain pedal off */
+			{ 0xb0 | channel, 0x7b, 0 },    /* all notes off */
+			{ 0xb0 | channel, 0x79, 0 },    /* reset all controllers */
+		};
+
+		for (int i = 0; i < 3; i++)
+			plat_midi_send(messages[i], 3);
+	}
+}
+
+void sound_init(void)
+{
+	midi_all_off();
+}
+
+void sound_shutdown(void)
+{
+	plat_sound_tick_set(NULL);
+	midi_all_off();
+}
+
+void sound_reset(void)
+{
+	plat_sound_tick_set(NULL);
+	midi_all_off();
+}
 
 int16_t plat_midi_available(void)
 {
