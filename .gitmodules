@@ -1,0 +1,4 @@
+[submodule "upstream"]
+	path = upstream
+	url = https://github.com/Kitrinx/Ultima7_Decomp.git
+	shallow = true
