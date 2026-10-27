@@ -24,6 +24,10 @@ void video_shutdown(void);
 void video_reset(void);
 /* Shows the last presented frame again. */
 void video_refresh(void);
+/* Asks for the last frame to be shown again once a blank has passed: the game drew the pointer
+ * into it. video_pump does it without waiting. */
+void video_refresh_wanted(void);
+void video_pump(void);
 void input_init(void);
 void input_shutdown(void);
 void input_reset(void);

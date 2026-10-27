@@ -41,6 +41,9 @@ typedef struct {
 
 static bool active;
 static void *screen_memory;
+/* TOS's logical screen while the game runs: console text lands here, off the display, and a
+ * desktop screen smaller than the game mode is never written past its end. */
+static void *console_memory;
 static screen screens[2];
 static int hidden;              /* the screen the next frame goes into */
 static uint32_t shown_at_vbl;   /* when the other screen was handed to the hardware */
@@ -49,6 +52,7 @@ static int16_t top_line;        /* the first line the game's frame occupies */
 static int16_t line_repeat;     /* 2 on the TT, which shows each game line twice */
 
 static const uint8_t *last_pixels;
+static bool refresh_wanted;
 
 /* What the desktop had, to put back. */
 static void *old_logical, *old_physical;
@@ -114,12 +118,15 @@ void video_init(void)
 		memset(screens[i].base, 0, bytes);
 		screens[i].shadow = NULL;
 	}
+	console_memory = (void *) Mxalloc(bytes, 3);
+	if (console_memory == NULL || (long) console_memory < 0)
+		plat_fatal("Not enough memory for the console screen.");
 
 	if (atari_machine == MACHINE_TT) {
 		EsetShift(TT_LOW);
-		show(screens[0].base);
+		VsetScreen(console_memory, screens[0].base, -1, -1);
 	} else {
-		VsetScreen(screens[0].base, screens[0].base, 3, falcon_mode);
+		VsetScreen(console_memory, screens[0].base, 3, falcon_mode);
 	}
 	hidden = 1;
 	shown_at_vbl = vbl_count();
@@ -224,6 +231,7 @@ void plat_video_present(const uint8_t *pixels)
 	screen *s;
 
 	last_pixels = pixels;
+	refresh_wanted = false;
 	if (!active)
 		return;
 	/* The screen handed over last time is showing once a blank has passed; until then the
@@ -231,7 +239,7 @@ void plat_video_present(const uint8_t *pixels)
 	while (vbl_count() == shown_at_vbl)
 		;
 	s = &screens[hidden];
-#ifdef U7_VIDEO_DEBUG
+#ifdef U7_DEBUG_LOG
 	{
 		static uint32_t presents;
 		static uint16_t counts[256];
@@ -270,6 +278,17 @@ void plat_video_wait_retrace(void)
 void video_refresh(void)
 {
 	if (last_pixels != NULL)
+		plat_video_present(last_pixels);
+}
+
+void video_refresh_wanted(void)
+{
+	refresh_wanted = true;
+}
+
+void video_pump(void)
+{
+	if (refresh_wanted && last_pixels != NULL && vbl_count() != shown_at_vbl)
 		plat_video_present(last_pixels);
 }
 

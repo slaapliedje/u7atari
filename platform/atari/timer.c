@@ -61,7 +61,7 @@ void plat_pump(void)
 	uint32_t now = plat_ticks();
 
 	input_pump();
-#ifdef U7_VIDEO_DEBUG
+#ifdef U7_DEBUG_LOG
 	{
 		static uint32_t last_report;
 
@@ -89,6 +89,7 @@ void plat_pump(void)
 			sound_lock_depth--;
 		}
 	}
+	video_pump();
 }
 
 void plat_yield(void)

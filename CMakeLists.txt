@@ -24,9 +24,9 @@ target_include_directories(u7 PRIVATE
     "${U7_UPSTREAM_DIR}/platform"
     "${U7_UPSTREAM_DIR}/platform/matoya")   # vgafont8.h
 target_compile_options(u7 PRIVATE -Wall -Wextra)
-option(U7_VIDEO_DEBUG "Log frame statistics to the console" OFF)
-if(U7_VIDEO_DEBUG)
-    target_compile_definitions(u7 PRIVATE U7_VIDEO_DEBUG)
+option(U7_DEBUG_LOG "Log frame statistics and input to the console" OFF)
+if(U7_DEBUG_LOG)
+    target_compile_definitions(u7 PRIVATE U7_DEBUG_LOG)
 endif()
 target_link_libraries(u7 PRIVATE u7_game)
 set_target_properties(u7 PROPERTIES SUFFIX ".PRG")

@@ -25,7 +25,8 @@ platform/atari/      the backend: implements upstream's platform/plat.h
   main.c             main(), program runner (setjmp/longjmp in place of threads), exit
   timer.c            60 Hz ticks from _hz_200, game timers, sound tick and lock
   video.c            chunky-to-planar present, palette, retrace, 8x8 console
-  input.c            IKBD keyboard and mouse, software pointer
+  input.c            keys from the BIOS buffer, mouse from the IKBD mousevec, PC key words
+  ikbd.S             the mousevec wrapper and the Alt-Help screen-dump stub
   sound.c            MIDI out, DMA speech; AdLib reported absent
   c2p.h              chunky-to-planar for 16 pixels (tests/c2p_test.c checks it on the host)
   files.c            GEMDOS file access for the game's DOS names
@@ -59,7 +60,8 @@ the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
 - [x] Links to `ULTIMA7.PRG` (1.6 MB code, 145 KB BSS) against a stub backend
 - [x] Runs to its first file open under Hatari (TT and Falcon)
 - [x] Files (MiNTLib on GEMDOS): boots, checks the data folder, launcher starts the intro
-- [ ] Input (IKBD keyboard and mouse)
+- [x] Input: keyboard (TOS layout and key repeat, PC BIOS key words) and mouse (IKBD packets
+      through mousevec); the main menu and conversations respond under Hatari on both machines
 - [ ] Timing: sound tick on its own MFP interrupt
 - [x] Video: c2p into double-buffered ST-RAM screens, palette, TT low and Falcon VGA/RGB;
       the game reaches Trinsic and draws it correctly under Hatari on both machines
@@ -94,6 +96,11 @@ access now pays for a byte swap. Expected hot spots:
 
 The TT at 32 MHz is the tighter of the two machines; profile there first.
 
+**Keyboard.** The Atari keyboard has no Page Up, Page Down, End or Num Lock. The keypad works
+as a PC keypad with Num Lock off (7 Home, 9 Page Up, 1 End, 3 Page Down, arrows on 8 4 6 2) and
+gives digits with Shift. Help, Undo and the keypad brackets do nothing. Alt-Help's screen dump is
+switched off while the game runs.
+
 **Audio.** Munt (MT-32 emulation) and Nuked OPL3 are far too heavy for a 68030. MT-32 output
 goes to the MIDI port at no CPU cost; AdLib is reported absent. If there is time later, a DSP56001
 FM synth on the Falcon is a possible stretch goal.
@@ -105,8 +112,13 @@ sound buffer.
 ## Testing
 
 `tools/hatari-test.sh <tt|falcon> <hd-dir>` runs the game headless (MIDI off unless
-`U7_TEST_MIDI=1`); add `--avirecord --avi-vcodec png --avi-file f.avi` to record frames. Configure
-with `-DU7_VIDEO_DEBUG=ON` to log frame statistics and a pump heartbeat to the console, and use
+`U7_TEST_MIDI=1`); add `--avirecord --avi-vcodec png --avi-file f.avi` to record frames.
+`U7_TIMEOUT=<s>` stops Hatari after that long and `U7_PRG` picks another build's PRG. To drive
+input, add `--cmd-fifo <path>` and write Hatari commands to it: `hatari-event keypress 01` (Esc,
+by scan code), `hatari-event doubleclick`, Alt (`keydown 56`) with the arrow keys to move the
+mouse through TOS's mouse emulation, Alt with Insert (`keypress 82`) to click, and
+`hatari-shortcut screenshot` with `--screenshot-dir`. Configure with `-DU7_DEBUG_LOG=ON` to log
+frame statistics, keys, mouse events and a pump heartbeat to the console, and use
 `build/ULTIMA7.map` or `nm` on the PRG to turn Hatari debugger addresses into functions.
 
 Hatari emulates both targets: `--machine tt --ttram 256` and `--machine falcon` (with
