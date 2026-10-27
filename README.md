@@ -23,10 +23,11 @@ upstream/            git submodule: Kitrinx/Ultima7_Decomp, pinned
 cmake/               m68k-atari-mint toolchain file
 platform/atari/      the backend: implements upstream's platform/plat.h
   main.c             main(), program runner (setjmp/longjmp in place of threads), exit
-  timer.c            60 Hz ticks from _hz_200, game timers, sound tick and lock
+  timer.c            60 Hz ticks from _hz_200, game timers, sound tick (MFP Timer B) and lock
   video.c            chunky-to-planar present, palette, retrace, 8x8 console
   input.c            keys from the BIOS buffer, mouse from the IKBD mousevec, PC key words
   ikbd.S             the mousevec wrapper and the Alt-Help screen-dump stub
+  timerint.S         the Timer B interrupt that runs the sound tick on its own stack
   sound.c            MIDI out, DMA speech; AdLib reported absent
   c2p.h              chunky-to-planar for 16 pixels (tests/c2p_test.c checks it on the host)
   files.c            GEMDOS file access for the game's DOS names
@@ -62,7 +63,7 @@ the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
 - [x] Files (MiNTLib on GEMDOS): boots, checks the data folder, launcher starts the intro
 - [x] Input: keyboard (TOS layout and key repeat, PC BIOS key words) and mouse (IKBD packets
       through mousevec); the main menu and conversations respond under Hatari on both machines
-- [ ] Timing: sound tick on its own MFP interrupt
+- [x] Timing: sound tick on MFP Timer B at 59.94 Hz, independent of the frame rate
 - [x] Video: c2p into double-buffered ST-RAM screens, palette, TT low and Falcon VGA/RGB;
       the game reaches Trinsic and draws it correctly under Hatari on both machines
 - [x] Endian audit (30 findings), fixes in the fork: the main game builds a new game and loads its

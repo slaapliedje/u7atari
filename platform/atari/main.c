@@ -38,6 +38,8 @@ static void end_process(int code)
 void plat_exit(int16_t code)
 {
 	if (program_jump != NULL) {
+		/* As a DOS exit: the program's stack is never unwound, nor its locks let go. */
+		timer_drop_sound_lock();
 		program_code = (int16_t) (code & 0xff);
 		longjmp(*program_jump, 1);
 	}

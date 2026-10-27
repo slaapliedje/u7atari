@@ -9,15 +9,21 @@
  * Falcon adds 12.3/24.6/49.2 kHz. Samples are converted (^0x80) and rate-matched into a
  * ST-RAM ring buffer.
  *
- * TODO: PCM ring buffer on DMA sound (frame-end interrupt or polling), MIDI via direct
- * ACIA writes instead of Bconout if BIOS overhead shows up.
+ * MIDI goes straight to the MIDI ACIA: the sound tick sends from an interrupt, where a BIOS
+ * call could land inside one the game is making.
+ *
+ * TODO: PCM ring buffer on DMA sound (frame-end interrupt or polling).
  */
-#include <mint/osbind.h>
-
 #include "plat.h"
 #include "backend.h"
 
-#define BIOS_MIDI 3
+#define MIDI_ACIA_STATUS ((volatile uint8_t *) 0xfffffc04)
+#define MIDI_ACIA_DATA ((volatile uint8_t *) 0xfffffc06)
+#define ACIA_TDRE 0x02          /* transmit data register empty */
+
+#ifdef U7_DEBUG_LOG
+uint32_t sound_midi_bytes;
+#endif
 
 /* Silences every channel: sustain off, all notes off, reset controllers. A real MT-32 keeps
  * sounding whatever it was told last, so this runs at start-up (after a crash or a reset in a
@@ -58,10 +64,19 @@ int16_t plat_midi_available(void)
 	return 1;
 }
 
+/* Under the sound lock, so a message from the game is never split by one from the tick. */
 void plat_midi_send(const uint8_t *message, int16_t length)
 {
-	for (int16_t i = 0; i < length; i++)
-		Bconout(BIOS_MIDI, message[i]);
+	plat_sound_lock();
+	for (int16_t i = 0; i < length; i++) {
+		while (!(*MIDI_ACIA_STATUS & ACIA_TDRE))
+			;
+		*MIDI_ACIA_DATA = message[i];
+	}
+#ifdef U7_DEBUG_LOG
+	sound_midi_bytes += (uint32_t) length;
+#endif
+	plat_sound_unlock();
 }
 
 bool plat_opl_available(void)

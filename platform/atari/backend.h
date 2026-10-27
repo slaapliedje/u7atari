@@ -19,6 +19,8 @@ extern machine_type atari_machine;
  * calls it from anywhere, including before the machine is taken over. */
 void timer_init(void);
 void timer_shutdown(void);
+/* Lets go of every sound lock a program left by plat_exit was holding. */
+void timer_drop_sound_lock(void);
 void video_init(void);
 void video_shutdown(void);
 void video_reset(void);
@@ -35,6 +37,9 @@ void input_pump(void);
 void sound_init(void);
 void sound_shutdown(void);
 void sound_reset(void);
+#ifdef U7_DEBUG_LOG
+extern uint32_t sound_midi_bytes;
+#endif
 /* The data folder every game file name is resolved against. */
 void files_set_root(const char *dir);
 const char *files_root(void);
