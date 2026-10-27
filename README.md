@@ -70,6 +70,7 @@ the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
       starting regions under Hatari on both machines
 - [ ] Save formats still written in host order (round-trip on the Atari, not PC-compatible)
 - [ ] MIDI to MT-32, speech on DMA sound
+- [ ] General MIDI output option (MT-32 to GM instrument map), for GM keyboards and modules
 - [ ] Performance: 68030 assembly for the hot paths
 
 ## Known work
@@ -102,7 +103,11 @@ as a PC keypad with Num Lock off (7 Home, 9 Page Up, 1 End, 3 Page Down, arrows 
 gives digits with Shift. Help, Undo and the keypad brackets do nothing. Alt-Help's screen dump is
 switched off while the game runs.
 
-**Audio.** Munt (MT-32 emulation) and Nuked OPL3 are far too heavy for a 68030. MT-32 output
+**Audio.** The music is written for the MT-32: the game uploads its own instruments to it and picks
+them by number, so a General MIDI device plays it with the wrong instruments. A GM option is planned,
+mapping each MT-32 instrument to its nearest GM one, as Exult does.
+
+Munt (MT-32 emulation) and Nuked OPL3 are far too heavy for a 68030. MT-32 output
 goes to the MIDI port at no CPU cost; AdLib is reported absent. If there is time later, a DSP56001
 FM synth on the Falcon is a possible stretch goal.
 
