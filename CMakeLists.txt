@@ -11,6 +11,9 @@ endif()
 # Upstream builds the game as the u7_game object library; we supply the backend instead of
 # libmatoya, munt and Nuked OPL3.
 set(U7_BACKEND_MATOYA OFF CACHE BOOL "" FORCE)
+# The 030 reads and writes words and longs at any address, so let GCC do so: with its m68k
+# default it copies and compares anything not known to be aligned a byte at a time.
+add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-mno-strict-align>)
 add_subdirectory("${U7_UPSTREAM_DIR}" game)
 
 file(GLOB U7_ATARI_SOURCES CONFIGURE_DEPENDS

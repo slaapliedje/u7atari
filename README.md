@@ -92,12 +92,23 @@ Still to do: the smaller save files (timers, weather, missiles, party, routes, I
 scalars) are written in host order. They round-trip on the Atari but are not PC-compatible yet.
 
 **Performance.** U7 was hand-tuned for a 386, with assembly for shape blitting, the depth
-buffer and palette work. The portable build replaced that assembly with C, and every arena
-access now pays for a byte swap. Expected hot spots:
-- c2p of a 64,000-byte frame on every present, written to ST RAM; skip unchanged lines
-- shape RLE decode and blit, depth sort and occlusion: candidates for 68030 assembly
-- arena 16/32-bit access: `move.w` + `ror.w #8` instead of byte loads
-- `#pragma pack(1)` everywhere: the 030 handles misaligned access but it costs bus cycles
+buffer and palette work. The portable build replaced that assembly with C. Profiled with
+Hatari's CPU profiler on the TT (see Testing), over the same 10 s of the opening scene in Trinsic:
+
+| Change | Frames in 10 s |
+|---|---|
+| Start | 27 |
+| Present compares 16-pixel groups as four longs, not with `memcmp` | 31 |
+| `-mno-strict-align`: GCC copies unaligned data, and loads little-endian values, a long at a time | 35 |
+| Shapes drawn straight from their runs, mode and direction fixed per frame (fork) | 47 |
+| Little-endian loads through `memcpy` and a swap, run loops inlined (fork) | 50 |
+
+The intro's loop during the Guardian's speech went from 8 to 28 presents a second (the speech needs
+about 4), and the Falcon, emulated at 32 MHz, shows 51 frames in the Trinsic window. What is left:
+- shape drawing (about 40% of the game's time) and the depth sort around it: 68030 assembly
+- c2p (about half the intro's time when the whole screen changes): 68030 assembly
+- MIDI output waits on the ACIA for each byte (a few per cent while music plays)
+- speech resampling, about 9% of the TT while speech plays, twice that on a Falcon with `--line-in`
 
 The TT at 32 MHz is the tighter of the two machines; profile there first.
 
@@ -145,6 +156,13 @@ then plays 6 s of the intro's speech through the speech path, for recording with
 --avirecord`), and use
 `build/ULTIMA7.map` or `nm` on the PRG to turn Hatari debugger addresses into functions.
 
+`tools/hatari-profile.sh <tt|falcon> <hd-dir> <start-vbl> <vbls> [symbol]` runs the same way with
+Hatari's CPU profiler on for <vbls> frames from VBL <start-vbl> (or from the first call of
+`symbol` after it, such as `_plat_pcm_start` for the intro's speech) and prints the time by
+function, with call counts; `plat_video_present.part.0`'s count is the frames shown. With
+`ULTIMA7.ARG` holding `--program u7 p` and a game in `GAMEDAT\`, VBLs 1800 to 2400 are the opening
+scene in Trinsic; `--program intro ereiamjh` runs the intro alone.
+
 Hatari emulates both targets: `--machine tt --ttram 256` and `--machine falcon` (with
-`--ttram` for the fast RAM). Its frame timing is not trustworthy for profiling, so measure
-on real hardware.
+`--ttram` for the fast RAM). Its cycle counts are approximate, so use them to compare builds
+with each other and confirm frame rates on real hardware.

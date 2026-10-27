@@ -194,6 +194,10 @@ void plat_video_set_palette(int16_t first, int16_t count, const uint8_t *rgb)
 	}
 }
 
+/* The game's frame and the shadows are at least word-aligned, which is all the 68030 needs for
+ * long accesses; read them as longs, four to a group, with no library calls. */
+typedef uint32_t __attribute__((__may_alias__)) frame_long;
+
 /* Converts the lines of pixels that differ from what screen s shows. */
 static void convert(screen *s, const uint8_t *pixels)
 {
@@ -202,21 +206,20 @@ static void convert(screen *s, const uint8_t *pixels)
 	if (full && (s->shadow = malloc(WIDTH * HEIGHT)) == NULL)
 		plat_fatal("Out of memory for the screen copy.");
 	for (int16_t y = 0; y < HEIGHT; y++) {
-		const uint8_t *in = pixels + y * WIDTH;
-		uint8_t *old = s->shadow + y * WIDTH;
+		const frame_long *in = (const frame_long *) (pixels + y * WIDTH);
+		frame_long *old = (frame_long *) (s->shadow + y * WIDTH);
 		uint16_t *out = (uint16_t *) (s->base + (top_line + y * line_repeat) * LINE_BYTES);
 		bool changed = false;
 
-		for (int16_t g = 0; g < GROUPS_PER_LINE; g++, in += 16, old += 16, out += 8) {
-			uint32_t a, b, c, d;
+		for (int16_t g = 0; g < GROUPS_PER_LINE; g++, in += 4, old += 4, out += 8) {
+			uint32_t a = in[0], b = in[1], c = in[2], d = in[3];
 
-			if (!full && memcmp(in, old, 16) == 0)
+			if (!full && a == old[0] && b == old[1] && c == old[2] && d == old[3])
 				continue;
-			memcpy(old, in, 16);
-			memcpy(&a, in, 4);
-			memcpy(&b, in + 4, 4);
-			memcpy(&c, in + 8, 4);
-			memcpy(&d, in + 12, 4);
+			old[0] = a;
+			old[1] = b;
+			old[2] = c;
+			old[3] = d;
 			c2p16(a, b, c, d, out);
 			changed = true;
 		}
