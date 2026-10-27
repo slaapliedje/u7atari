@@ -80,6 +80,7 @@ static void run_sound_ticks(void)
 			if ((uint16_t) (sound_ticks_due - sound_ticks_run) > MAX_SOUND_CATCH_UP)
 				sound_ticks_run = sound_ticks_due - MAX_SOUND_CATCH_UP;
 			sound_ticks_run++;
+			sound_service();
 			if (sound_tick != NULL)
 				sound_tick();
 		}
@@ -129,10 +130,11 @@ void plat_pump(void)
 
 		if (now - last_report >= 5 * PLAT_TICKS_PER_SECOND) {
 			last_report = now;
-			char text[64];
+			char text[96];
 
-			snprintf(text, sizeof text, "pump: sound ticks %u, MIDI bytes %lu\r\n",
-				(unsigned) sound_ticks_run, (unsigned long) sound_midi_bytes);
+			snprintf(text, sizeof text, "pump: sound ticks %u, MIDI bytes %lu, PCM %lu\r\n",
+				(unsigned) sound_ticks_run, (unsigned long) sound_midi_bytes,
+				(unsigned long) sound_pcm_samples);
 			plat_log(text);
 		}
 	}

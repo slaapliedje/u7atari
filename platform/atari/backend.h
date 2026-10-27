@@ -37,8 +37,13 @@ void input_pump(void);
 void sound_init(void);
 void sound_shutdown(void);
 void sound_reset(void);
+/* Each sound tick: counts the speech the DMA has played and silences it. */
+void sound_service(void);
+/* --line-in: the Falcon mixes its input jack into the output. */
+extern bool sound_line_in;
 #ifdef U7_DEBUG_LOG
 extern uint32_t sound_midi_bytes;
+extern uint32_t sound_pcm_samples;
 #endif
 /* The data folder every game file name is resolved against. */
 void files_set_root(const char *dir);

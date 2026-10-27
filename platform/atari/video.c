@@ -246,13 +246,14 @@ void plat_video_present(const uint8_t *pixels)
 		int top = 0;
 		char text[96];
 
-		memset(counts, 0, sizeof counts);
-		for (int i = 0; i < WIDTH * HEIGHT; i++)
-			counts[pixels[i]]++;
-		for (int i = 1; i < 256; i++)
-			if (counts[i] > counts[top])
-				top = i;
+		/* Only on the presents it reports: counting costs a frame's worth of time. */
 		if (presents++ % 20 == 0) {
+			memset(counts, 0, sizeof counts);
+			for (int i = 0; i < WIDTH * HEIGHT; i++)
+				counts[pixels[i]]++;
+			for (int i = 1; i < 256; i++)
+				if (counts[i] > counts[top])
+					top = i;
 			snprintf(text, sizeof text, "present %lu: top colour %d x%u, tick %lu\r\n",
 				(unsigned long) presents, top, counts[top], (unsigned long) plat_ticks());
 			plat_log(text);

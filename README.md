@@ -12,7 +12,7 @@ A port of [Kitrinx/Ultima7_Decomp](https://github.com/Kitrinx/Ultima7_Decomp)'s
 | Fast RAM | 256 MB TT-RAM | 128 MB fast RAM |
 | 256-colour mode | TT low, 320x480, 8 planes | VIDEL 320x200 (VGA line-doubled), 8 planes |
 | Music | MIDI port → real MT-32 | MIDI port → real MT-32 |
-| Speech | 8-bit stereo DMA | 8/16-bit DMA |
+| Speech | 8-bit mono DMA, 25033 Hz | 8-bit mono DMA, 24585 Hz (49170 Hz with `--line-in`) |
 
 A stock 16 MHz Falcon is not a target.
 
@@ -30,6 +30,7 @@ platform/atari/      the backend: implements upstream's platform/plat.h
   timerint.S         the Timer B interrupt that runs the sound tick on its own stack
   sound.c            MIDI out, DMA speech; AdLib reported absent
   c2p.h              chunky-to-planar for 16 pixels (tests/c2p_test.c checks it on the host)
+  resample.h         speech resampling into the DMA ring (tests/resample_test.c checks it)
   files.c            GEMDOS file access for the game's DOS names
 CMakeLists.txt       builds upstream's u7_game library + this backend → ULTIMA7.PRG
 ```
@@ -69,7 +70,9 @@ the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
 - [x] Endian audit (30 findings), fixes in the fork: the main game builds a new game and loads its
       starting regions under Hatari on both machines
 - [ ] Save formats still written in host order (round-trip on the Atari, not PC-compatible)
-- [ ] MIDI to MT-32, speech on DMA sound
+- [x] MIDI to MT-32
+- [x] Speech on DMA sound: plays the intro's speech sample-accurately under Hatari on both machines
+      (not yet heard on hardware); `--line-in` mixing on the Falcon is untested
 - [ ] General MIDI output option (MT-32 to GM instrument map), for GM keyboards and modules
 - [ ] Performance: 68030 assembly for the hot paths
 
@@ -107,6 +110,19 @@ switched off while the game runs.
 them by number, so a General MIDI device plays it with the wrong instruments. A GM option is planned,
 mapping each MT-32 instrument to its nearest GM one, as Exult does.
 
+Speech plays from a looping DMA ring in ST RAM, resampled with linear interpolation from the
+game's Sound Blaster rate (about 11 kHz). Each sound tick silences what the DMA has played, so the
+ring never replays old speech when the game stops feeding it.
+
+The intro streams its speech in 0.12 s halves and hands over the next one only from its animation
+loop, so that loop must run faster than about 4 times a second or the speech stutters. Under
+Hatari the TT's release-speed loop runs about 7.5 times a second.
+
+On the Falcon, `--line-in` (in `ULTIMA7.ARG`) mixes the input jack into the output, so a synth
+such as an MT32-pi plugged in there plays through the Falcon with the speech. The codec then runs
+at 49170 Hz and the game's YM is not mixed in; the settings are put back at exit. The TT has no
+audio input: mix its output and the synth's outside the machine.
+
 Munt (MT-32 emulation) and Nuked OPL3 are far too heavy for a 68030. MT-32 output
 goes to the MIDI port at no CPU cost; AdLib is reported absent. If there is time later, a DSP56001
 FM synth on the Falcon is a possible stretch goal.
@@ -124,7 +140,9 @@ input, add `--cmd-fifo <path>` and write Hatari commands to it: `hatari-event ke
 by scan code), `hatari-event doubleclick`, Alt (`keydown 56`) with the arrow keys to move the
 mouse through TOS's mouse emulation, Alt with Insert (`keypress 82`) to click, and
 `hatari-shortcut screenshot` with `--screenshot-dir`. Configure with `-DU7_DEBUG_LOG=ON` to log
-frame statistics, keys, mouse events and a pump heartbeat to the console, and use
+frame statistics, keys, mouse events and a pump heartbeat to the console (`--program pcmtest`
+then plays 6 s of the intro's speech through the speech path, for recording with `--sound 44100
+--avirecord`), and use
 `build/ULTIMA7.map` or `nm` on the PRG to turn Hatari debugger addresses into functions.
 
 Hatari emulates both targets: `--machine tt --ttram 256` and `--machine falcon` (with

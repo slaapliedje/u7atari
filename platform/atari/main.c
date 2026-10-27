@@ -114,7 +114,9 @@ static const char *program_name;
  *   --data <folder>     the game folder; U7_DATA is the default, then the current folder,
  *                       which the desktop sets to the program's own
  *   --program <name>    runs just that program ("u7", "intro", "mainmenu", "endgame")
- *                       instead of the launcher */
+ *                       instead of the launcher
+ *   --line-in           Falcon: mixes the input jack into the sound output, for a MIDI synth
+ *                       plugged in there */
 static const char *take_options(int *argc, char **argv)
 {
 	const char *dir = getenv("U7_DATA");
@@ -125,6 +127,8 @@ static const char *take_options(int *argc, char **argv)
 			dir = argv[++i];
 		else if (strcmp(argv[i], "--program") == 0 && i + 1 < *argc)
 			program_name = argv[++i];
+		else if (strcmp(argv[i], "--line-in") == 0)
+			sound_line_in = true;
 		else
 			argv[kept++] = argv[i];
 	}
@@ -157,6 +161,34 @@ static char **arguments_from_file(int *argc, char **argv)
 	return words;
 }
 
+#ifdef U7_DEBUG_LOG
+/* --program pcmtest: 6 s of the intro's speech (STATIC\INTROSND.DAT from its first sample)
+ * through the speech path, queued steadily in the intro's 1298-byte halves, then 1 s of
+ * silence; for recording under Hatari and comparing with the file. */
+static void pcm_test(void)
+{
+	static uint8_t speech[6 * 10752];
+	int32_t queued = 0, have = 0;
+	uint32_t until;
+	FILE *f = fopen("STATIC\\INTROSND.DAT", "rb");
+
+	if (f != NULL) {
+		fseek(f, 32, SEEK_SET);
+		have = (int32_t) fread(speech, 1, sizeof speech, f);
+		fclose(f);
+	}
+	plat_log("pcmtest\r\n");
+	plat_pcm_start(10752);
+	until = plat_milliseconds() + 7000;
+	while ((int32_t) (until - plat_milliseconds()) > 0) {
+		if (queued < have && plat_pcm_pending() < 2 * 1298)
+			queued += plat_pcm_queue(speech + queued, have - queued < 1298 ? have - queued : 1298);
+		plat_pump();
+	}
+	plat_log("pcmtest done\r\n");
+}
+#endif
+
 int main(int argc, char **argv)
 {
 	char problem[1024];
@@ -178,6 +210,12 @@ int main(int argc, char **argv)
 	input_init();
 	sound_init();
 
+#ifdef U7_DEBUG_LOG
+	if (program_name != NULL && strcmp(program_name, "pcmtest") == 0) {
+		pcm_test();
+		end_process(0);
+	}
+#endif
 	if (program_name != NULL)
 		code = plat_run_program(program_name, (int16_t) (argc - 1), argv + 1);
 	else
