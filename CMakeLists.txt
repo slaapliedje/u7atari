@@ -15,6 +15,8 @@ set(U7_BACKEND_MATOYA OFF CACHE BOOL "" FORCE)
 # default it copies and compares anything not known to be aligned a byte at a time.
 add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-mno-strict-align>)
 add_subdirectory("${U7_UPSTREAM_DIR}" game)
+# Copy-mode shape spans are drawn by platform/atari/shapes.S.
+target_compile_definitions(u7_game PRIVATE U7_SHAPE_SPANS_68K)
 
 file(GLOB U7_ATARI_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/*.c"
@@ -59,3 +61,23 @@ target_link_libraries(u7_layout_check PRIVATE u7_game)
 target_compile_options(u7_layout_check PRIVATE -fpermissive -w
     -include "${U7_UPSTREAM_DIR}/game/include/u7port.h")
 add_dependencies(u7 u7_layout_check)
+
+# tests/shapes_test.cpp: shapes.S against the game's C shape drawing, run on the Atari or under
+# Hatari (cmake --build build --target shapes_test).
+add_executable(shapes_test EXCLUDE_FROM_ALL tests/shapes_test.cpp
+    "${U7_UPSTREAM_DIR}/game/main/xmm/shapedraw.cpp"
+    platform/atari/shapes.S)
+set_target_properties(shapes_test PROPERTIES SUFFIX ".PRG")
+target_include_directories(shapes_test PRIVATE $<TARGET_PROPERTY:u7_game,INCLUDE_DIRECTORIES>)
+target_compile_options(shapes_test PRIVATE $<TARGET_PROPERTY:u7_game,COMPILE_OPTIONS>)
+target_link_directories(shapes_test PRIVATE $<TARGET_PROPERTY:u7,LINK_DIRECTORIES>)
+add_custom_command(TARGET shapes_test POST_BUILD
+    COMMAND sh -c "printf '\\000\\000\\000\\007' | dd of='$<TARGET_FILE:shapes_test>' bs=1 seek=22 conv=notrunc status=none"
+    VERBATIM)
+
+# tests/c2p_frame_test.c: c2p.S against c2p.h, on the Atari or under Hatari.
+add_executable(c2p_frame_test EXCLUDE_FROM_ALL tests/c2p_frame_test.c platform/atari/c2p.S)
+set_target_properties(c2p_frame_test PROPERTIES SUFFIX ".PRG")
+target_include_directories(c2p_frame_test PRIVATE platform/atari)
+target_compile_options(c2p_frame_test PRIVATE -Wall -Wextra)
+target_link_directories(c2p_frame_test PRIVATE $<TARGET_PROPERTY:u7,LINK_DIRECTORIES>)

@@ -9,7 +9,7 @@
  *
  * Two screens: a frame is converted into the hidden one, which is then shown from the next
  * vertical blank. Each screen remembers the frame it holds, so only the 16-pixel groups that
- * changed since are converted again.
+ * changed since are converted again (c2p.S, which takes rows of 320 pixels).
  *
  * Palette writes go to the hardware at once, as the VGA DAC took them; fades rely on that.
  */
@@ -23,14 +23,13 @@
 
 #include "plat.h"
 #include "backend.h"
-#include "c2p.h"
 #include "vgafont8.h"
 
 #define WIDTH PLAT_SCREEN_WIDTH
 #define HEIGHT PLAT_SCREEN_HEIGHT
-#define GROUPS_PER_LINE (WIDTH / 16)
 /* 8 planes of 320 pixels */
 #define LINE_BYTES WIDTH
+_Static_assert(WIDTH == 320, "c2p.S converts rows of 320 pixels");
 
 #define TT_LOW 0x0700
 
@@ -194,39 +193,19 @@ void plat_video_set_palette(int16_t first, int16_t count, const uint8_t *rgb)
 	}
 }
 
-/* The game's frame and the shadows are at least word-aligned, which is all the 68030 needs for
- * long accesses; read them as longs, four to a group, with no library calls. */
-typedef uint32_t __attribute__((__may_alias__)) frame_long;
+/* c2p.S: converts the groups of 16 pixels that differ from the shadow, or all of them. */
+void c2p_frame(const uint8_t *in, uint8_t *shadow, uint8_t *out, int32_t rows, int32_t outStride,
+	int32_t secondLine, int32_t full);
 
-/* Converts the lines of pixels that differ from what screen s shows. */
+/* Converts the pixels that differ from what screen s shows. */
 static void convert(screen *s, const uint8_t *pixels)
 {
 	bool full = s->shadow == NULL;
 
 	if (full && (s->shadow = malloc(WIDTH * HEIGHT)) == NULL)
 		plat_fatal("Out of memory for the screen copy.");
-	for (int16_t y = 0; y < HEIGHT; y++) {
-		const frame_long *in = (const frame_long *) (pixels + y * WIDTH);
-		frame_long *old = (frame_long *) (s->shadow + y * WIDTH);
-		uint16_t *out = (uint16_t *) (s->base + (top_line + y * line_repeat) * LINE_BYTES);
-		bool changed = false;
-
-		for (int16_t g = 0; g < GROUPS_PER_LINE; g++, in += 4, old += 4, out += 8) {
-			uint32_t a = in[0], b = in[1], c = in[2], d = in[3];
-
-			if (!full && a == old[0] && b == old[1] && c == old[2] && d == old[3])
-				continue;
-			old[0] = a;
-			old[1] = b;
-			old[2] = c;
-			old[3] = d;
-			c2p16(a, b, c, d, out);
-			changed = true;
-		}
-		if (changed && line_repeat == 2)
-			memcpy(s->base + (top_line + y * 2 + 1) * LINE_BYTES,
-				s->base + (top_line + y * 2) * LINE_BYTES, LINE_BYTES);
-	}
+	c2p_frame(pixels, s->shadow, s->base + top_line * LINE_BYTES, HEIGHT, line_repeat * LINE_BYTES,
+		line_repeat == 2 ? LINE_BYTES : 0, full);
 }
 
 void plat_video_present(const uint8_t *pixels)

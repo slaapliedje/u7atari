@@ -28,8 +28,10 @@ platform/atari/      the backend: implements upstream's platform/plat.h
   input.c            keys from the BIOS buffer, mouse from the IKBD mousevec, PC key words
   ikbd.S             the mousevec wrapper and the Alt-Help screen-dump stub
   timerint.S         the Timer B interrupt that runs the sound tick on its own stack
+  c2p.S              chunky-to-planar for the frame, converting only the 16-pixel groups that changed
+  shapes.S           shape drawing in copy mode, the game's hottest path (called from the fork)
   sound.c            MIDI out, DMA speech; AdLib reported absent
-  c2p.h              chunky-to-planar for 16 pixels (tests/c2p_test.c checks it on the host)
+  c2p.h              chunky-to-planar for 16 pixels in C, the reference for c2p.S (tests/c2p_test.c)
   resample.h         speech resampling into the DMA ring (tests/resample_test.c checks it)
   files.c            GEMDOS file access for the game's DOS names
 CMakeLists.txt       builds upstream's u7_game library + this backend → ULTIMA7.PRG
@@ -74,7 +76,7 @@ the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
 - [x] Speech on DMA sound: plays the intro's speech sample-accurately under Hatari on both machines
       (not yet heard on hardware); `--line-in` mixing on the Falcon is untested
 - [ ] General MIDI output option (MT-32 to GM instrument map), for GM keyboards and modules
-- [ ] Performance: 68030 assembly for the hot paths
+- [x] Performance: 68030 assembly for shape drawing and c2p (2.6 times the frame rate, under Hatari)
 
 ## Known work
 
@@ -102,11 +104,26 @@ Hatari's CPU profiler on the TT (see Testing), over the same 10 s of the opening
 | `-mno-strict-align`: GCC copies unaligned data, and loads little-endian values, a long at a time | 35 |
 | Shapes drawn straight from their runs, mode and direction fixed per frame (fork) | 47 |
 | Little-endian loads through `memcpy` and a swap, run loops inlined (fork) | 50 |
+| Copy-mode shapes in 68030 assembly, `shapes.S` (2.9 times the C's speed on its own) | 67 |
+| c2p in assembly, `c2p.S`: each changed group written to both TT lines, no line copies | 68 |
+| `DrawTile` takes its pointers once instead of reloading `LinearBase` every row (fork) | 70 |
 
-The intro's loop during the Guardian's speech went from 8 to 28 presents a second (the speech needs
-about 4), and the Falcon, emulated at 32 MHz, shows 51 frames in the Trinsic window. What is left:
-- shape drawing (about 40% of the game's time) and the depth sort around it: 68030 assembly
-- c2p (about half the intro's time when the whole screen changes): 68030 assembly
+The Falcon, emulated at 32 MHz, shows 68 frames in the same window. In the intro, the loop during
+the Guardian's speech went from about 5 frames a second to 21 before the assembly and 28 after it
+(the speech needs about 4). Count frames by `plat_video_present`'s calls: `plat_video_present.part.0`
+is also entered by palette refreshes.
+
+`tests/shapes_test.cpp` and `tests/c2p_frame_test.c` check the assembly against the C it replaces,
+on the Atari or under Hatari (`cmake --build build --target shapes_test c2p_frame_test`, then run
+the PRG with `tools/hatari-test.sh`; the shapes test reads `C:\U7\STATIC\SHAPES.VGA`).
+
+What is left, none of it large on its own:
+- finding what changed in the frame: about 11% of the game's time, comparing 64,000 bytes with the
+  previous frame; under Hatari it is limited by memory, not instructions, so it needs checking on
+  real hardware. The game does not say what it redrew.
+- game logic called per item while drawing (`GetItemZAndStuff`, `Item_getX`/`Y`, the depth sort):
+  each is short, but they are called 100,000 times in 10 s
+- shapes drawn translucent (`DrawSpans<SHAPE_BLEND>`, about 4%), still in C
 - MIDI output waits on the ACIA for each byte (a few per cent while music plays)
 - speech resampling, about 9% of the TT while speech plays, twice that on a Falcon with `--line-in`
 
@@ -127,7 +144,7 @@ ring never replays old speech when the game stops feeding it.
 
 The intro streams its speech in 0.12 s halves and hands over the next one only from its animation
 loop, so that loop must run faster than about 4 times a second or the speech stutters. Under
-Hatari the TT's release-speed loop runs about 7.5 times a second.
+Hatari the TT's release-speed loop runs about 28 times a second.
 
 On the Falcon, `--line-in` (in `ULTIMA7.ARG`) mixes the input jack into the output, so a synth
 such as an MT32-pi plugged in there plays through the Falcon with the speech. The codec then runs
@@ -159,7 +176,7 @@ then plays 6 s of the intro's speech through the speech path, for recording with
 `tools/hatari-profile.sh <tt|falcon> <hd-dir> <start-vbl> <vbls> [symbol]` runs the same way with
 Hatari's CPU profiler on for <vbls> frames from VBL <start-vbl> (or from the first call of
 `symbol` after it, such as `_plat_pcm_start` for the intro's speech) and prints the time by
-function, with call counts; `plat_video_present.part.0`'s count is the frames shown. With
+function, with call counts; `plat_video_present`'s count is the frames shown. With
 `ULTIMA7.ARG` holding `--program u7 p` and a game in `GAMEDAT\`, VBLs 1800 to 2400 are the opening
 scene in Trinsic; `--program intro ereiamjh` runs the intro alone.
 
