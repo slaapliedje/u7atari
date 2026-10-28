@@ -72,7 +72,7 @@ the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
       the game reaches Trinsic and draws it correctly under Hatari on both machines
 - [x] Endian audit (30 findings), fixes in the fork: the main game builds a new game and loads its
       starting regions under Hatari on both machines
-- [ ] Save formats still written in host order (round-trip on the Atari, not PC-compatible)
+- [x] Saved games in the PC's byte order: a GAMEDAT from the DOS game loads, and saves the same
 - [x] MIDI to MT-32
 - [x] Speech on DMA sound: plays the intro's speech sample-accurately under Hatari on both machines
       (not yet heard on hardware); `--line-in` mixing on the Falcon is untested
@@ -91,8 +91,15 @@ the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
 - `U7_BITS(type, fields...)`: GCC fills bitfields from the high bit on m68k, so packed flag bytes are
   declared in reverse there. `tests/layout_check.cpp` checks these layouts at compile time.
 
-Still to do: the smaller save files (timers, weather, missiles, party, routes, ITEMNODE/OSTIA
-scalars) are written in host order. They round-trip on the Atari but are not PC-compatible yet.
+The save files the game writes field by field (timers, weather, missiles, the action queue, party,
+routes, map position, gump positions, random seed, item nodes, Ostia, NPC counters, the end date)
+go through `DosWriteLE16`/`DosReadLE16` and friends in `dosio`, or `DataFile::writeWords`, or swap
+their records around the write. A debug build (`-DU7_DEBUG_LOG=ON`) has `--program savetest`
+(`tests/save_test.cpp`): it loads the files that need no running game from `SAVEIN\` in the game
+folder, saves them into `SAVEOUT\` and prints some of the values read. With `SAVEIN\` holding a
+GAMEDAT written by the DOS game, every file comes back byte for byte except `RANDSEED.DAT`, whose
+seed the game ORs with 1, and the values match the DOS files decoded on the PC. The DOS GAMEDAT
+also loads into the game itself and shows the right place and time.
 
 **Performance.** U7 was hand-tuned for a 386, with assembly for shape blitting, the depth
 buffer and palette work. The portable build replaced that assembly with C. Profiled with

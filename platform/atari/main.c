@@ -165,6 +165,8 @@ static char **arguments_from_file(int *argc, char **argv)
 }
 
 #ifdef U7_DEBUG_LOG
+void save_test(void);     /* tests/save_test.cpp */
+
 /* --program pcmtest: 6 s of the intro's speech (STATIC\INTROSND.DAT from its first sample)
  * through the speech path, queued steadily in the intro's 1298-byte halves, then 1 s of
  * silence; for recording under Hatari and comparing with the file. */
@@ -216,6 +218,10 @@ int main(int argc, char **argv)
 #ifdef U7_DEBUG_LOG
 	if (program_name != NULL && strcmp(program_name, "pcmtest") == 0) {
 		pcm_test();
+		end_process(0);
+	}
+	if (program_name != NULL && strcmp(program_name, "savetest") == 0) {
+		save_test();
 		end_process(0);
 	}
 #endif
