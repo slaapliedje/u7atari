@@ -30,6 +30,12 @@ void video_refresh(void);
  * into it. video_pump does it without waiting. */
 void video_refresh_wanted(void);
 void video_pump(void);
+/* The game's last frame, which the console draws text into; NULL before the first. */
+uint8_t *video_frame(void);
+/* Shows 80x25 text cells (character, attribute << 8) and the cursor in place of the game's
+ * frames until video_show_game. */
+void video_show_text(const uint16_t *cells, int16_t cursor_x, int16_t cursor_y);
+void video_show_game(void);
 void input_init(void);
 void input_shutdown(void);
 void input_reset(void);

@@ -13,12 +13,13 @@
 
 #include "plat.h"
 #include "backend.h"
+#include "game.h"
 
 machine_type atari_machine = MACHINE_OTHER;
 
 static jmp_buf *program_jump;
 static int16_t program_code;
-static char *self_name = "ULTIMA7.PRG";
+static char *self_name = GAME_PRG;
 
 static void shutdown_all(void)
 {
@@ -121,8 +122,8 @@ static const char *script_path;
 /* Takes the backend's own options out of the arguments:
  *   --data <folder>     the game folder; U7_DATA is the default, then the current folder,
  *                       which the desktop sets to the program's own
- *   --program <name>    runs just that program ("u7", "intro", "mainmenu", "endgame")
- *                       instead of the launcher
+ *   --program <name>    runs just that program ("u7" or "si", "intro", "mainmenu",
+ *                       "endgame") instead of the launcher
  *   --line-in           Falcon: mixes the input jack into the sound output, for a MIDI synth
  *                       plugged in there
  *   --gm                music and effects for a General MIDI synth instead of an MT-32
@@ -154,13 +155,13 @@ static const char *take_options(int *argc, char **argv)
 }
 
 /* Started with no arguments (from the desktop, or Hatari's --auto), the program takes them
- * from ULTIMA7.ARG in its folder when there is one: words separated by blanks or lines.
- * Renaming the program to ULTIMA7.TTP asks for them instead. */
+ * from ULTIMA7.ARG (SERPENT.ARG) in its folder when there is one: words separated by blanks or
+ * lines. Renaming the program to .TTP asks for them instead. */
 static char **arguments_from_file(int *argc, char **argv)
 {
 	static char text[512];
 	static char *words[32];
-	FILE *f = fopen("ULTIMA7.ARG", "r");
+	FILE *f = fopen(GAME_ARG_FILE, "r");
 	size_t length;
 	int count = 1;
 
@@ -216,7 +217,7 @@ int main(int argc, char **argv)
 		argv = arguments_from_file(&argc, argv);
 	detect_machine();
 	if (atari_machine == MACHINE_OTHER)
-		plat_fatal("Ultima VII needs a TT030 or Falcon030.");
+		plat_fatal(GAME_NAME " needs a TT030 or Falcon030.");
 	files_set_root(take_options(&argc, argv));
 	if (!files_check_data(problem, sizeof problem))
 		plat_fatal(problem);
@@ -243,7 +244,7 @@ int main(int argc, char **argv)
 	if (program_name != NULL)
 		code = plat_run_program(program_name, (int16_t) (argc - 1), argv + 1);
 	else
-		code = Ultima7Main((int16_t) argc, argv);
+		code = GAME_MAIN((int16_t) argc, argv);
 	end_process(code);
 	return code;
 }

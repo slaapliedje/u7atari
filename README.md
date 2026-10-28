@@ -1,7 +1,8 @@
 # Ultima VII for the Atari TT030 and Falcon030
 
 A port of [Kitrinx/Ultima7_Decomp](https://github.com/Kitrinx/Ultima7_Decomp)'s
-`ultima7-portable` build to the Atari TT030 and an accelerated Falcon030.
+`ultima7-portable` build to the Atari TT030 and an accelerated Falcon030: The Black Gate, and
+Serpent Isle.
 
 ## Target machines
 
@@ -24,7 +25,9 @@ cmake/               m68k-atari-mint toolchain file
 platform/atari/      the backend: implements upstream's platform/plat.h
   main.c             main(), program runner (setjmp/longjmp in place of threads), exit
   timer.c            60 Hz ticks from _hz_200, game timers, sound tick (MFP Timer B) and lock
-  video.c            chunky-to-planar present, palette, retrace, 8x8 console
+  video.c            chunky-to-planar present, palette, retrace, the text-mode screen
+  console.c          the game's printf and conio text: 8x8 in graphics mode, 80x25 text mode
+  game.h             what differs between The Black Gate and Serpent Isle builds
   input.c            keys from the BIOS buffer, mouse from the IKBD mousevec, PC key words
   ikbd.S             the mousevec wrapper and the Alt-Help screen-dump stub
   timerint.S         the Timer B interrupt that runs the sound tick on its own stack
@@ -35,7 +38,7 @@ platform/atari/      the backend: implements upstream's platform/plat.h
   c2p.h              chunky-to-planar for 16 pixels in C, the reference for c2p.S (tests/c2p_test.c)
   resample.h         speech resampling into the DMA ring (tests/resample_test.c checks it)
   files.c            GEMDOS file access for the game's DOS names
-CMakeLists.txt       builds upstream's u7_game library + this backend → ULTIMA7.PRG
+CMakeLists.txt       builds upstream's u7_game library + this backend → ULTIMA7.PRG or SERPENT.PRG
 ```
 
 Upstream already separates the game from the host: game code calls only `plat_*`
@@ -54,7 +57,10 @@ cmake --build build -j
 # → build/ULTIMA7.PRG
 ```
 
-`-DU7_GAME="Serpent Isle"` selects the other game. Code is built with `-m68020-60 -mtune=68030`,
+`-DU7_GAME="Serpent Isle"` builds Serpent Isle instead, as `SERPENT.PRG` (use another build
+folder, such as `build-si`). It reads `SERPENT.CFG` and takes its arguments from `SERPENT.ARG`;
+`--program si` runs the game alone. Serpent Isle's debug screens switch to 80x25 colour text,
+drawn 4x8 pixels a cell. Code is built with `-m68020-60 -mtune=68030`,
 which links MiNTLib's 68020-60 multilib; its startup code refuses to run without a 68881/68882,
 so an FPU is required (both targets have one). The game itself has no floating point. The PRG header asks TOS to load
 the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
@@ -78,6 +84,9 @@ the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
       (not yet heard on hardware); `--line-in` mixing on the Falcon is untested
 - [x] General MIDI output option, `--gm` (not yet heard on a GM synth)
 - [x] Performance: 68030 assembly for shape drawing and c2p (2.6 times the frame rate, under Hatari)
+- [x] Serpent Isle builds, with the same fixes carried over in the fork plus its own (XMIDI timbre
+      requests, the timbre library, its saved schedules): under Hatari on the TT it plays the intro
+      with music and speech, starts a new game and runs the opening on the ship
 
 ## Known work
 

@@ -12,6 +12,9 @@
  * changed since are converted again (c2p.S, which takes rows of 320 pixels).
  *
  * Palette writes go to the hardware at once, as the VGA DAC took them; fades rely on that.
+ *
+ * Serpent Isle's debug screens switch to 80x25 colour text (console.c); it is drawn into a frame
+ * of its own, 4x8 pixels a cell, in the 16 text colours, with the game's palette put back after.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,10 +26,13 @@
 
 #include "plat.h"
 #include "backend.h"
+#include "game.h"
 #include "vgafont8.h"
 
 #define WIDTH PLAT_SCREEN_WIDTH
 #define HEIGHT PLAT_SCREEN_HEIGHT
+#define TEXT_COLUMNS 80
+#define TEXT_ROWS 25
 /* 8 planes of 320 pixels */
 #define LINE_BYTES WIDTH
 _Static_assert(WIDTH == 320, "c2p.S converts rows of 320 pixels");
@@ -51,10 +57,18 @@ static int16_t top_line;        /* the first line the game's frame occupies */
 static int16_t line_repeat;     /* 2 on the TT, which shows each game line twice */
 
 static const uint8_t *last_pixels;
-#ifdef U7_DEBUG_LOG
-static uint8_t shot_palette[768];          /* 6-bit VGA, for video_shot */
-#endif
+static uint8_t palette[768];               /* the game's, 6-bit VGA */
 static bool refresh_wanted;
+
+/* Text mode: the cells drawn as a frame, shown instead of the game's. */
+static bool text_shown;
+static uint8_t text_frame[WIDTH * HEIGHT];
+/* the VGA text colours, 6-bit */
+static const uint8_t text_palette[16 * 3] = {
+	0, 0, 0,  0, 0, 42,  0, 42, 0,  0, 42, 42,  42, 0, 0,  42, 0, 42,  42, 21, 0,  42, 42, 42,
+	21, 21, 21,  21, 21, 63,  21, 63, 21,  21, 63, 63,  63, 21, 21,  63, 21, 63,  63, 63, 21,
+	63, 63, 63,
+};
 
 /* What the desktop had, to put back. */
 static void *old_logical, *old_physical;
@@ -109,7 +123,7 @@ void video_init(void)
 	old_logical = Logbase();
 	old_physical = Physbase();
 	if (atari_machine == MACHINE_TT ? !setup_tt() : !setup_falcon())
-		plat_fatal("Ultima VII needs a colour or VGA monitor.");
+		plat_fatal(GAME_NAME " needs a colour or VGA monitor.");
 
 	bytes = (size_t) screen_lines * LINE_BYTES;
 	screen_memory = (void *) Mxalloc(2 * bytes + 256, 0);    /* ST RAM */
@@ -157,27 +171,13 @@ void video_reset(void)
 	static const uint8_t black[256 * 3];
 
 	last_pixels = NULL;
+	text_shown = false;
 	if (active)
 		plat_video_set_palette(0, 256, black);
 }
 
-void plat_video_set_palette(int16_t first, int16_t count, const uint8_t *rgb)
+static void write_palette(int16_t first, int16_t count, const uint8_t *rgb)
 {
-	if (!active)
-		return;
-	if (first < 0) {
-		rgb -= 3 * first;
-		count += first;
-		first = 0;
-	}
-	if (first + count > 256)
-		count = 256 - first;
-	if (count <= 0)
-		return;
-#ifdef U7_DEBUG_LOG
-	memcpy(shot_palette + 3 * first, rgb, (size_t) count * 3);
-#endif
-
 	if (atari_machine == MACHINE_TT) {
 		uint16_t words[256];
 
@@ -199,6 +199,24 @@ void plat_video_set_palette(int16_t first, int16_t count, const uint8_t *rgb)
 	}
 }
 
+void plat_video_set_palette(int16_t first, int16_t count, const uint8_t *rgb)
+{
+	if (!active)
+		return;
+	if (first < 0) {
+		rgb -= 3 * first;
+		count += first;
+		first = 0;
+	}
+	if (first + count > 256)
+		count = 256 - first;
+	if (count <= 0)
+		return;
+	memcpy(palette + 3 * first, rgb, (size_t) count * 3);
+	if (!text_shown)
+		write_palette(first, count, rgb);
+}
+
 /* c2p.S: converts the groups of 16 pixels that differ from the shadow, or all of them. */
 void c2p_frame(const uint8_t *in, uint8_t *shadow, uint8_t *out, int32_t rows, int32_t outStride,
 	int32_t secondLine, int32_t full);
@@ -214,12 +232,10 @@ static void convert(screen *s, const uint8_t *pixels)
 		line_repeat == 2 ? LINE_BYTES : 0, full);
 }
 
-void plat_video_present(const uint8_t *pixels)
+static void show_frame(const uint8_t *pixels)
 {
 	screen *s;
 
-	last_pixels = pixels;
-	refresh_wanted = false;
 	if (!active)
 		return;
 	/* The screen handed over last time is showing once a blank has passed; until then the
@@ -254,6 +270,14 @@ void plat_video_present(const uint8_t *pixels)
 	hidden ^= 1;
 }
 
+void plat_video_present(const uint8_t *pixels)
+{
+	last_pixels = pixels;
+	refresh_wanted = false;
+	if (!text_shown)
+		show_frame(pixels);
+}
+
 void plat_video_wait_retrace(void)
 {
 	uint32_t now = vbl_count();
@@ -270,13 +294,16 @@ void video_shot(const char *name)
 	static uint8_t row[WIDTH * 3];
 	FILE *f;
 
-	if (last_pixels == NULL || (f = fopen(name, "wb")) == NULL)
+	const uint8_t *pixels = text_shown ? text_frame : last_pixels;
+	const uint8_t *colours = text_shown ? text_palette : palette;
+
+	if (pixels == NULL || (f = fopen(name, "wb")) == NULL)
 		return;
 	fprintf(f, "P6\n%d %d\n255\n", WIDTH, HEIGHT);
 	for (int y = 0; y < HEIGHT; y++) {
 		for (int x = 0; x < WIDTH; x++)
 			for (int c = 0; c < 3; c++) {
-				uint8_t v = shot_palette[3 * last_pixels[y * WIDTH + x] + c] & 0x3f;
+				uint8_t v = colours[3 * pixels[y * WIDTH + x] + c] & 0x3f;
 
 				row[3 * x + c] = (uint8_t) (v << 2 | v >> 4);
 			}
@@ -289,8 +316,11 @@ void video_shot(const char *name)
 /* Shows the last frame again: the game may have drawn into it since. */
 void video_refresh(void)
 {
-	if (last_pixels != NULL)
-		plat_video_present(last_pixels);
+	refresh_wanted = false;
+	if (text_shown)
+		show_frame(text_frame);
+	else if (last_pixels != NULL)
+		show_frame(last_pixels);
 }
 
 void video_refresh_wanted(void)
@@ -300,85 +330,72 @@ void video_refresh_wanted(void)
 
 void video_pump(void)
 {
-	if (refresh_wanted && last_pixels != NULL && vbl_count() != shown_at_vbl)
-		plat_video_present(last_pixels);
-}
-
-/* ---- Console text ----
- * What the DOS game wrote with printf in graphics mode: the BIOS drew each character from its
- * 8x8 font into screen memory, colour 7 on 0, on a 40 by 25 grid, wrapping at the right edge and
- * scrolling up at the bottom. Drawn into the last frame, as upstream's matoya backend does.
- */
-
-#define COLUMNS 40
-#define ROWS 25
-#define GLYPH 8
-#define TEXT_COLOUR 7
-#define BACK_COLOUR 0
-
-static int16_t column, row;
-
-void console_reset(void)
-{
-	column = 0;
-	row = 0;
-}
-
-void plat_console_goto(int16_t x, int16_t y)
-{
-	column = x < 1 ? 0 : x > COLUMNS ? COLUMNS - 1 : x - 1;
-	row = y < 1 ? 0 : y > ROWS ? ROWS - 1 : y - 1;
-}
-
-static void draw_char(uint8_t *frame, uint8_t ch)
-{
-	uint8_t *at = frame + (row * GLYPH) * WIDTH + column * GLYPH;
-
-	for (int y = 0; y < GLYPH; y++, at += WIDTH) {
-		for (int x = 0; x < GLYPH; x++)
-			at[x] = VgaFont8[ch][y] & (0x80 >> x) ? TEXT_COLOUR : BACK_COLOUR;
+	if (refresh_wanted && !text_shown && last_pixels != NULL && vbl_count() != shown_at_vbl) {
+		refresh_wanted = false;
+		show_frame(last_pixels);
 	}
 }
 
-static void next_row(uint8_t *frame)
+uint8_t *video_frame(void)
 {
-	if (++row < ROWS)
-		return;
-	row = ROWS - 1;
-	memmove(frame, frame + GLYPH * WIDTH, (ROWS - 1) * GLYPH * WIDTH);
-	memset(frame + (ROWS - 1) * GLYPH * WIDTH, BACK_COLOUR, GLYPH * WIDTH);
+	/* The game hands over frames it owns; the BIOS wrote into that same screen memory. */
+	return (uint8_t *) last_pixels;
 }
 
-void plat_console_write(const char *text)
-{
-	/* The game hands over a frame it owns; the BIOS wrote into that same screen memory. */
-	uint8_t *frame = (uint8_t *) last_pixels;
+/* Each 8-pixel glyph row as 4 pixels, a pixel set where either of its two is. */
+static uint8_t narrow_font[256][8];
 
-	if (frame == NULL) {
-		plat_log(text);
-		return;
+static void make_narrow_font(void)
+{
+	for (int ch = 0; ch < 256; ch++)
+		for (int y = 0; y < 8; y++) {
+			uint8_t row = VgaFont8[ch][y], out = 0;
+
+			for (int x = 0; x < 4; x++)
+				if (row & (0xc0 >> 2 * x))
+					out |= (uint8_t) (8 >> x);
+			narrow_font[ch][y] = out;
+		}
+}
+
+void video_show_text(const uint16_t *cells, int16_t cursor_x, int16_t cursor_y)
+{
+	static bool font_made;
+
+	if (!font_made) {
+		make_narrow_font();
+		font_made = true;
 	}
-	for (; *text; text++) {
-		switch (*text) {
-		case '\r':
-			column = 0;
-			break;
-		case '\n':
-			next_row(frame);
-			break;
-		case '\b':
-			if (column > 0)
-				column--;
-			break;
-		case '\a':
-			break;
-		default:
-			draw_char(frame, (uint8_t) *text);
-			if (++column == COLUMNS) {
-				column = 0;
-				next_row(frame);
+	for (int row = 0; row < TEXT_ROWS; row++)
+		for (int column = 0; column < TEXT_COLUMNS; column++) {
+			uint16_t cell = cells[row * TEXT_COLUMNS + column];
+			/* bit 7 of the attribute is blink, as the VGA's default had it; shown steady */
+			uint8_t fore = (uint8_t) (cell >> 8 & 15), back = (uint8_t) (cell >> 12 & 7);
+			uint8_t *at = text_frame + row * 8 * WIDTH + column * 4;
+
+			for (int y = 0; y < 8; y++, at += WIDTH) {
+				uint8_t bits = narrow_font[cell & 0xff][y];
+
+				if (row == cursor_y && column == cursor_x && y == 7)
+					bits = 15;      /* the cursor, an underline */
+				for (int x = 0; x < 4; x++)
+					at[x] = bits & (8 >> x) ? fore : back;
 			}
 		}
-	}
-	video_refresh();
+	if (!text_shown && active)
+		write_palette(0, 16, text_palette);
+	text_shown = true;
+	show_frame(text_frame);
+}
+
+void video_show_game(void)
+{
+	if (!text_shown)
+		return;
+	text_shown = false;
+	if (!active)
+		return;
+	write_palette(0, 16, palette);
+	if (last_pixels != NULL)
+		show_frame(last_pixels);
 }

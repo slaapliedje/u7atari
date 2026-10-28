@@ -22,9 +22,15 @@ file(GLOB U7_ATARI_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/*.S")
 add_executable(u7 ${U7_ATARI_SOURCES})
-set_target_properties(u7 PROPERTIES OUTPUT_NAME ULTIMA7)
+if(U7_GAME STREQUAL "Serpent Isle")
+    set(U7_PRG_NAME SERPENT)
+    target_compile_definitions(u7 PRIVATE U7_SERPENT_ISLE)
+else()
+    set(U7_PRG_NAME ULTIMA7)
+endif()
+set_target_properties(u7 PROPERTIES OUTPUT_NAME ${U7_PRG_NAME})
 # A link map, to turn addresses from Hatari's debugger into function names.
-target_link_options(u7 PRIVATE "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/ULTIMA7.map")
+target_link_options(u7 PRIVATE "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/${U7_PRG_NAME}.map")
 target_include_directories(u7 PRIVATE
     "${U7_UPSTREAM_DIR}/platform"
     "${U7_UPSTREAM_DIR}/platform/matoya")   # vgafont8.h

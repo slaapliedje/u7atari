@@ -25,6 +25,7 @@
 
 #include "plat.h"
 #include "backend.h"
+#include "game.h"
 
 #define PATH_SIZE 256
 #define NAME_SIZE 64
@@ -265,8 +266,8 @@ static FILE *use_stream(handle *h, int op)
 	return h->file;
 }
 
-/* U7.CFG is the sound setup the DOS installer wrote: line 1 the music card, line 2 the speech
- * card's port, IRQ and DMA. Music here is always the MT-32 on the MIDI port, and speech always
+/* U7.CFG (SERPENT.CFG) is the sound setup the DOS installer wrote: line 1 the music card, line 2
+ * the speech card's port, IRQ and DMA (and in Serpent Isle an 'o' for the Sound Blaster Pro). Music here is always the MT-32 on the MIDI port, and speech always
  * has an output, so the game reads a setup to match: "r 330", and a speech line when the file
  * has none. The rest is the file's own; the file is never changed.
  *
@@ -274,7 +275,8 @@ static FILE *use_stream(handle *h, int op)
  * in memory instead. */
 static bool is_sound_config(const char *name)
 {
-	return strcasecmp(name, "u7.cfg") == 0 || strcasecmp(name, ".\\u7.cfg") == 0;
+	return strcasecmp(name, GAME_SOUND_CONFIG) == 0
+		|| (strncmp(name, ".\\", 2) == 0 && strcasecmp(name + 2, GAME_SOUND_CONFIG) == 0);
 }
 
 static int16_t open_sound_config(const char *name)
@@ -297,7 +299,7 @@ static int16_t open_sound_config(const char *name)
 		tokens++;
 	snprintf(music, sizeof music, plat_midi_available() ? "r 330" : "a 388");
 	if (tokens < 3)
-		snprintf(speech, sizeof speech, "220 7 1");
+		snprintf(speech, sizeof speech, GAME_DEFAULT_SPEECH);
 
 	if ((text = malloc(sizeof music + sizeof speech + 4)) == NULL)
 		return -1;
@@ -627,11 +629,19 @@ int16_t plat_find_first(const char *pattern, plat_find *find)
  * a wrong folder then reads 'File "STATIC\linkdep1." not found!', and an empty file can show as
  * an unrelated error (an empty SHAPES.VGA reads "Out of voodoo memory"). */
 static const char *const required_files[] = {
+#ifdef U7_SERPENT_ISLE
+	"AMMO.DAT", "ARMOR.DAT", "EQUIP.DAT", "FACES.VGA", "FONTS.VGA", "GUMPS.VGA", "INITGAME.DAT",
+	"LINKDEP1", "LINKDEP2", "MAINSHP.FLX", "MONSTERS.DAT", "OCCLUDE.DAT", "PALETTES.FLX",
+	"PAPERDOL.VGA", "POINTERS.SHP", "READY.DAT", "SCHEDULE.DAT", "SHAPES.VGA", "SHPDIMS.DAT",
+	"SPRITES.VGA", "TEXT.FLX", "TFA.DAT", "U7CHUNKS", "U7MAP", "USECODE", "WEAPONS.DAT",
+	"WGTVOL.DAT", "WIHH.DAT", "XFORM.TBL",
+#else
 	"AMMO.DAT", "ARMOR.DAT", "ENDSHAPE.FLX", "EQUIP.DAT", "FACES.VGA", "FONTS.VGA", "GUMPS.VGA",
 	"INITGAME.DAT", "LINKDEP1", "LINKDEP2", "MONSTERS.DAT", "OCCLUDE.DAT", "PALETTES.FLX",
 	"POINTERS.SHP", "READY.DAT", "SCHEDULE.DAT", "SHAPES.VGA", "SHPDIMS.DAT", "SPRITES.VGA",
 	"TEXT.FLX", "TFA.DAT", "U7CHUNKS", "U7MAP", "USECODE", "WEAPONS.DAT", "WGTVOL.DAT",
 	"WIHH.DAT", "XFORM.TBL",
+#endif
 };
 
 static void append(char *message, size_t size, const char *text)
@@ -642,7 +652,7 @@ static void append(char *message, size_t size, const char *text)
 		snprintf(message + n, size - n, "%s", text);
 }
 
-#define WHERE_TO_PUT_GAME "Run ULTIMA7.PRG from the Ultima VII folder, or point it at the " \
+#define WHERE_TO_PUT_GAME "Run " GAME_PRG " from the " GAME_NAME " folder, or point it at the " \
 	"folder with --data <folder> or the U7_DATA variable."
 
 bool files_check_data(char *message, size_t size)
@@ -657,7 +667,7 @@ bool files_check_data(char *message, size_t size)
 		return false;
 	}
 	if (!plat_dir_exists("STATIC")) {
-		snprintf(message, size, "\"%s\" is not an Ultima VII folder: it has no STATIC folder.\n\n%s",
+		snprintf(message, size, "\"%s\" is not " GAME_A_NAME " folder: it has no STATIC folder.\n\n%s",
 			root, WHERE_TO_PUT_GAME);
 		return false;
 	}
@@ -683,7 +693,7 @@ bool files_check_data(char *message, size_t size)
 	if (missing_count == 0 && empty_count == 0)
 		return true;
 
-	snprintf(message, size, "The Ultima VII installation in \"%s\" is incomplete.\n", root);
+	snprintf(message, size, "The " GAME_NAME " installation in \"%s\" is incomplete.\n", root);
 	if (missing_count) {
 		append(message, size, "\nMissing from STATIC: ");
 		append(message, size, missing);
