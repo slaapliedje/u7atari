@@ -85,8 +85,9 @@ the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
 - [x] General MIDI output option, `--gm` (not yet heard on a GM synth)
 - [x] Performance: 68030 assembly for shape drawing and c2p (2.6 times the frame rate, under Hatari)
 - [x] Serpent Isle builds, with the same fixes carried over in the fork plus its own (XMIDI timbre
-      requests, the timbre library, its saved schedules): under Hatari on the TT it plays the intro
-      with music and speech, starts a new game and runs the opening on the ship
+      requests, the timbre library, its saved schedules and PHILBERT.DAT): under Hatari it plays the
+      intro and the endgame with music and speech, starts a new game and runs the opening on the
+      ship (TT and Falcon), and saves to a slot as a PC-format save and loads it back (TT)
 
 ## Known work
 

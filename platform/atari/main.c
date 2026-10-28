@@ -31,6 +31,12 @@ static void shutdown_all(void)
 
 static void end_process(int code)
 {
+#ifdef U7_DEBUG_LOG
+	char text[32];
+
+	snprintf(text, sizeof text, "exit %d\r\n", code);
+	plat_log(text);
+#endif
 	shutdown_all();
 	fflush(NULL);
 	exit(code);
