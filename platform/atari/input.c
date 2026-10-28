@@ -6,6 +6,8 @@
  * main block and function keys have the PC set 1 scan codes, so only the keypad and the cursor
  * block are mapped. There is no Num Lock: the keypad moves the cursor, as a PC keypad with Num
  * Lock off, and gives digits with Shift. That makes Page Up, Page Down and End reachable.
+ * Undo is Esc, which cancels and closes, and Help is F1, the PC's help key (the cheat keys'
+ * list, when cheats are on); the game has no help screen of its own.
  *
  * Alt-Help's screen dump is switched off while the game runs.
  *
@@ -140,7 +142,7 @@ static uint16_t word(uint8_t scan, uint8_t ascii)
 	return (uint16_t) (scan << 8 | ascii);
 }
 
-/* The PC key at an Atari scan code; 0 for keys the PC has no match for (Help, Undo, keypad
+/* The PC key at an Atari scan code; 0 for keys the PC has no match for (the keypad
  * brackets). */
 static uint16_t pc_key(uint8_t scan)
 {
@@ -160,6 +162,8 @@ static uint16_t pc_key(uint8_t scan)
 	case 0x47: case 0x48: case 0x4B: case 0x4D: case 0x50: case 0x52: case 0x53:
 		return EXTENDED | scan;             /* the cursor block */
 	case 0x60: return 0x56;                 /* the ISO key beside left Shift */
+	case 0x61: return 0x01;                 /* Undo: Esc */
+	case 0x62: return 0x3B;                 /* Help: F1 */
 	case 0x65: return EXTENDED | 0x35;      /* keypad / */
 	case 0x66: return 0x37;                 /* keypad * */
 	case 0x72: return EXTENDED | 0x1C;      /* keypad Enter */
@@ -271,6 +275,8 @@ static uint16_t bios_word(uint32_t key)
 		default: return navigation_word(scan, ctrl, alt);
 		}
 	}
+	if (atari == 0x61)                      /* Undo: Esc, whatever the shift keys */
+		return word(0x01, 27);
 	if (scan >= 0x3B && scan <= 0x44)
 		return function_key_word((uint8_t) (scan - 0x3B), shift, ctrl, alt);
 	if (scan >= 0x47 && scan <= 0x53) {

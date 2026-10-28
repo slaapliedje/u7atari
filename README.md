@@ -139,7 +139,8 @@ The TT at 32 MHz is the tighter of the two machines; profile there first.
 
 **Keyboard.** The Atari keyboard has no Page Up, Page Down, End or Num Lock. The keypad works
 as a PC keypad with Num Lock off (7 Home, 9 Page Up, 1 End, 3 Page Down, arrows on 8 4 6 2) and
-gives digits with Shift. Help, Undo and the keypad brackets do nothing. Alt-Help's screen dump is
+gives digits with Shift. Undo is Esc and Help is F1 (the game has no help screen; with cheats on, F1
+lists the cheat keys). The keypad brackets do nothing. Alt-Help's screen dump is
 switched off while the game runs.
 
 **Audio.** The music is written for the MT-32: the game uploads its own instruments to it and picks
