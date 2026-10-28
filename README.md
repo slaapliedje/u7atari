@@ -190,6 +190,17 @@ then plays 6 s of the intro's speech through the speech path, for recording with
 --avirecord`), and use
 `build/ULTIMA7.map` or `nm` on the PRG to turn Hatari debugger addresses into functions.
 
+Things that cost time while scripting input:
+- `keypress` takes a key name for one character, so `keypress 1` is the 1 key: write scan codes
+  with two digits or more (`01` for Esc). Codes are decimal (Undo is 97, Help 98).
+- At fast-forward speed Hatari sometimes loses a `keypress`. Send `keydown`, wait about 0.1 s,
+  then `keyup`, with `--fast-forward off` (`hatari-test.sh` turns it on; a later option wins).
+- In a dialog the game steers the pointer with the keyboard until the mouse moves, and that
+  throws away every key but the directions, Esc included. The DOS game does the same. Move the
+  mouse first (Alt with the arrow keys) before testing keys in dialogs.
+- `hatari-shortcut screenshot` of TT low comes out at half width, every other one shifted half
+  a screen: take frames from `--avirecord` instead.
+
 `tools/hatari-profile.sh <tt|falcon> <hd-dir> <start-vbl> <vbls> [symbol]` runs the same way with
 Hatari's CPU profiler on for <vbls> frames from VBL <start-vbl> (or from the first call of
 `symbol` after it, such as `_plat_pcm_start` for the intro's speech) and prints the time by
