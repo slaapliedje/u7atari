@@ -190,6 +190,20 @@ then plays 6 s of the intro's speech through the speech path, for recording with
 --avirecord`), and use
 `build/ULTIMA7.map` or `nm` on the PRG to turn Hatari debugger addresses into functions.
 
+Debug builds also take `--script <file>` (`platform/atari/script.c`): a file of steps timed in
+the machine's own milliseconds since start-up, so they land at the same point in the game however
+fast Hatari runs, and fed in behind the real input instead of through Hatari. Steps are `key`
+(a character or a name: `esc`, `enter`, `right`, `f1`, `alt-x` and so on), `move x y` and
+`click x y` in the 640x200 mouse space, `down`/`up`/`rdown`/`rup`, `shot NAME.PPM` (the frame
+on screen, 320x200, in the game folder), `log text`, `speech N` (starts speech track N as the
+usecode does) and `quit`. For example, with the DOS GAMEDAT loaded by `--program u7 p`: move the
+mouse to 330,100 at 12000 (so dialogs stop taking keys for their keyboard pointer), `key s` at
+13500, `click 320 28` (first slot), type a name, `click 200 157` (Save); `click 326 157` is Load
+and `click 296 108` its Yes. Under Hatari that saves a `GAME00.U7` whose Flex entries match
+GAMEDAT and decode on the PC, and loading it puts the Avatar back. `key c` toggles combat
+(the pointer turns red), and `speech 1` plays the Guardian's track 1, which recorded with
+`--sound 44100 --avirecord` matches `U7SPEECH.SPC` (inverted, as Hatari's TT output is).
+
 Things that cost time while scripting input:
 - `keypress` takes a key name for one character, so `keypress 1` is the 1 key: write scan codes
   with two digits or more (`01` for Esc). Codes are decimal (Undo is 97, Help 98).

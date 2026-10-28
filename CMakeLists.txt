@@ -33,10 +33,11 @@ option(U7_DEBUG_LOG "Log frame statistics and input to the console" OFF)
 if(U7_DEBUG_LOG)
     target_compile_definitions(u7 PRIVATE U7_DEBUG_LOG)
     # --program savetest: the save files' byte order, against a GAMEDAT from the DOS game
-    target_sources(u7 PRIVATE tests/save_test.cpp)
-    set_source_files_properties(tests/save_test.cpp PROPERTIES
+    # and the script step "speech N" (tests/speech_hook.cpp)
+    target_sources(u7 PRIVATE tests/save_test.cpp tests/speech_hook.cpp)
+    set_source_files_properties(tests/save_test.cpp tests/speech_hook.cpp PROPERTIES
         INCLUDE_DIRECTORIES "$<TARGET_PROPERTY:u7_game,INCLUDE_DIRECTORIES>"
-        COMPILE_OPTIONS "$<TARGET_PROPERTY:u7_game,COMPILE_OPTIONS>")
+        COMPILE_OPTIONS "$<TARGET_PROPERTY:u7_game,COMPILE_OPTIONS>;-w")
 endif()
 target_link_libraries(u7 PRIVATE u7_game)
 set_target_properties(u7 PROPERTIES SUFFIX ".PRG")

@@ -417,7 +417,43 @@ void input_pump(void)
 		return;
 	read_keys();
 	read_mouse();
+#ifdef U7_DEBUG_LOG
+	script_pump();
+#endif
 }
+
+#ifdef U7_DEBUG_LOG
+/* For script.c: a key word as if typed, and the mouse moved (x -1: where it is) with the
+ * buttons in this state, as if from IKBD packets. */
+void input_inject_key(uint16_t bios)
+{
+	if (key_count < KEY_BUFFER_SIZE) {
+		key_buffer[(key_head + key_count) % KEY_BUFFER_SIZE] = bios;
+		key_count++;
+	}
+}
+
+void input_inject_mouse(int16_t x, int16_t y, uint16_t buttons)
+{
+	uint16_t changed = buttons ^ mouse_buttons;
+
+	if (x >= 0 && (x != mouse_x || y != mouse_y)) {
+		mouse_x = clamp16(x, 0, MOUSE_WIDTH - 1);
+		mouse_y = clamp16(y, 0, MOUSE_HEIGHT - 1);
+		deliver(PLAT_MOUSE_MOVED);
+	}
+	mouse_buttons = buttons;
+	if (changed & 1)
+		deliver(buttons & 1 ? PLAT_MOUSE_LEFT_DOWN : PLAT_MOUSE_LEFT_UP);
+	if (changed & 2)
+		deliver(buttons & 2 ? PLAT_MOUSE_RIGHT_DOWN : PLAT_MOUSE_RIGHT_UP);
+}
+
+uint16_t input_mouse_buttons(void)
+{
+	return mouse_buttons;
+}
+#endif
 
 void plat_mouse_state(int16_t *x, int16_t *y, uint16_t *buttons)
 {

@@ -51,6 +51,9 @@ static int16_t top_line;        /* the first line the game's frame occupies */
 static int16_t line_repeat;     /* 2 on the TT, which shows each game line twice */
 
 static const uint8_t *last_pixels;
+#ifdef U7_DEBUG_LOG
+static uint8_t shot_palette[768];          /* 6-bit VGA, for video_shot */
+#endif
 static bool refresh_wanted;
 
 /* What the desktop had, to put back. */
@@ -171,6 +174,9 @@ void plat_video_set_palette(int16_t first, int16_t count, const uint8_t *rgb)
 		count = 256 - first;
 	if (count <= 0)
 		return;
+#ifdef U7_DEBUG_LOG
+	memcpy(shot_palette + 3 * first, rgb, (size_t) count * 3);
+#endif
 
 	if (atari_machine == MACHINE_TT) {
 		uint16_t words[256];
@@ -256,6 +262,29 @@ void plat_video_wait_retrace(void)
 	while (vbl_count() == now)
 		;
 }
+
+#ifdef U7_DEBUG_LOG
+/* The frame on screen as a binary PPM, for scripted tests. */
+void video_shot(const char *name)
+{
+	static uint8_t row[WIDTH * 3];
+	FILE *f;
+
+	if (last_pixels == NULL || (f = fopen(name, "wb")) == NULL)
+		return;
+	fprintf(f, "P6\n%d %d\n255\n", WIDTH, HEIGHT);
+	for (int y = 0; y < HEIGHT; y++) {
+		for (int x = 0; x < WIDTH; x++)
+			for (int c = 0; c < 3; c++) {
+				uint8_t v = shot_palette[3 * last_pixels[y * WIDTH + x] + c] & 0x3f;
+
+				row[3 * x + c] = (uint8_t) (v << 2 | v >> 4);
+			}
+		fwrite(row, 1, sizeof row, f);
+	}
+	fclose(f);
+}
+#endif
 
 /* Shows the last frame again: the game may have drawn into it since. */
 void video_refresh(void)

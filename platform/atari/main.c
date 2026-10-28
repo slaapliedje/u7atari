@@ -35,6 +35,11 @@ static void end_process(int code)
 	exit(code);
 }
 
+void backend_quit(int code)
+{
+	end_process(code);
+}
+
 void plat_exit(int16_t code)
 {
 	if (program_jump != NULL) {
@@ -109,6 +114,9 @@ static void detect_machine(void)
 }
 
 static const char *program_name;
+#ifdef U7_DEBUG_LOG
+static const char *script_path;
+#endif
 
 /* Takes the backend's own options out of the arguments:
  *   --data <folder>     the game folder; U7_DATA is the default, then the current folder,
@@ -117,7 +125,8 @@ static const char *program_name;
  *                       instead of the launcher
  *   --line-in           Falcon: mixes the input jack into the sound output, for a MIDI synth
  *                       plugged in there
- *   --gm                music and effects for a General MIDI synth instead of an MT-32 */
+ *   --gm                music and effects for a General MIDI synth instead of an MT-32
+ *   --script <file>     debug builds: scripted keys and mouse (script.c) */
 static const char *take_options(int *argc, char **argv)
 {
 	const char *dir = getenv("U7_DATA");
@@ -132,6 +141,10 @@ static const char *take_options(int *argc, char **argv)
 			sound_line_in = true;
 		else if (strcmp(argv[i], "--gm") == 0)
 			sound_gm = true;
+#ifdef U7_DEBUG_LOG
+		else if (strcmp(argv[i], "--script") == 0 && i + 1 < *argc)
+			script_path = argv[++i];
+#endif
 		else
 			argv[kept++] = argv[i];
 	}
@@ -216,6 +229,8 @@ int main(int argc, char **argv)
 	sound_init();
 
 #ifdef U7_DEBUG_LOG
+	if (script_path != NULL)
+		script_load(script_path);
 	if (program_name != NULL && strcmp(program_name, "pcmtest") == 0) {
 		pcm_test();
 		end_process(0);

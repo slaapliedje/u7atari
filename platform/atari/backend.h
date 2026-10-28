@@ -34,6 +34,17 @@ void input_init(void);
 void input_shutdown(void);
 void input_reset(void);
 void input_pump(void);
+#ifdef U7_DEBUG_LOG
+/* --script: scripted keys and mouse for tests (script.c) */
+void script_load(const char *path);
+void script_pump(void);
+void input_inject_key(uint16_t bios);
+void input_inject_mouse(int16_t x, int16_t y, uint16_t buttons);
+uint16_t input_mouse_buttons(void);
+void video_shot(const char *name);
+#endif
+/* Restores the machine and exits the process. */
+void backend_quit(int code);
 void sound_init(void);
 void sound_shutdown(void);
 void sound_reset(void);
