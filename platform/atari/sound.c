@@ -6,7 +6,8 @@
  * unavailable.
  *
  * MIDI goes straight to the MIDI ACIA: the sound tick sends from an interrupt, where a BIOS
- * call could land inside one the game is making.
+ * call could land inside one the game is making. With --gm it goes through gm.c first, for a
+ * General MIDI synth instead of an MT-32.
  *
  * Speech: the game hands over unsigned 8-bit mono at Sound Blaster rates (about 11 to 22 kHz).
  * DMA sound plays signed 8-bit mono from a ring buffer in ST RAM, looping over it from start-up
@@ -27,6 +28,7 @@
 
 #include "plat.h"
 #include "backend.h"
+#include "gm.h"
 #include "resample.h"
 
 #define MIDI_ACIA_STATUS ((volatile uint8_t *) 0xfffffc04)
@@ -39,6 +41,7 @@ uint32_t sound_pcm_samples;
 #endif
 
 bool sound_line_in;
+bool sound_gm;
 
 /* STE/TT DMA sound registers, which the Falcon keeps */
 #define DMA_CONTROL ((volatile uint8_t *) 0xffff8901)     /* bit 0 play, bit 1 repeat */
@@ -67,6 +70,8 @@ static resampler speech;
 static int16_t old_adder, old_adc_input;
 static bool sound_locked;
 
+static void midi_out(const uint8_t *message, int16_t length);
+
 /* Silences every channel: sustain off, all notes off, reset controllers. A real MT-32 keeps
  * sounding whatever it was told last, so this runs at start-up (after a crash or a reset in a
  * previous run), between programs, and on every way out. */
@@ -80,7 +85,7 @@ static void midi_all_off(void)
 		};
 
 		for (int i = 0; i < 3; i++)
-			plat_midi_send(messages[i], 3);
+			midi_out(messages[i], 3);
 	}
 }
 
@@ -90,6 +95,8 @@ static void pcm_shutdown(void);
 void sound_init(void)
 {
 	midi_all_off();
+	if (sound_gm)
+		gm_reset(midi_out);
 	pcm_init();
 }
 
@@ -113,7 +120,7 @@ int16_t plat_midi_available(void)
 }
 
 /* Under the sound lock, so a message from the game is never split by one from the tick. */
-void plat_midi_send(const uint8_t *message, int16_t length)
+static void midi_out(const uint8_t *message, int16_t length)
 {
 	plat_sound_lock();
 	for (int16_t i = 0; i < length; i++) {
@@ -125,6 +132,17 @@ void plat_midi_send(const uint8_t *message, int16_t length)
 	sound_midi_bytes += (uint32_t) length;
 #endif
 	plat_sound_unlock();
+}
+
+void plat_midi_send(const uint8_t *message, int16_t length)
+{
+	if (sound_gm) {
+		plat_sound_lock();
+		gm_feed(message, length, midi_out);
+		plat_sound_unlock();
+	} else {
+		midi_out(message, length);
+	}
 }
 
 bool plat_opl_available(void)

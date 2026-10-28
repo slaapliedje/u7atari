@@ -11,7 +11,7 @@ A port of [Kitrinx/Ultima7_Decomp](https://github.com/Kitrinx/Ultima7_Decomp)'s
 | ST RAM | 4 MB | 14 MB |
 | Fast RAM | 256 MB TT-RAM | 128 MB fast RAM |
 | 256-colour mode | TT low, 320x480, 8 planes | VIDEL 320x200 (VGA line-doubled), 8 planes |
-| Music | MIDI port → real MT-32 | MIDI port → real MT-32 |
+| Music | MIDI port → real MT-32, or a GM synth with `--gm` | MIDI port → real MT-32, or a GM synth with `--gm` |
 | Speech | 8-bit mono DMA, 25033 Hz | 8-bit mono DMA, 24585 Hz (49170 Hz with `--line-in`) |
 
 A stock 16 MHz Falcon is not a target.
@@ -31,6 +31,7 @@ platform/atari/      the backend: implements upstream's platform/plat.h
   c2p.S              chunky-to-planar for the frame, converting only the 16-pixel groups that changed
   shapes.S           shape drawing in copy mode, the game's hottest path (called from the fork)
   sound.c            MIDI out, DMA speech; AdLib reported absent
+  gm.c               --gm: the game's MT-32 MIDI translated for a General MIDI synth (tests/gm_test.c)
   c2p.h              chunky-to-planar for 16 pixels in C, the reference for c2p.S (tests/c2p_test.c)
   resample.h         speech resampling into the DMA ring (tests/resample_test.c checks it)
   files.c            GEMDOS file access for the game's DOS names
@@ -75,7 +76,7 @@ the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
 - [x] MIDI to MT-32
 - [x] Speech on DMA sound: plays the intro's speech sample-accurately under Hatari on both machines
       (not yet heard on hardware); `--line-in` mixing on the Falcon is untested
-- [ ] General MIDI output option (MT-32 to GM instrument map), for GM keyboards and modules
+- [x] General MIDI output option, `--gm` (not yet heard on a GM synth)
 - [x] Performance: 68030 assembly for shape drawing and c2p (2.6 times the frame rate, under Hatari)
 
 ## Known work
@@ -135,8 +136,16 @@ gives digits with Shift. Help, Undo and the keypad brackets do nothing. Alt-Help
 switched off while the game runs.
 
 **Audio.** The music is written for the MT-32: the game uploads its own instruments to it and picks
-them by number, so a General MIDI device plays it with the wrong instruments. A GM option is planned,
-mapping each MT-32 instrument to its nearest GM one, as Exult does.
+them by number, so a General MIDI device plays it with the wrong instruments. With `--gm` (in
+`ULTIMA7.ARG`) the backend translates for a GM synth (`platform/atari/gm.c`). It keeps a model of
+the instruments and patches the game writes to the MT-32 and turns each program change into a GM
+program: an MT-32 preset tone goes to the nearest GM one, and an instrument the game loaded goes by
+its name, through a table of the ones Ultima VII loads. Patch key shifts transpose the notes, bender
+ranges become pitch bend sensitivity (RPN 0), and the master volume becomes GM master volume. Drum
+keys the game gave its own instruments play the nearest GM drum. Sound effects are MT-32
+instruments too, and most have no GM equivalent: those are silent with `--gm` rather than played
+on the wrong instrument (bells and clocks play). The choices are in the two tables at the top of
+`gm.c`; none has been heard on a GM synth yet.
 
 Speech plays from a looping DMA ring in ST RAM, resampled with linear interpolation from the
 game's Sound Blaster rate (about 11 kHz). Each sound tick silences what the DMA has played, so the

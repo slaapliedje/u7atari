@@ -116,7 +116,8 @@ static const char *program_name;
  *   --program <name>    runs just that program ("u7", "intro", "mainmenu", "endgame")
  *                       instead of the launcher
  *   --line-in           Falcon: mixes the input jack into the sound output, for a MIDI synth
- *                       plugged in there */
+ *                       plugged in there
+ *   --gm                music and effects for a General MIDI synth instead of an MT-32 */
 static const char *take_options(int *argc, char **argv)
 {
 	const char *dir = getenv("U7_DATA");
@@ -129,6 +130,8 @@ static const char *take_options(int *argc, char **argv)
 			program_name = argv[++i];
 		else if (strcmp(argv[i], "--line-in") == 0)
 			sound_line_in = true;
+		else if (strcmp(argv[i], "--gm") == 0)
+			sound_gm = true;
 		else
 			argv[kept++] = argv[i];
 	}

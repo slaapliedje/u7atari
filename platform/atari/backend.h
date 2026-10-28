@@ -41,6 +41,8 @@ void sound_reset(void);
 void sound_service(void);
 /* --line-in: the Falcon mixes its input jack into the output. */
 extern bool sound_line_in;
+/* --gm: MIDI for a General MIDI synth, not an MT-32 (gm.c). */
+extern bool sound_gm;
 #ifdef U7_DEBUG_LOG
 extern uint32_t sound_midi_bytes;
 extern uint32_t sound_pcm_samples;
