@@ -14,6 +14,8 @@ set(U7_BACKEND_MATOYA OFF CACHE BOOL "" FORCE)
 # The 030 reads and writes words and longs at any address, so let GCC do so: with its m68k
 # default it copies and compares anything not known to be aligned a byte at a time.
 add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-mno-strict-align>)
+# C++ type_info at even addresses despite upstream's #pragma pack(1): see the header.
+add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:--include=${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/rtti_align.h>")
 add_subdirectory("${U7_UPSTREAM_DIR}" game)
 # Copy-mode shape spans are drawn by platform/atari/shapes.S.
 target_compile_definitions(u7_game PRIVATE U7_SHAPE_SPANS_68K)
@@ -65,6 +67,8 @@ endif()
 # from ST RAM explicitly with Mxalloc.
 add_custom_command(TARGET u7 POST_BUILD
     COMMAND sh -c "printf '\\000\\000\\000\\007' | dd of='$<TARGET_FILE:u7>' bs=1 seek=22 conv=notrunc status=none"
+    # The TOS loader refuses a fixup at an odd address; Hatari's GEMDOS drive does not check.
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tools/prg-relocs.py" "$<TARGET_FILE:u7>"
     VERBATIM)
 
 # Compile-time checks that structs read from the game's files keep the PC's layout here.
