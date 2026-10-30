@@ -41,6 +41,7 @@ platform/atari/      the backend: implements upstream's platform/plat.h
   c2p.h              chunky-to-planar for 16 pixels in C, the reference for c2p.S (tests/c2p_test.c)
   resample.h         speech resampling into the DMA ring (tests/resample_test.c checks it)
   files.c            GEMDOS file access for the game's DOS names
+release/README.TXT   the instructions shipped with a release (tools/make-release.sh)
 CMakeLists.txt       builds upstream's u7_game library + this backend → ULTIMA7.PRG or SERPENT.PRG
 ```
 
@@ -59,6 +60,10 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/m68k-atari-mint.cmake -DCMAKE_BUILD_
 cmake --build build -j
 # → build/ULTIMA7.PRG
 ```
+
+`tools/make-release.sh` builds both games and packs them, with `release/README.TXT` (the player's
+instructions) and upstream's licence, into `dist/u7atari-<version>.zip`. It refuses to run with
+uncommitted changes.
 
 `-DU7_GAME="Serpent Isle"` builds Serpent Isle instead, as `SERPENT.PRG` (use another build
 folder, such as `build-si`). It reads `SERPENT.CFG` and takes its arguments from `SERPENT.ARG`;
