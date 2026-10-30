@@ -20,9 +20,14 @@ machine_type atari_machine = MACHINE_OTHER;
 static jmp_buf *program_jump;
 static int16_t program_code;
 static char *self_name = GAME_PRG;
+static bool machine_taken;     /* in supervisor mode, setting up or owning the hardware */
 
 static void shutdown_all(void)
 {
+	/* before that, the hardware is untouched, and user mode cannot reach it */
+	if (!machine_taken)
+		return;
+	machine_taken = false;
 	sound_shutdown();
 	input_shutdown();
 	video_shutdown();
@@ -118,6 +123,26 @@ static void detect_machine(void)
 	case 3: atari_machine = MACHINE_FALCON; break;
 	default: atari_machine = MACHINE_OTHER; break;
 	}
+}
+
+/* The game's 32 MB arena (LINEAR_MEMORY_SIZE in arena.h) and its other blocks come from fast
+ * RAM. A Falcon's accelerator board may have fast RAM that TOS has not been told of until the
+ * board's own program runs (MAPROM_C.PRG on a DFB1X); without it the game would stop later on
+ * "Not enough memory.", so say what is missing now. */
+#define FAST_RAM_NEEDED (UINT32_C(33) << 20)
+
+static void check_fast_ram(void)
+{
+	char text[240];
+	long largest = (long) Mxalloc(-1L, 1);
+
+	if (largest >= (long) FAST_RAM_NEEDED)
+		return;
+	snprintf(text, sizeof text, GAME_NAME " needs %lu MB of free fast RAM (TT-RAM), and TOS has "
+		"%ld KB.\nOn a Falcon accelerator, run the board's fast RAM program first, from the "
+		"AUTO folder: MAPROM_C.PRG on a DFB1X.",
+		(unsigned long) (FAST_RAM_NEEDED >> 20), largest > 0 ? largest >> 10 : 0L);
+	plat_fatal(text);
 }
 
 static const char *program_name;
@@ -224,12 +249,14 @@ int main(int argc, char **argv)
 	detect_machine();
 	if (atari_machine == MACHINE_OTHER)
 		plat_fatal(GAME_NAME " needs a TT030 or Falcon030.");
+	check_fast_ram();
 	files_set_root(take_options(&argc, argv));
 	if (!files_check_data(problem, sizeof problem))
 		plat_fatal(problem);
 
 	/* The game owns the machine: video, IKBD, MFP timers and the sound DMA. */
 	Super(0L);
+	machine_taken = true;
 	timer_init();
 	video_init();
 	input_init();

@@ -85,6 +85,21 @@ static void load_timbre(int slot, const char *name)
 	expect(m, n, NULL, 0, __LINE__);
 }
 
+/* A timbre whose partials 1 and 2 play, with these TVA velocity sensitivities. */
+static void load_timbre_velocity(int slot, const char *name, int first, int second)
+{
+	uint8_t timbre[246] = { 0 }, m[300];
+	int n;
+
+	memset(timbre, ' ', 10);
+	memcpy(timbre, name, strlen(name));
+	timbre[12] = 3;
+	timbre[14 + 42] = (uint8_t) first;
+	timbre[14 + 58 + 42] = (uint8_t) second;
+	n = roland(m, 0x080000 + ((uint32_t) slot << 9), timbre, sizeof timbre);
+	expect(m, n, NULL, 0, __LINE__);
+}
+
 static void set_patch(int program, int slot, int key_shift, int bender_range)
 {
 	const uint8_t patch[8] = { 2, (uint8_t) slot, (uint8_t) key_shift, 50,
@@ -160,6 +175,25 @@ int main(void)
 	expect(m, n, NULL, 0, __LINE__);
 	n = roland(m, 0x200000, (const uint8_t *) "Origin Sound System!", 20);
 	expect(m, n, NULL, 0, __LINE__);
+
+	/* Velocity through the timbre's sensitivity: none (50) plays at full velocity; +25 in
+	 * one partial makes velocity count half. */
+	load_timbre_velocity(2, "Eruption", 50, 50);
+	set_patch(7, 2, 24, 24);
+	EXPECT(B(0xc4, 7, 0x94, 36, 1), 0xc4, 47, 0xb4, 0x65, 0, 0xb4, 0x64, 0, 0xb4, 0x06, 24,
+		0xb4, 0x26, 0, 0xb4, 0x65, 0x7f, 0xb4, 0x64, 0x7f, 0x94, 36, 127);
+	load_timbre_velocity(3, "Wind", 50, 75);
+	set_patch(8, 3, 24, 24);
+	EXPECT(B(0xc5, 8, 0x95, 84, 1, 0x95, 81, 101), 0xc5, 122, 0xb5, 0x65, 0, 0xb5, 0x64, 0,
+		0xb5, 0x06, 24, 0xb5, 0x26, 0, 0xb5, 0x65, 0x7f, 0xb5, 0x64, 0x7f,
+		0x95, 84, 64, 0x95, 81, 114);
+
+	/* All notes off: a note off for each note still sounding, then the controller itself. */
+	EXPECT(B(0xb5, 0x7b, 0), 0x85, 81, 0, 0x85, 84, 0, 0xb5, 0x7b, 0);
+	EXPECT_NOTHING(B(0x95, 84, 0));
+
+	/* Pan, reversed: the MT-32's 0 is right. */
+	EXPECT(B(0xb5, 10, 0, 0xb5, 10, 100), 0xb5, 10, 127, 0xb5, 10, 27);
 
 	/* An MT-32 reset is a GM reset, and forgets the loaded timbres. */
 	n = roland(m, 0x7f0000, (const uint8_t[]) { 0 }, 1);

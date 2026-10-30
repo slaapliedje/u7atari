@@ -10,8 +10,12 @@
  *     sound effects, is muted rather than played on the wrong instrument;
  *   - a drum key the game gave one of its own timbres plays the GM drum nearest it, or nothing.
  * The patch's key shift transposes the notes, and its bender range is sent as the channel's
- * pitch bend sensitivity (RPN 0). The master volume becomes GM master volume. Every other
- * MT-32 sysex (reverb, display text, part setup) is dropped.
+ * pitch bend sensitivity (RPN 0). A loaded timbre's velocity sensitivity scales the velocity:
+ * one that ignores velocity plays at full velocity, as the MT-32 plays it, and the game sends
+ * some of those at velocity 1. Pan is reversed: the MT-32 takes 0 as right, GM as left. All
+ * notes off goes out as a note off for each note still sounding as well, for a synth that
+ * ignores it. The master volume becomes GM master volume. Every other MT-32 sysex (reverb,
+ * display text, part setup) is dropped.
  *
  * Only MIDI channels 2 to 10 pass, as on an MT-32 (parts 1 to 8 and the rhythm part); a GM
  * synth would play the others.
@@ -72,6 +76,18 @@ static const struct {
 	{ "Canari 2", 123, 0 }, { "Seaguls", 123, 0 },
 	{ "Bell Ding", 14, 0 }, { "Bell Dong", 14, 0 }, { "Chime", 14, 0 },
 	{ "Clock tick", 115, 76 }, { "Clock tock", 115, 77 },
+	/* Black Gate's sound effects (STATIC\MT32SFX.DAT) with a GM sound near enough; the
+	 * earthquake (Eruption) is a timpani roll, the game restarting it each frame it shakes */
+	{ "Eruption", 47, 0 }, { "Thunder", 127, 0 }, { "Explos #1", 127, 0 },
+	{ "Explos #2", 127, 0 }, { "Explos #3", 127, 0 }, { "Fireball", 121, 0 },
+	{ "Missile", 121, 0 }, { "Fizzle", 121, 0 }, { "Fuse", 121, 0 }, { "Bellows", 121, 0 },
+	{ "Bow Twang", 45, 0 }, { "Blunt", 116, 0 }, { "Hit", 116, 0 }, { "Doorslam", 116, 0 },
+	{ "Gavel", 115, 0 }, { "Lever", 115, 0 },
+	{ "Splash", 122, 0 }, { "Fountain", 122, 0 }, { "Stream", 122, 0 },
+	{ "Waterfall", 122, 0 }, { "Whirlpool", 122, 0 }, { "Crickets", 123, 0 },
+	{ "Heal", 98, 0 }, { "Spell", 98, 0 }, { "New Spell", 98, 0 }, { "Protect", 98, 0 },
+	{ "Success", 98, 0 }, { "MPgain", 98, 0 }, { "MPdrain", 103, 0 }, { "Failure", 103, 0 },
+	{ "Moongate", 101, 0 }, { "Moongate B", 101, 0 }, { "Entity Hum", 89, 0 },
 };
 
 #define MUTED 0xff
@@ -86,6 +102,8 @@ static struct {
 static char timbre_names[64][10];
 static uint8_t timbre_program[64], timbre_drum[64];  /* from the names; MUTED or 0 when unknown */
 static uint64_t names_changed;
+static uint8_t timbre_partials[64];                  /* bit n: partial n plays */
+static uint8_t timbre_velocity[64][4];               /* each partial's TVA velocity sensitivity */
 static uint8_t rhythm_timbre[RHYTHM_KEYS];
 
 /* What has been sent to the GM synth. */
@@ -93,6 +111,7 @@ static struct {
 	uint8_t muted;
 	int8_t shift;
 	uint8_t bend_range;
+	int8_t velocity_scale;      /* 0 to 50, how much velocity counts; -1 passes it */
 	uint8_t sounding[128];      /* the GM note each of the game's notes went out as */
 } channels[16];
 
@@ -129,11 +148,14 @@ static void forget(void)
 	memset(timbre_program, MUTED, sizeof timbre_program);
 	memset(timbre_drum, 0, sizeof timbre_drum);
 	names_changed = 0;
+	memset(timbre_partials, 0, sizeof timbre_partials);
+	memset(timbre_velocity, 50, sizeof timbre_velocity);
 	memset(rhythm_timbre, DEFAULT_RHYTHM, sizeof rhythm_timbre);
 	for (int ch = 0; ch < 16; ch++) {
 		channels[ch].muted = 0;
 		channels[ch].shift = 0;
 		channels[ch].bend_range = 2;    /* the GM default */
+		channels[ch].velocity_scale = -1;
 		clear_notes(ch);
 	}
 }
@@ -195,9 +217,17 @@ static void write_memory(uint32_t address, uint8_t value, gm_output out)
 		}
 		break;
 	case 0x08:                          /* timbre memory: 256 bytes a timbre, the name first */
-		if ((offset & 0xff) < 10 && (offset >> 8) < 64) {
-			timbre_names[offset >> 8][offset & 0xff] = (char) value;
-			names_changed |= UINT64_C(1) << (offset >> 8);
+		if ((offset >> 8) < 64) {
+			const int t = (int) (offset >> 8), at = (int) (offset & 0xff);
+
+			if (at < 10) {
+				timbre_names[t][at] = (char) value;
+				names_changed |= UINT64_C(1) << t;
+			} else if (at == 12) {
+				timbre_partials[t] = value;
+			} else if (at >= 14 && at < 14 + 4 * 58 && (at - 14) % 58 == 42) {
+				timbre_velocity[t][(at - 14) / 58] = value;
+			}
 		}
 		break;
 	case 0x10:                          /* system: master volume 0 to 100 */
@@ -224,6 +254,34 @@ static void roland_sysex(const uint8_t *s, int16_t length, gm_output out)
 	address = (uint32_t) s[4] << 14 | (uint32_t) s[5] << 7 | s[6];
 	for (int16_t i = 7; i < length - 1; i++)
 		write_memory(address++, s[i], out);
+}
+
+/* How much velocity counts for a loaded timbre, 0 to 50, from its partials that play: the
+ * MT-32 takes a TVA velocity sensitivity of 50 as none. -1 when no partial plays. */
+static int8_t timbre_velocity_scale(int t)
+{
+	int8_t scale = -1;
+
+	for (int p = 0; p < 4; p++) {
+		int s = timbre_velocity[t][p] - 50;
+
+		if (!(timbre_partials[t] >> p & 1))
+			continue;
+		if (s < 0)
+			s = -s;
+		if (s > 50)
+			s = 50;
+		if (s > scale)
+			scale = (int8_t) s;
+	}
+	return scale;
+}
+
+static uint8_t scale_velocity(int8_t scale, uint8_t velocity)
+{
+	if (scale < 0)
+		return velocity;
+	return (uint8_t) (127 - (127 - velocity) * scale / 50);
 }
 
 static void send_bend_range(int ch, uint8_t range, gm_output out)
@@ -260,6 +318,8 @@ static void program_change(int ch, uint8_t program, gm_output out)
 	channels[ch].muted = gm == MUTED;
 	if (gm == MUTED)
 		return;
+	channels[ch].velocity_scale = patches[program].group == 2
+		? timbre_velocity_scale(patches[program].timbre) : -1;
 	message[0] = (uint8_t) (0xc0 | ch);
 	message[1] = gm;
 	out(message, 2);
@@ -268,8 +328,8 @@ static void program_change(int ch, uint8_t program, gm_output out)
 		send_bend_range(ch, patches[program].bender_range, out);
 }
 
-/* The GM note for a note the game starts, or -1 for none. */
-static int gm_note(int ch, uint8_t note)
+/* The GM note for a note the game starts, or -1 for none, and its velocity. */
+static int gm_note(int ch, uint8_t note, uint8_t *velocity)
 {
 	int n;
 
@@ -282,12 +342,27 @@ static int gm_note(int ch, uint8_t note)
 		if (t >= 64)                    /* its own drum */
 			return note;
 		look_up_names();
+		*velocity = scale_velocity(timbre_velocity_scale(t), *velocity);
 		return timbre_drum[t] != 0 ? timbre_drum[t] : -1;
 	}
 	if (channels[ch].muted)
 		return -1;
+	*velocity = scale_velocity(channels[ch].velocity_scale, *velocity);
 	n = note + channels[ch].shift;
 	return n >= 0 && n <= 127 ? n : -1;
+}
+
+/* A note off for each note sounding on the channel. */
+static void stop_notes(int ch, gm_output out)
+{
+	for (int note = 0; note < 128; note++) {
+		if (channels[ch].sounding[note] != NOT_SOUNDING) {
+			const uint8_t off[3] = { (uint8_t) (0x80 | ch), channels[ch].sounding[note], 0 };
+
+			out(off, 3);
+			channels[ch].sounding[note] = NOT_SOUNDING;
+		}
+	}
 }
 
 static void channel_message(gm_output out)
@@ -302,7 +377,7 @@ static void channel_message(gm_output out)
 	switch (status & 0xf0) {
 	case 0x90:
 		if (data[1] != 0) {
-			int n = gm_note(ch, data[0]);
+			int n = gm_note(ch, data[0], &message[2]);
 
 			if (*sounding != NOT_SOUNDING) {        /* the same note again: stop the old one */
 				const uint8_t off[3] = { message[0], *sounding, 0 };
@@ -328,7 +403,9 @@ static void channel_message(gm_output out)
 		return;
 	case 0xb0:
 		if (data[0] == 0x7b || data[0] == 0x78 || data[0] >= 0x7c)    /* notes off, sound off */
-			clear_notes(ch);
+			stop_notes(ch, out);
+		else if (data[0] == 0x0a)
+			message[2] = (uint8_t) (127 - data[1]);
 		out(message, 3);
 		return;
 	case 0xc0:
