@@ -11,11 +11,14 @@ Serpent Isle.
 | CPU | 68030 @ 32 MHz, 68882 | 68030 @ 50 MHz |
 | ST RAM | 4 MB | 14 MB |
 | Fast RAM | 256 MB TT-RAM | 128 MB fast RAM |
+| Memory needed | 6 MB, fast RAM preferred | 6 MB, fast RAM preferred |
 | 256-colour mode | TT low, 320x480, 8 planes | VIDEL 320x200 (VGA line-doubled), 8 planes |
 | Music | MIDI port → real MT-32, or a GM synth with `--gm` | MIDI port → real MT-32, or a GM synth with `--gm` |
 | Speech | 8-bit mono DMA, 25033 Hz | 8-bit mono DMA, 24585 Hz (49170 Hz with `--line-in`) |
 
-A stock 16 MHz Falcon is not a target.
+A stock 16 MHz Falcon with 14 MB runs the game from ST RAM, but it is not a target: nothing has
+been tuned for it, and how fast it runs there is not known. A TT needs TT-RAM, since 4 MB of ST
+RAM is not enough.
 
 ## Layout
 
@@ -68,8 +71,9 @@ the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
 A Falcon accelerator's fast RAM (DFB1X, TF53x) is only known to TOS once MAPROM
 ([tftools](https://github.com/agranlund/tftools); `MAPROM_C.PRG` in the DFB1X package) has run
 from the AUTO folder. Booting with Control held skips AUTO, so when the game finds less than
-33 MB of fast RAM it runs `\AUTO\MAPROM*.PRG` from the boot drive itself, then runs a second copy
-of itself so that its code also loads into fast RAM. MAPROM stays resident until a reboot.
+6 MB of fast RAM it runs `\AUTO\MAPROM*.PRG` from the boot drive itself, then runs a second copy
+of itself so that its code also loads into fast RAM. MAPROM stays resident until a reboot. With
+no fast RAM, or no MAPROM, the game runs from ST RAM, more slowly.
 
 ## Status
 
@@ -188,8 +192,10 @@ Munt (MT-32 emulation) and Nuked OPL3 are far too heavy for a 68030. MT-32 outpu
 goes to the MIDI port at no CPU cost; AdLib is reported absent. If there is time later, a DSP56001
 FM synth on the Falcon is a possible stretch goal.
 
-**Memory.** Upstream allocates a fixed 32 MB arena (`LINEAR_MEMORY_SIZE`), which fits in
-fast RAM on both targets. ST RAM holds only the screens (TT low: 150 KB each) and the DMA
+**Memory.** Upstream allocates a fixed 32 MB arena (`LINEAR_MEMORY_SIZE`), of which both games
+use about 2 MB (measured under Hatari after loading a save and walking about: the game's Voodoo
+allocator only grows, so its top is the high-water mark). This build sets it to 4 MB, so the
+game needs about 6 MB in all, from fast RAM when there is enough, else from ST RAM. ST RAM holds only the screens (TT low: 150 KB each) and the DMA
 sound buffer.
 
 ## Testing

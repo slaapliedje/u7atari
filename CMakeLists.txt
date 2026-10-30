@@ -16,6 +16,9 @@ set(U7_BACKEND_MATOYA OFF CACHE BOOL "" FORCE)
 add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-mno-strict-align>)
 # C++ type_info at even addresses despite upstream's #pragma pack(1): see the header.
 add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:--include=${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/rtti_align.h>")
+# The game's arena: upstream gives it 32 MB, of which the game uses about 2 MB (both games,
+# measured under Hatari). 4 MB leaves room to spare and lets a 14 MB Falcon run from ST RAM.
+add_compile_definitions("LINEAR_MEMORY_SIZE=(UINT32_C(4)<<20)")
 add_subdirectory("${U7_UPSTREAM_DIR}" game)
 # Copy-mode shape spans are drawn by platform/atari/shapes.S.
 target_compile_definitions(u7_game PRIVATE U7_SHAPE_SPANS_68K)
