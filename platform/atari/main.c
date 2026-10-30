@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <mint/basepage.h>
 #include <mint/cookie.h>
 #include <mint/osbind.h>
 
@@ -128,20 +129,57 @@ static void detect_machine(void)
 /* The game's 32 MB arena (LINEAR_MEMORY_SIZE in arena.h) and its other blocks come from fast
  * RAM. A Falcon's accelerator board may have fast RAM that TOS has not been told of until the
  * MAPROM program from github.com/agranlund/tftools runs (the TF53x and DFB1X boards both use it;
- * the DFB1X's package calls it MAPROM_C.PRG); without it the game would stop later on
- * "Not enough memory.", so say what is missing now. */
+ * the DFB1X's package calls it MAPROM_C.PRG). Booting with Control held skips the AUTO folder, so
+ * when the RAM is missing the game runs MAPROM from there itself (it stays resident, as after a
+ * normal boot), then runs a second copy of the game, whose code TOS can now load into fast RAM.
+ * Without the RAM the game would stop later on "Not enough memory.", so say what is missing. */
 #define FAST_RAM_NEEDED (UINT32_C(33) << 20)
+
+static long free_fast_ram(void)
+{
+	return (long) Mxalloc(-1L, 1);
+}
+
+static long read_boot_drive(void)
+{
+	return *(volatile int16_t *) 0x446;   /* _bootdev */
+}
+
+/* Runs the first \AUTO\MAPROM*.PRG on the boot drive; false if there is none. */
+static bool run_maprom(void)
+{
+	char path[160];
+	_DTA *dta = Fgetdta();
+	int drive = (int) Supexec(read_boot_drive);
+
+	snprintf(path, sizeof path, "%c:\\AUTO\\MAPROM*.PRG", 'A' + drive);
+	if (Fsfirst(path, 0) != 0)
+		return false;
+	snprintf(path, sizeof path, "%c:\\AUTO\\%s", 'A' + drive, dta->dta_name);
+	console_text("u7: no fast RAM; running ");
+	console_text(path);
+	console_text("\n");
+	Pexec(0, path, "\0", NULL);
+	return true;
+}
 
 static void check_fast_ram(void)
 {
 	char text[240];
-	long largest = (long) Mxalloc(-1L, 1);
+	long largest = free_fast_ram();
 
 	if (largest >= (long) FAST_RAM_NEEDED)
 		return;
+	if (run_maprom() && free_fast_ram() >= (long) FAST_RAM_NEEDED) {
+		/* the same command line; a game run from the desktop has the game's folder current */
+		long code = Pexec(0, GAME_PRG, _base->p_cmdlin, NULL);
+		if (code < 0)
+			plat_fatal("Could not run " GAME_PRG " again after MAPROM.");
+		exit((int) code);
+	}
 	snprintf(text, sizeof text, GAME_NAME " needs %lu MB of free fast RAM (TT-RAM), and TOS has "
 		"%ld KB.\nOn an accelerator board, run MAPROM.PRG (MAPROM_C.PRG in the DFB1X package) "
-		"first, from the AUTO folder.",
+		"first, from the AUTO folder or the desktop.",
 		(unsigned long) (FAST_RAM_NEEDED >> 20), largest > 0 ? largest >> 10 : 0L);
 	plat_fatal(text);
 }

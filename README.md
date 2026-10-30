@@ -65,6 +65,12 @@ which links MiNTLib's 68020-60 multilib; its startup code refuses to run without
 so an FPU is required (both targets have one). The game itself has no floating point. The PRG header asks TOS to load
 the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
 
+A Falcon accelerator's fast RAM (DFB1X, TF53x) is only known to TOS once MAPROM
+([tftools](https://github.com/agranlund/tftools); `MAPROM_C.PRG` in the DFB1X package) has run
+from the AUTO folder. Booting with Control held skips AUTO, so when the game finds less than
+33 MB of fast RAM it runs `\AUTO\MAPROM*.PRG` from the boot drive itself, then runs a second copy
+of itself so that its code also loads into fast RAM. MAPROM stays resident until a reboot.
+
 ## Status
 
 - [x] All of the game (351 objects) cross-compiles for the 68030 with no source changes
