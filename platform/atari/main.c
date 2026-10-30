@@ -127,20 +127,21 @@ static void detect_machine(void)
 
 /* The game's 32 MB arena (LINEAR_MEMORY_SIZE in arena.h) and its other blocks come from fast
  * RAM. A Falcon's accelerator board may have fast RAM that TOS has not been told of until the
- * board's own program runs (MAPROM_C.PRG on a DFB1X); without it the game would stop later on
+ * board's own program runs (MAPROM_C.PRG on a DFB1X, MAPROM.PRG or FASTRAM.PRG from
+ * github.com/agranlund/tftools on a TF53x); without it the game would stop later on
  * "Not enough memory.", so say what is missing now. */
 #define FAST_RAM_NEEDED (UINT32_C(33) << 20)
 
 static void check_fast_ram(void)
 {
-	char text[240];
+	char text[300];
 	long largest = (long) Mxalloc(-1L, 1);
 
 	if (largest >= (long) FAST_RAM_NEEDED)
 		return;
 	snprintf(text, sizeof text, GAME_NAME " needs %lu MB of free fast RAM (TT-RAM), and TOS has "
 		"%ld KB.\nOn a Falcon accelerator, run the board's fast RAM program first, from the "
-		"AUTO folder: MAPROM_C.PRG on a DFB1X.",
+		"AUTO folder: MAPROM_C.PRG on a DFB1X, MAPROM.PRG or FASTRAM.PRG (tftools) on a TF53x.",
 		(unsigned long) (FAST_RAM_NEEDED >> 20), largest > 0 ? largest >> 10 : 0L);
 	plat_fatal(text);
 }
