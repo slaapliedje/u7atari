@@ -14,6 +14,9 @@ set(U7_BACKEND_MATOYA OFF CACHE BOOL "" FORCE)
 # The 030 reads and writes words and longs at any address, so let GCC do so: with its m68k
 # default it copies and compares anything not known to be aligned a byte at a time.
 add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-mno-strict-align>)
+# No FPU code, so a Falcon without a 68882 runs the game too: the game has no floating point,
+# but GCC saves the FPU registers around setjmp. main.c replaces MiNTLib's FPU check.
+add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-msoft-float>)
 # C++ type_info at even addresses despite upstream's #pragma pack(1): see the header.
 add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:--include=${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/rtti_align.h>")
 # The game's arena: upstream gives it 32 MB, of which the game uses about 2 MB (both games,

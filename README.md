@@ -16,8 +16,8 @@ Serpent Isle.
 | Music | MIDI port → real MT-32, or a GM synth with `--gm` | MIDI port → real MT-32, or a GM synth with `--gm` |
 | Speech | 8-bit mono DMA, 25033 Hz | 8-bit mono DMA, 24585 Hz (49170 Hz with `--line-in`) |
 
-A stock 16 MHz Falcon with 14 MB runs the game from ST RAM, but it is not a target: nothing has
-been tuned for it, and how fast it runs there is not known. A TT needs TT-RAM, since 4 MB of ST
+A stock 16 MHz Falcon with 14 MB and no FPU runs both games from ST RAM under Hatari, but it is
+not a target: nothing has been tuned for it, and it runs noticeably slower. A TT needs TT-RAM, since 4 MB of ST
 RAM is not enough.
 
 ## Layout
@@ -64,8 +64,10 @@ cmake --build build -j
 folder, such as `build-si`). It reads `SERPENT.CFG` and takes its arguments from `SERPENT.ARG`;
 `--program si` runs the game alone. Serpent Isle's debug screens switch to 80x25 colour text,
 drawn 4x8 pixels a cell. Code is built with `-m68020-60 -mtune=68030`,
-which links MiNTLib's 68020-60 multilib; its startup code refuses to run without a 68881/68882,
-so an FPU is required (both targets have one). The game itself has no floating point. The PRG header asks TOS to load
+which links MiNTLib's 68020-60 multilib. Its startup code refuses to run without a 68881/68882,
+so `main.c` replaces that check (`_checkcpu`), and the code is built with `-msoft-float`: the game
+has no floating point, but GCC saves the FPU registers in functions that call `setjmp`. The
+library's own FPU code is in `printf`'s `%f` and in `scanf`, neither of which the game calls. The PRG header asks TOS to load
 the program into TT-RAM and allocate from TT-RAM (flags `0x7`).
 
 A Falcon accelerator's fast RAM (DFB1X, TF53x) is only known to TOS once MAPROM
@@ -171,8 +173,9 @@ program: an MT-32 preset tone goes to the nearest GM one, and an instrument the 
 its name, through a table of the ones Ultima VII loads. Patch key shifts transpose the notes, bender
 ranges become pitch bend sensitivity (RPN 0), and the master volume becomes GM master volume. Drum
 keys the game gave its own instruments play the nearest GM drum. Sound effects are MT-32
-instruments too, and most have no GM equivalent: those are silent with `--gm` rather than played
-on the wrong instrument (bells and clocks play). The choices are in the two tables at the top of
+instruments too. Those with a GM sound near enough are mapped (among them the earthquake, thunder,
+explosions, water, spells, bells and clocks); the rest are silent with `--gm` rather than played
+on the wrong instrument. The choices are in the two tables at the top of
 `gm.c`; none has been heard on a GM synth yet.
 
 Speech plays from a looping DMA ring in ST RAM, resampled with linear interpolation from the

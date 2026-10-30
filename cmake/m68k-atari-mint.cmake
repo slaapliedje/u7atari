@@ -11,7 +11,8 @@ set(CMAKE_AR           ${U7_MINT_PREFIX}ar)
 set(CMAKE_RANLIB       ${U7_MINT_PREFIX}ranlib)
 
 # 68020-60 code runs on the 030 in both machines and selects the matching multilib.
-# This also selects MiNTLib's FPU multilib, whose startup refuses to run without a 68881/68882.
+# This also selects MiNTLib's FPU multilib, whose startup refuses to run without a 68881/68882;
+# the game replaces that check (_checkcpu in platform/atari/main.c) and builds with -msoft-float.
 set(U7_CPU_FLAGS "-m68020-60 -mtune=68030")
 set(CMAKE_C_FLAGS_INIT   "${U7_CPU_FLAGS}")
 set(CMAKE_CXX_FLAGS_INIT "${U7_CPU_FLAGS}")

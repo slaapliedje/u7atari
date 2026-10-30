@@ -23,6 +23,14 @@ static int16_t program_code;
 static char *self_name = GAME_PRG;
 static bool machine_taken;     /* in supervisor mode, setting up or owning the hardware */
 
+/* Replaces MiNTLib's check, run from its startup code, that stops a program built for the
+ * 68020-60 libraries on a machine without a 68881/68882. The game is built with -msoft-float,
+ * and the library's floating point is only in printf's %f, which it does not use; main()
+ * checks the machine. */
+void _checkcpu(void)
+{
+}
+
 static void shutdown_all(void)
 {
 	/* before that, the hardware is untouched, and user mode cannot reach it */

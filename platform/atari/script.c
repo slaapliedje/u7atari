@@ -88,25 +88,43 @@ static step *add(uint32_t at, enum action action)
 	return s;
 }
 
+/* Splits a line into up to four words, in place; without sscanf, whose MiNTLib version saves an
+ * FPU register on entry and so stops a Falcon that has no FPU. */
+static int split(char *line, char *word[4])
+{
+	int n = 0;
+
+	for (char *w = strtok(line, " \t"); w != NULL && n < 4; w = strtok(NULL, " \t"))
+		word[n++] = w;
+	return n;
+}
+
 static void parse_line(char *line)
 {
+	char copy[128];
+	char *word[4], *end;
+	const char *action;
 	unsigned long at;
-	char action[16] = "", arg[64] = "";
-	int x, y;
+	int n;
 	step *s;
 
-	if (line[0] == '#' || sscanf(line, "%lu %15s", &at, action) != 2 || step_count > MAX_STEPS - 4)
+	snprintf(copy, sizeof copy, "%s", line);
+	n = split(copy, word);
+	if (line[0] == '#' || n < 2 || step_count > MAX_STEPS - 4)
 		return;
-	if (strcmp(action, "key") == 0 && sscanf(line, "%*u %*s %63s", arg) == 1) {
-		uint16_t word = key_word(arg);
+	at = strtoul(word[0], &end, 10);
+	if (*end != '\0')
+		return;
+	action = word[1];
+	if (strcmp(action, "key") == 0 && n >= 3) {
+		uint16_t key = key_word(word[2]);
 
-		if (word != 0)
-			add(at, KEY)->word = word;
-	} else if ((strcmp(action, "move") == 0 || strcmp(action, "click") == 0)
-			&& sscanf(line, "%*u %*s %d %d", &x, &y) == 2) {
+		if (key != 0)
+			add(at, KEY)->word = key;
+	} else if ((strcmp(action, "move") == 0 || strcmp(action, "click") == 0) && n >= 4) {
 		s = add(at, MOVE);
-		s->x = (int16_t) x;
-		s->y = (int16_t) y;
+		s->x = (int16_t) strtol(word[2], NULL, 10);
+		s->y = (int16_t) strtol(word[3], NULL, 10);
 		if (action[0] == 'c') {
 			add(at + 50, BUTTONS)->buttons = 1;
 			add(at + 150, BUTTONS)->buttons = 0;
@@ -119,16 +137,16 @@ static void parse_line(char *line)
 		add(at, BUTTONS)->buttons = buttons |= 2;
 	} else if (strcmp(action, "rup") == 0) {
 		add(at, BUTTONS)->buttons = buttons &= ~2;
-	} else if (strcmp(action, "shot") == 0 && sscanf(line, "%*u %*s %63s", arg) == 1) {
-		strcpy(add(at, SHOT)->text, arg);
+	} else if (strcmp(action, "shot") == 0 && n >= 3) {
+		snprintf(add(at, SHOT)->text, sizeof steps[0].text, "%s", word[2]);
 	} else if (strcmp(action, "log") == 0) {
 		const char *text = strstr(line, "log") + 3;
 
 		while (*text == ' ')
 			text++;
 		snprintf(add(at, LOG)->text, sizeof steps[0].text, "%s", text);
-	} else if (strcmp(action, "speech") == 0 && sscanf(line, "%*u %*s %d", &x) == 1) {
-		add(at, SPEECH)->x = (int16_t) x;
+	} else if (strcmp(action, "speech") == 0 && n >= 3) {
+		add(at, SPEECH)->x = (int16_t) strtol(word[2], NULL, 10);
 	} else if (strcmp(action, "quit") == 0) {
 		add(at, QUIT);
 	}
