@@ -62,7 +62,7 @@ cmake --build build -j
 ```
 
 `tools/make-release.sh` builds both games and packs them, with `release/README.TXT` (the player's
-instructions) and upstream's licence, into `dist/u7atari-<version>.zip`. It refuses to run with
+instructions) and both licences, into `dist/u7atari-<version>.zip`. It refuses to run with
 uncommitted changes.
 
 `-DU7_GAME="Serpent Isle"` builds Serpent Isle instead, as `SERPENT.PRG` (use another build
@@ -255,3 +255,10 @@ scene in Trinsic; `--program intro ereiamjh` runs the intro alone.
 Hatari emulates both targets: `--machine tt --ttram 256` and `--machine falcon` (with
 `--ttram` for the fast RAM). Its cycle counts are approximate, so use them to compare builds
 with each other and confirm frame rates on real hardware.
+
+## Licence
+
+The port (this repository, outside `upstream/`) is under the MIT licence: see `LICENSE`.
+The decompilation in `upstream/` has its own terms (`upstream/LICENSE`). The PRGs also link
+MiNTLib, parts of which are under the LGPL; this source is what lets anyone rebuild them.
+

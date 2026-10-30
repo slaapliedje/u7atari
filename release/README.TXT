@@ -116,4 +116,4 @@ CREDITS
 Ultima VII and Serpent Isle are by Origin Systems.
 Decompilation and ultima7-portable: Jamie Blanks (Kitrinx) and
 contributors. See LICENSE.TXT.
-Atari port: Slaapliedje, with Claude (Anthropic).
+Atari port: Slaapliedje, with Claude (Anthropic), under the MIT licence.
