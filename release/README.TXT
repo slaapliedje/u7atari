@@ -1,12 +1,17 @@
-ULTIMA VII FOR THE ATARI TT030 AND FALCON030
+U7ATARI - ULTIMA VII FOR THE ATARI TT030 AND FALCON030
 Version @VERSION@ - a test release
 
 Ultima VII: The Black Gate (ULTIMA7.PRG) and Ultima VII Part Two:
 Serpent Isle (SERPENT.PRG), running natively on a TT030 or a Falcon030.
 
-This is a port of the "ultima7-portable" build of Kitrinx's Ultima VII
-decompilation (github.com/Kitrinx/Ultima7_Decomp). No game data is
-included: you need the DOS version of the game (the GOG release works).
+u7atari is built on Jamie Blanks' (Kitrinx's) decompilation of Ultima
+VII, github.com/Kitrinx/Ultima7_Decomp: the games' own code, recovered
+from the DOS programs, in its "ultima7-portable" form. The game itself
+is that code, and the credit for recovering it is theirs; u7atari adds
+what the Atari needs to run it.
+
+No game data is included: you need the DOS version of the game (the
+GOG release works).
 
 
 WHAT YOU NEED
@@ -114,6 +119,6 @@ CREDITS
 -------
 
 Ultima VII and Serpent Isle are by Origin Systems.
-Decompilation and ultima7-portable: Jamie Blanks (Kitrinx) and
-contributors. See LICENSE.TXT.
-Atari port: Slaapliedje, with Claude (Anthropic), under the MIT licence.
+The decompilation and ultima7-portable: Jamie Blanks (Kitrinx),
+github.com/Kitrinx/Ultima7_Decomp. See LICENSE.TXT.
+u7atari: Slaapliedje, with Claude (Anthropic), under the MIT licence.

@@ -12,7 +12,7 @@ if [ -n "$(git status --porcelain)" ] || [ -n "$(git -C upstream status --porcel
 	echo "make-release: uncommitted changes; commit them first" >&2
 	exit 1
 fi
-version=$(sed -n 's/^project(u7_atari VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+version=$(sed -n 's/^project(u7atari VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
 
 build() {
 	dir=$1; shift
@@ -32,9 +32,9 @@ cp build/ULTIMA7.PRG build-si/SERPENT.PRG "$out/"
 sed "s/@VERSION@/$version ($(git rev-parse --short HEAD))/" release/README.TXT > "$out/README.TXT"
 # the port's licence, then upstream's; TOS has no UTF-8, so curly quotes become plain ones
 {
-	echo "THE ATARI PORT (platform/atari and the build)"; echo
+	echo "U7ATARI (platform/atari and the build)"; echo
 	cat LICENSE; echo; echo
-	echo "THE DECOMPILATION (Kitrinx/Ultima7_Decomp, ultima7-portable)"; echo
+	echo "THE DECOMPILATION BY JAMIE BLANKS (Kitrinx/Ultima7_Decomp, ultima7-portable)"; echo
 	cat upstream/LICENSE
 } | sed 's/\xe2\x80\x9c/"/g; s/\xe2\x80\x9d/"/g' > "$out/LICENSE.TXT"
 unix2dos -q "$out/README.TXT" "$out/LICENSE.TXT"

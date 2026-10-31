@@ -1,8 +1,15 @@
-# Ultima VII for the Atari TT030 and Falcon030
+# u7atari: Ultima VII for the Atari TT030 and Falcon030
 
-A port of [Kitrinx/Ultima7_Decomp](https://github.com/Kitrinx/Ultima7_Decomp)'s
-`ultima7-portable` build to the Atari TT030 and an accelerated Falcon030: The Black Gate, and
-Serpent Isle.
+u7atari runs Ultima VII: The Black Gate and Ultima VII Part Two: Serpent Isle natively on the Atari
+TT030 and Falcon030.
+
+It is built on the decompilation of Ultima VII by Jamie Blanks (Kitrinx),
+[Kitrinx/Ultima7_Decomp](https://github.com/Kitrinx/Ultima7_Decomp): the games' own code,
+recovered from the DOS executables and checked to compile byte for byte with the compiler Origin
+used, and its `ultima7-portable` build, which gathers each game into one program behind a small
+platform layer. u7atari adds an Atari platform layer and the changes the code needed to run on a
+big-endian 68030 (in the fork, `slaapliedje/Ultima7_Decomp`, branch `atari`). The game logic is
+the decompilation's, and all the credit for recovering it is theirs.
 
 ## Target machines
 
