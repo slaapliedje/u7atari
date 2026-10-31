@@ -637,6 +637,8 @@ int16_t plat_find_next(plat_find *find)
 		return 0;
 	}
 	/* As DOS findnext: a shorter name leaves the end of the last one after its NUL. */
+	/* the whole field: saved games store all 13 bytes, so those after the name must not vary */
+	memset(find->name, 0, sizeof find->name);
 	strcpy(find->name, list->files[list->next].name);
 	find->size = list->files[list->next].size;
 	list->next++;

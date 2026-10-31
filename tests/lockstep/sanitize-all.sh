@@ -3,6 +3,8 @@
 # lists each distinct report once with where it happened: memory faults the DOS game got away
 # with, which can make the Atari build behave differently, or crash.
 #   tests/lockstep/sanitize-all.sh <bg-static> <si-static> <out-dir>
+# Then each runs under valgrind's memcheck, for values used before they are set (u7host built
+# with -DCMAKE_BUILD_TYPE=RelWithDebInfo in build-host-vg and build-host-si-vg).
 # Needs build-host-asan and build-host-si-asan:
 #   F="-m32 -fsanitize=address,undefined -fno-sanitize=alignment -fsanitize-recover=address"
 #   cmake -B build-host-asan -DCMAKE_C_FLAGS="$F" -DCMAKE_CXX_FLAGS="$F" \
@@ -61,6 +63,26 @@ for script in "$here"/tests/lockstep/*.scr; do
 	(ulimit -s 128; "$host" --data "$dir" --lockstep --script TEST.SCR "$@" > /dev/null 2>&1) \
 		|| [ $? -lt 128 ] || echo "stack: $name crashed with a 128 KB stack"
 done
+
+# Values used before they are set.
+for script in "$here"/tests/lockstep/*.scr; do
+	name=$(basename "$script" .scr)
+	state=$(sed -n 's/^#@start //p' "$script")
+	args=$(sed -n 's/^#@args *//p' "$script")
+	case $name in si-*) host=$here/build-host-si-vg/u7host ;; *) host=$here/build-host-vg/u7host ;; esac
+	dir=$out/vg-$name
+	rm -rf "${dir:?}"
+	cp -r "$start/$state" "$dir"
+	cp "$script" "$dir/TEST.SCR"
+	(
+		# shellcheck disable=SC2086 # the arguments are words
+		set -- $(printf '%b' "$args")
+		valgrind --tool=memcheck --track-origins=yes --error-limit=no --log-file="$out/$name.vg" \
+			"$host" --data "$dir" --lockstep --script TEST.SCR "$@" > /dev/null 2>&1 || true
+	) &
+done
+wait
+python3 -I "$here/tools/valgrind-summary.py" "$out"/*.vg | sed 's/^/valgrind /'
 
 # One line per report: the kind, then the first frame in the game's code.
 for log in "$out"/*.log; do
