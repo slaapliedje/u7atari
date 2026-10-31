@@ -1,0 +1,41 @@
+# Serpent Isle from the launcher: the intro (music and speech), the menu, a new game named
+# Avatar, and the opening on the ship clicked through, then a walk.
+# Start: STATIC and an empty GAMEDAT. Arguments: none (the launcher).
+100000 click 320 148
+105000 key A
+105300 key v
+105600 key a
+105900 key t
+106200 key a
+106500 key r
+107000 shot NAME.PPM
+108000 click 150 184
+109000 click 150 184
+115000 shot S115.PPM
+130500 click 200 60
+133500 click 200 60
+136500 click 200 60
+139500 click 200 60
+142500 click 200 60
+145500 click 200 60
+148500 click 200 60
+151500 click 200 60
+154500 click 200 60
+157500 click 200 60
+160500 click 200 60
+163500 click 200 60
+166500 click 200 60
+169500 click 200 60
+172500 click 200 60
+175500 click 200 60
+178500 click 200 60
+181500 click 200 60
+184500 click 200 60
+187500 click 200 60
+190500 click 200 60
+193500 click 200 60
+196000 move 500 100
+196100 rdown
+203000 rup
+204000 shot WALK.PPM
+205000 quit

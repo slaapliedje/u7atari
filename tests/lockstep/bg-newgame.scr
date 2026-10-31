@@ -1,0 +1,30 @@
+# The Black Gate from the launcher: the whole intro (music and the Guardian's speech), the menu,
+# a new game named Avatar, the moongate, and Iolo's greeting clicked through to Finnigan.
+# Start: STATIC and an empty GAMEDAT. Arguments: none (the launcher).
+170000 click 320 148
+175000 key A
+175300 key v
+175600 key a
+175900 key t
+176200 key a
+176500 key r
+177000 shot NAME.PPM
+178000 click 150 184
+179000 click 150 184
+205000 shot MOONGATE.PPM
+# clicks away from the screen's centre, where the game's keyboard pointer starts
+210500 click 200 60
+213500 click 200 60
+216500 click 200 60
+219500 click 200 60
+222500 click 200 60
+225500 click 200 60
+228500 click 200 60
+231500 click 200 60
+234500 click 200 60
+237500 click 200 60
+240500 click 200 60
+243500 click 200 60
+246500 click 200 60
+250000 shot FINNIGAN.PPM
+252000 quit

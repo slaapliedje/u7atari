@@ -8,6 +8,8 @@
  *   3500 move 320 100   the mouse, in the game's 640x200 mouse space
  *   3600 down           left button; up, and rdown, rup for the right one
  *   3700 click 320 100  move there, then left down and, 100 ms on, up
+ *   3800 dclick 320 100 move there, then a left double-click (down and up twice in 140 ms)
+ *   3900 rclick 320 100 move there, then right down and, 100 ms on, up
  *   4000 shot inv.ppm   the frame on screen, as a 320x200 PPM in the game folder
  *   4100 log text       a line on the console
  *   4200 speech 3       starts speech track 3 as the game's usecode does (tests/speech_hook.cpp)
@@ -24,7 +26,7 @@
 #include "plat.h"
 #include "backend.h"
 
-#define MAX_STEPS 512
+#define MAX_STEPS 2048
 
 void debug_play_speech(int16_t track);      /* tests/speech_hook.cpp */
 
@@ -121,13 +123,22 @@ static void parse_line(char *line)
 
 		if (key != 0)
 			add(at, KEY)->word = key;
-	} else if ((strcmp(action, "move") == 0 || strcmp(action, "click") == 0) && n >= 4) {
+	} else if ((strcmp(action, "move") == 0 || strcmp(action, "click") == 0
+			|| strcmp(action, "dclick") == 0 || strcmp(action, "rclick") == 0) && n >= 4) {
 		s = add(at, MOVE);
 		s->x = (int16_t) strtol(word[2], NULL, 10);
 		s->y = (int16_t) strtol(word[3], NULL, 10);
 		if (action[0] == 'c') {
 			add(at + 50, BUTTONS)->buttons = 1;
 			add(at + 150, BUTTONS)->buttons = 0;
+		} else if (action[0] == 'r') {
+			add(at + 50, BUTTONS)->buttons = 2;
+			add(at + 150, BUTTONS)->buttons = 0;
+		} else if (action[0] == 'd') {
+			add(at + 20, BUTTONS)->buttons = 1;
+			add(at + 60, BUTTONS)->buttons = 0;
+			add(at + 100, BUTTONS)->buttons = 1;
+			add(at + 140, BUTTONS)->buttons = 0;
 		}
 	} else if (strcmp(action, "down") == 0) {
 		add(at, BUTTONS)->buttons = buttons |= 1;

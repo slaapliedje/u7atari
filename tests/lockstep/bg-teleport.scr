@@ -1,0 +1,40 @@
+# The Black Gate with cheats on (argument ABCD and byte 0xFF): teleport by the map (F3) to
+# Britain, the mountains, the south-west (a fight breaks out), the south and Minoc's road,
+# walking at each: region loading, eggs, monsters and combat.
+# Start: as bg-trinsic. Arguments: --program u7 p ABCD<0xFF>
+12000 key f3
+14000 click 250 77
+20000 shot BRIT.PPM
+20500 move 500 60
+20600 rdown
+25600 rup
+26600 shot BRIT2.PPM
+27600 key f3
+29600 click 416 102
+35600 shot MOON.PPM
+36100 move 500 60
+36200 rdown
+41200 rup
+42200 shot MOON2.PPM
+43200 key f3
+45200 click 236 165
+51200 shot JHEL.PPM
+51700 move 500 60
+51800 rdown
+56800 rup
+57800 shot JHEL2.PPM
+58800 key f3
+60800 click 396 177
+66800 shot SERP.PPM
+67300 move 500 60
+67400 rdown
+72400 rup
+73400 shot SERP2.PPM
+74400 key f3
+76400 click 330 30
+82400 shot MINOC.PPM
+82900 move 500 60
+83000 rdown
+88000 rup
+89000 shot MINOC2.PPM
+90000 quit
