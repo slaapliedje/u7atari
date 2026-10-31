@@ -1,0 +1,125 @@
+#@start bg-start
+#@args --program u7 p ABCD\0377
+# The Black Gate with cheats on: a ship's deed made by the debug menu (a scroll whose quality matches
+# the ship's sails) and put in the backpack, the location display on (F2 L), a teleport to the pier
+# beside a ship, then aboard by the sails: the party sits and the planks rise. Sailing east, south,
+# west and north (each turn swings the hull), north-west up to a beach, the sails furled, the
+# planks lowered (onto shallows), the Avatar up, planks raised, sails out, away east, and a save to
+# slot 2 (compared byte for byte).
+# Start: the save bg-newgame.scr ends with. Arguments: --program u7 p ABCD<0xFF>
+13000 key f2
+14000 key c
+14200 key 7
+14400 key 9
+14600 key 7
+14800 key enter
+15000 key 0
+15200 key enter
+15400 key 1
+15600 key 7
+15800 key enter
+16300 key space
+16800 key x
+18300 shot DEED.PPM
+18800 move 200 100
+18900 rdown
+20100 rup
+21600 shot AWAY.PPM
+22100 key i
+23600 shot DOLL.PPM
+24100 move 466 97
+24300 down
+24500 move 400 60
+24700 move 250 30
+24900 move 234 25
+25200 up
+26700 shot DROP.PPM
+27200 dclick 234 25
+29200 shot PACK.PPM
+29700 key esc
+30200 key esc
+31200 key f2
+32200 key s
+32400 key 1
+32600 key 2
+32800 key enter
+33000 key 2
+33200 key enter
+33700 key x
+35200 shot TIME.PPM
+36200 key f2
+37200 key l
+37700 key x
+38700 key f2
+39700 key t
+40200 key d
+40400 key 2
+40600 key 2
+40800 key 8
+41000 key 4
+41200 key enter
+41400 key 1
+41600 key 8
+41800 key 8
+42000 key 0
+42200 key enter
+42400 key 1
+42600 key enter
+44100 key x
+44900 key x
+47400 shot DOCK.PPM
+48900 dclick 330 18
+50900 shot BOARD0.PPM
+54900 shot BOARD1.PPM
+55400 move 500 100
+55500 rdown
+57000 shot E0.PPM
+58500 shot E1.PPM
+58600 rup
+59100 move 320 180
+59200 rdown
+60700 shot S0.PPM
+62200 shot S1.PPM
+62300 rup
+62800 move 100 100
+62900 rdown
+64400 shot W0.PPM
+65900 shot W1.PPM
+66000 rup
+66500 move 320 20
+66600 rdown
+68100 shot N0.PPM
+69600 shot N1.PPM
+69700 rup
+70200 move 160 20
+70300 rdown
+70375 shot NW0.PPM
+70450 shot NW1.PPM
+70550 rup
+72050 dclick 150 95
+74050 shot FURL.PPM
+74550 dclick 235 155
+77050 shot PLANK.PPM
+77550 move 60 120
+77650 rdown
+80150 rup
+81650 shot STAND.PPM
+82150 dclick 283 155
+84650 shot UP.PPM
+85150 dclick 198 95
+89150 shot SAIL.PPM
+89650 move 500 100
+89750 rdown
+90750 shot E20.PPM
+91750 shot E21.PPM
+91850 rup
+92850 key s
+94850 click 200 41
+95050 key S
+95250 key h
+95450 key i
+95650 key p
+95850 key enter
+97850 key esc
+99350 shot END.PPM
+100350 quit
