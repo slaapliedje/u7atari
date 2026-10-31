@@ -1,0 +1,7 @@
+# The Black Gate's endgame on its own: the FLIC animation, its XMIDI music and speech, and the
+# closing text pages, until it exits by itself (code 7).
+#@start bg-new
+#@args --program endgame ereiamjh
+40000 shot GATE.PPM
+100000 shot HALL.PPM
+170000 shot SERPENT.PPM

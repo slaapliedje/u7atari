@@ -1,0 +1,7 @@
+# Serpent Isle's endgame on its own: its animation, XMIDI music and speech, until it exits by
+# itself (code 7).
+#@start si-new
+#@args --program endgame hisss
+20000 shot E20.PPM
+50000 shot E50.PPM
+80000 shot E80.PPM

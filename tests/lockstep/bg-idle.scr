@@ -1,0 +1,11 @@
+# The Black Gate left alone in Trinsic for 400 s: time passes, people keep their schedules,
+# the weather and light change.
+#@start bg-start
+#@args --program u7 p
+60000 shot I60.PPM
+120000 shot I120.PPM
+180000 shot I180.PPM
+240000 shot I240.PPM
+300000 shot I300.PPM
+360000 shot I360.PPM
+401000 quit
