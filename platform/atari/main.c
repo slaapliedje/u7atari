@@ -18,6 +18,10 @@
 
 machine_type atari_machine = MACHINE_OTHER;
 
+/* MiNTLib's stack size; its default is 64 KB. The Black Gate's endgame needs over 64 KB (it
+ * overran into MiNTLib's variables and crashed in getenv), so take plenty: the PC's is 8 MB. */
+long _stksize = 256L * 1024;
+
 #ifdef U7_DEBUG_LOG
 /* Hatari's NatFeats (--natfeats, under Hatari's own --natfeats on only: the opcodes are illegal
  * instructions anywhere else): the log goes to Hatari's stderr, and leaving the game quits

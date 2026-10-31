@@ -45,6 +45,23 @@ for script in "$here"/tests/lockstep/*.scr; do
 	"$host" --data "$dir" --lockstep --script TEST.SCR "$@" > "$out/$name.log" 2>&1 || true
 done
 
+# The stack: the Atari build has 256 KB (_stksize in platform/atari/main.c); each scenario must
+# run on the PC in half that, or the Atari's could overflow into MiNTLib's variables.
+for script in "$here"/tests/lockstep/*.scr; do
+	name=$(basename "$script" .scr)
+	state=$(sed -n 's/^#@start //p' "$script")
+	args=$(sed -n 's/^#@args *//p' "$script")
+	case $name in si-*) host=$here/build-host-si/u7host ;; *) host=$here/build-host/u7host ;; esac
+	dir=$out/stack-$name
+	rm -rf "${dir:?}"
+	cp -r "$start/$state" "$dir"
+	cp "$script" "$dir/TEST.SCR"
+	# shellcheck disable=SC2086 # the arguments are words
+	set -- $(printf '%b' "$args")
+	(ulimit -s 128; "$host" --data "$dir" --lockstep --script TEST.SCR "$@" > /dev/null 2>&1) \
+		|| [ $? -lt 128 ] || echo "stack: $name crashed with a 128 KB stack"
+done
+
 # One line per report: the kind, then the first frame in the game's code.
 for log in "$out"/*.log; do
 	awk -v scenario="$(basename "$log" .log)" '
