@@ -1,0 +1,47 @@
+# Serpent Isle from the save si-newgame.scr ends with: conversations on the ship, Iolo (a song,
+# which he cannot think of yet, then Gwenno, goodbye) and Dupre (no time for idle chat,
+# goodbye); then with cheats on (argument manimal) a teleport by the map (F3) to Monitor and a
+# walk there.
+# Start: the save si-newgame.scr ends with. Arguments: --program si p manimal
+#@start si-start
+#@args --program si p manimal
+14000 shot A0.PPM
+14500 dclick 268 42
+17000 shot T1.PPM
+18500 click 200 150
+20500 shot T2.PPM
+21000 click 296 128
+23500 shot S0.PPM
+23600 click 200 60
+26100 shot S1.PPM
+26200 click 200 60
+26700 click 300 128
+29200 shot G0.PPM
+29300 click 200 60
+31800 shot G1.PPM
+31900 click 200 60
+32400 click 290 128
+34900 shot B0.PPM
+35000 click 200 60
+37500 shot B1.PPM
+37600 click 200 60
+38600 dclick 236 78
+41100 shot D0.PPM
+41200 click 200 60
+43700 shot D1.PPM
+43800 click 200 60
+44300 click 290 128
+46800 shot E0.PPM
+46900 click 200 60
+49400 shot E1.PPM
+49500 click 200 60
+50500 key f3
+52500 click 280 173
+56500 shot M0.PPM
+59500 shot M1.PPM
+60000 move 500 150
+60100 rdown
+64100 rup
+65100 shot WALK.PPM
+67100 shot T3.PPM
+68100 quit

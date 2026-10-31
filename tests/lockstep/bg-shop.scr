@@ -1,0 +1,149 @@
+# The Black Gate with cheats on: 100 gold made by the debug menu's create item (F2 C) and dragged
+# into the backpack (the quantity slider), the Avatar poisoned and cut to 6 hit points by the
+# debug menu's NPC editor (F2 M 0: flags E, stats H), then Chantu the healer (teleport to NPC
+# 17 at 1 PM): a topic, then cure poison and healing, each chosen from his services and paid
+# for; goodbye, the backpack, and a save to slot 2 (compared byte for byte).
+# Start: the save bg-newgame.scr ends with. Arguments: --program u7 p ABCD<0xFF>
+#@start bg-start
+#@args --program u7 p ABCD\0377
+13000 key f2
+14000 key c
+14200 key 6
+14400 key 4
+14600 key 4
+14800 key enter
+15000 key 0
+15200 key enter
+15400 key 1
+15600 key 0
+15800 key 0
+16000 key enter
+16500 key space
+17000 key x
+18500 shot GOLD.PPM
+19000 move 200 100
+19100 rdown
+20300 rup
+21800 shot AWAY.PPM
+22300 key i
+23800 shot DOLL.PPM
+24300 move 471 100
+24500 down
+24700 move 400 60
+24900 move 250 30
+25100 move 234 25
+25400 up
+26900 shot DROP.PPM
+27400 click 236 23
+28900 shot DROP2.PPM
+29400 dclick 234 25
+31400 shot PACK.PPM
+31900 key esc
+32400 key esc
+33400 key f2
+34400 key m
+34600 key 0
+34800 key enter
+35600 key n
+36400 key e
+37200 shot FLAGS.PPM
+37700 key x
+38500 key s
+39300 key h
+39500 key 6
+39700 key enter
+40500 shot HP.PPM
+41000 key x
+41800 key x
+42600 key x
+44600 shot POISON.PPM
+45600 key f2
+46600 key s
+46800 key 1
+47000 key 3
+47200 key enter
+47400 key 2
+47600 key enter
+48100 key x
+49600 shot TIME.PPM
+50600 key f2
+51600 key t
+52100 key n
+52300 key 1
+52500 key 7
+52700 key enter
+54200 key x
+55000 key x
+57500 shot HEALER.PPM
+58000 move 200 100
+58100 rdown
+58600 rup
+61600 shot W1.PPM
+61700 dclick 432 104
+64200 shot TALK1.PPM
+66200 click 200 150
+68200 shot TALK2.PPM
+68700 click 408 73
+70700 shot K1.PPM
+72200 click 200 150
+74200 shot K2.PPM
+75700 click 200 150
+77700 shot K3.PPM
+79200 click 200 150
+81200 shot K4.PPM
+82200 click 410 73
+84200 shot SV1.PPM
+85700 click 200 150
+87200 click 234 73
+89200 shot Y1.PPM
+90700 click 200 150
+92700 shot Y2.PPM
+93700 click 340 73
+95700 shot C1.PPM
+97200 click 200 150
+99200 shot C2.PPM
+99700 click 464 73
+101700 shot D1.PPM
+103200 click 200 150
+105200 shot D2.PPM
+105700 click 234 73
+107700 shot D3.PPM
+109200 click 200 150
+111200 shot D4.PPM
+112700 click 200 150
+114700 shot D5.PPM
+115700 click 410 73
+117700 shot E1.PPM
+119200 click 200 150
+120700 click 234 73
+122700 shot E2.PPM
+124200 click 200 150
+126200 shot E3.PPM
+126700 click 234 73
+128700 shot F1.PPM
+130200 click 200 150
+130700 click 464 73
+132700 shot F2.PPM
+134200 click 200 150
+134700 click 234 73
+136700 shot F3.PPM
+138200 click 200 150
+140200 shot F4.PPM
+140700 click 520 73
+142700 shot BYE.PPM
+143700 click 200 150
+145200 key i
+146700 dclick 234 25
+148700 shot PACK2.PPM
+149200 key esc
+149700 key esc
+150700 key s
+152700 click 200 41
+152900 key S
+153100 key h
+153300 key o
+153500 key p
+153700 key enter
+155700 key esc
+157200 shot END.PPM
+158200 quit

@@ -1,0 +1,146 @@
+# The Black Gate with cheats on: 100 gold made and picked up as in bg-shop.scr, NPC numbers on
+# (F2 N), then Dell's shop (teleport to NPC 18 at 1 PM): his greeting and name question, job,
+# buy, provisions, three torches by the quantity slider, no more, the Fellowship, goodbye;
+# the backpack, and a save to slot 2 (compared byte for byte).
+# Start: the save bg-newgame.scr ends with. Arguments: --program u7 p ABCD<0xFF>
+#@start bg-start
+#@args --program u7 p ABCD\0377
+13000 key f2
+14000 key c
+14200 key 6
+14400 key 4
+14600 key 4
+14800 key enter
+15000 key 0
+15200 key enter
+15400 key 1
+15600 key 0
+15800 key 0
+16000 key enter
+16500 key space
+17000 key x
+18500 shot GOLD.PPM
+19000 move 200 100
+19100 rdown
+20300 rup
+21800 shot AWAY.PPM
+22300 key i
+23800 shot DOLL.PPM
+24300 move 471 100
+24500 down
+24700 move 400 60
+24900 move 250 30
+25100 move 234 25
+25400 up
+26900 shot DROP.PPM
+27400 click 236 23
+28900 shot DROP2.PPM
+29400 dclick 234 25
+31400 shot PACK.PPM
+31900 key esc
+32400 key esc
+33400 key f2
+34400 key s
+34600 key 1
+34800 key 3
+35000 key enter
+35200 key 2
+35400 key enter
+35900 key x
+37400 shot TIME.PPM
+38400 key f2
+39400 key n
+39900 key x
+40900 key f2
+41900 key t
+42400 key n
+42600 key 1
+42800 key 8
+43000 key enter
+44500 key x
+45300 key x
+47800 shot DELL.PPM
+50800 shot DW0.PPM
+52300 dclick 400 118
+54800 shot T1.PPM
+56300 click 200 150
+58300 shot T2.PPM
+59800 click 200 150
+61800 shot T3.PPM
+63300 click 200 150
+65300 shot T4.PPM
+65800 click 250 73
+67800 shot T5.PPM
+69300 click 200 150
+71300 shot T6.PPM
+72800 click 200 150
+74800 shot T7.PPM
+75300 click 318 73
+77300 shot J1.PPM
+78800 click 200 150
+80800 shot J2.PPM
+82300 click 200 150
+84300 shot J3.PPM
+84800 click 233 86
+86800 shot B1.PPM
+88300 click 200 150
+90300 shot B2.PPM
+91800 click 200 150
+93800 shot B3.PPM
+94300 click 270 86
+96300 shot V1.PPM
+97800 click 200 150
+99800 shot V2.PPM
+101300 click 200 150
+103300 shot V3.PPM
+103800 click 360 73
+105800 shot X1.PPM
+107300 click 200 150
+109300 shot X2.PPM
+110800 click 200 150
+112800 shot X3.PPM
+113300 click 234 73
+115300 shot Y1.PPM
+116800 click 200 150
+118800 shot Y2.PPM
+119300 click 409 67
+119800 click 409 67
+120800 shot Y3.PPM
+121300 click 229 67
+123300 shot Z1.PPM
+124800 click 200 150
+126800 shot Z2.PPM
+128300 click 200 150
+130300 shot Z3.PPM
+130800 click 318 73
+132800 shot N1.PPM
+134300 click 200 150
+136300 shot N2.PPM
+136800 click 354 86
+138800 click 200 150
+140800 click 200 150
+142800 click 200 150
+144800 click 200 150
+146800 click 200 150
+148800 shot FW.PPM
+149300 click 510 73
+151300 shot BYE.PPM
+152300 click 200 150
+154300 click 200 150
+156300 click 200 150
+157800 key i
+159300 dclick 234 25
+161300 shot PACK2.PPM
+161800 key esc
+162300 key esc
+163300 key s
+165300 click 200 41
+165500 key T
+165700 key o
+165900 key r
+166100 key c
+166300 key h
+166500 key enter
+168500 key esc
+170000 shot END.PPM
+171000 quit
