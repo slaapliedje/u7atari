@@ -232,6 +232,16 @@ where the Atari build went wrong: a byte-order or alignment fault in the port, n
 how the original behaved. The backends share `platform/common` (files, console, keys and mouse,
 the General MIDI translation, scripts) so that they behave alike.
 
+The scenarios are in `tests/lockstep` (each names its start state and arguments in `#@start` and
+`#@args` lines). `tests/lockstep/run-all.sh <bg-STATIC> <si-STATIC> <out> [tt] [falcon]` makes the
+start states from the games' STATIC folders alone (The Black Gate's saved game comes from
+`bg-newgame.scr`, played by `u7host`) and runs them all at once. `tests/lockstep/sanitize-all.sh`
+runs them on a `u7host` built with AddressSanitizer and UndefinedBehaviorSanitizer, which finds
+the memory faults the DOS game got away with, and again with a 128 KB stack. Found so far, all
+fixed: a use-after-free in palette fades, reads past three tables, an undefined shift, unset bytes
+in saved routes, and a stack too small for The Black Gate's endgame on the Atari, where it
+crashed.
+
 
 `tools/hatari-test.sh <tt|falcon> <hd-dir>` runs the game headless (MIDI off unless
 `U7_TEST_MIDI=1`); add `--avirecord --avi-vcodec png --avi-file f.avi` to record frames.
