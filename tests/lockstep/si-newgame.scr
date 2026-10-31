@@ -1,6 +1,8 @@
 # Serpent Isle from the launcher: the intro (music and speech), the menu, a new game named
 # Avatar, and the opening on the ship clicked through, then a walk.
 # Start: STATIC and an empty GAMEDAT. Arguments: none (the launcher).
+#@start si-new
+#@args 
 100000 click 320 148
 105000 key A
 105300 key v

@@ -1,7 +1,9 @@
 # The Black Gate with cheats on (argument ABCD and byte 0xFF): teleport by the map (F3) to
 # Britain, the mountains, the south-west (a fight breaks out), the south and Minoc's road,
 # walking at each: region loading, eggs, monsters and combat.
-# Start: as bg-trinsic. Arguments: --program u7 p ABCD<0xFF>
+# Start: the save bg-newgame.scr ends with. Arguments: --program u7 p ABCD<0xFF>
+#@start bg-start
+#@args --program u7 p ABCD\0377
 12000 key f3
 14000 click 250 77
 20000 shot BRIT.PPM

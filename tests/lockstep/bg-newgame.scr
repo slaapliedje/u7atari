@@ -1,6 +1,10 @@
 # The Black Gate from the launcher: the whole intro (music and the Guardian's speech), the menu,
-# a new game named Avatar, the moongate, and Iolo's greeting clicked through to Finnigan.
+# a new game named Avatar, the moongate, Iolo's greeting and Finnigan's questions (Yes, then No),
+# then a save to the first slot as "Start": the start state for the other Black Gate scenarios
+# (tests/lockstep/run-all.sh makes it with u7host).
 # Start: STATIC and an empty GAMEDAT. Arguments: none (the launcher).
+#@start bg-new
+#@args 
 170000 click 320 148
 175000 key A
 175300 key v
@@ -12,7 +16,6 @@
 178000 click 150 184
 179000 click 150 184
 205000 shot MOONGATE.PPM
-# clicks away from the screen's centre, where the game's keyboard pointer starts
 210500 click 200 60
 213500 click 200 60
 216500 click 200 60
@@ -27,4 +30,40 @@
 243500 click 200 60
 246500 click 200 60
 250000 shot FINNIGAN.PPM
-252000 quit
+252000 click 200 150
+255000 click 200 150
+258000 click 200 150
+261000 click 200 150
+264000 click 200 150
+267000 click 200 150
+270000 click 200 150
+273000 click 200 150
+276000 click 200 150
+279000 click 200 150
+282000 click 200 150
+285000 click 200 150
+288000 click 200 150
+291000 click 200 150
+294000 click 200 150
+297000 click 200 150
+300000 click 240 71
+303000 click 200 150
+306000 click 200 150
+309000 click 200 150
+312000 click 310 72
+315000 click 200 150
+318000 click 200 150
+321000 click 200 150
+324000 click 200 150
+328000 key s
+330000 click 200 29
+331000 key S
+331200 key t
+331400 key a
+331600 key r
+331800 key t
+332500 shot SAVE.PPM
+333000 key enter
+335000 key esc
+337000 shot END.PPM
+338000 quit

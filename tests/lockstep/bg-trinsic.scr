@@ -1,8 +1,10 @@
 # The Black Gate from a save in Trinsic: the inventory and backpack (the container sound), an
 # item dragged to the street, the map, the stats, combat on and off, a save to the second slot
 # (compared byte for byte), and a conversation with Iolo through several keywords.
-# Start: STATIC, GAMEDAT and GAME00.U7 of a game saved by the opening in Trinsic.
+# Start: the save bg-newgame.scr ends with.
 # Arguments: --program u7 p
+#@start bg-start
+#@args --program u7 p
 12000 key i
 14000 dclick 234 25
 16000 move 364 87
