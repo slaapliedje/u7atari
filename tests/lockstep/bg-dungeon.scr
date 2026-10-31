@@ -1,0 +1,36 @@
+# The Black Gate with cheats on: the debug menu's teleport to NPC 110 (Garok, in Dungeon
+# Despise), walks in the dark cave, and combat mode on near its monsters.
+# Start: the save bg-newgame.scr ends with. Arguments: --program u7 p ABCD<0xFF>
+#@start bg-start
+#@args --program u7 p ABCD\0377
+13000 key f2
+14000 key t
+14500 key n
+14700 key 1
+14900 key 1
+15100 key 0
+15300 key enter
+16800 key x
+17600 key x
+20100 shot D1.PPM
+20600 move 500 100
+20700 rdown
+25700 rup
+26500 shot D2.PPM
+27000 move 150 100
+27100 rdown
+32100 rup
+32900 shot D3.PPM
+33400 key c
+33900 move 150 170
+34000 rdown
+40000 rup
+40800 shot D4.PPM
+44800 shot D5.PPM
+45300 move 500 40
+45400 rdown
+51400 rup
+52200 shot D6.PPM
+55200 shot D7.PPM
+55700 key c
+56700 quit

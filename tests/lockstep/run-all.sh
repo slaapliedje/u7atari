@@ -4,7 +4,8 @@
 #   tests/lockstep/run-all.sh <bg-static> <si-static> <out-dir> [tt] [falcon]
 # <bg-static> and <si-static> are the games' STATIC folders (only read). The start states, named
 # by each script's "#@start" line, are made in <out-dir>/start: bg-new and si-new are STATIC with
-# an empty GAMEDAT, and bg-start is what u7host leaves after bg-newgame.scr (it ends by saving).
+# an empty GAMEDAT, and bg-start and si-start are what u7host leaves after bg-newgame.scr and
+# si-newgame.scr (they end by saving).
 # A script's "#@args" line holds its game arguments; \0377 and the like are bytes.
 # Needs build-host, build-host-si, build-dbg and build-si-dbg built from the same sources.
 set -eu
@@ -20,13 +21,17 @@ for s in bg-new si-new; do
 done
 cp -r "$bg" "$start/bg-new/STATIC"
 cp -r "$si" "$start/si-new/STATIC"
-work=$out/make-bg-start
-rm -rf "${work:?}"
-cp -r "$start/bg-new" "$work"
-cp "$here/tests/lockstep/bg-newgame.scr" "$work/TEST.SCR"
-"$here/build-host/u7host" --data "$work" --lockstep --script TEST.SCR > "$out/make-bg-start.log" 2>&1
-mkdir -p "$start/bg-start"
-cp -r "$work/STATIC" "$work/GAMEDAT" "$work/GAME00.U7" "$start/bg-start/"
+# bg-start and si-start: what bg-newgame.scr and si-newgame.scr leave (both end by saving).
+for g in bg si; do
+	case $g in bg) host=$here/build-host/u7host ;; *) host=$here/build-host-si/u7host ;; esac
+	s=$g-start work=$out/make-$g-start
+	rm -rf "${work:?}"
+	cp -r "$start/$g-new" "$work"
+	cp "$here/tests/lockstep/$g-newgame.scr" "$work/TEST.SCR"
+	"$host" --data "$work" --lockstep --script TEST.SCR > "$out/make-$s.log" 2>&1
+	mkdir -p "$start/$s"
+	cp -r "$work/STATIC" "$work/GAMEDAT" "$work/GAME00.U7" "$start/$s/"
+done
 
 for script in "$here"/tests/lockstep/*.scr; do
 	name=$(basename "$script" .scr)

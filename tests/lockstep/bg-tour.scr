@@ -1,0 +1,76 @@
+# The Black Gate with cheats on: the debug menu's teleport to NPCs across Britannia, with a
+# walk at each: Lord British (23), Skara Brae (162), Buccaneer's Den (229), Vesper (206) and
+# Yew (108); region loading, palettes and schedules far from Trinsic.
+# Start: the save bg-newgame.scr ends with. Arguments: --program u7 p ABCD<0xFF>
+#@start bg-start
+#@args --program u7 p ABCD\0377
+13000 key f2
+14000 key t
+14500 key n
+14700 key 2
+14900 key 3
+15100 key enter
+16600 key x
+17400 key x
+19900 shot LB.PPM
+20400 move 500 150
+20500 rdown
+24500 rup
+25300 shot LB2.PPM
+26300 key f2
+27300 key t
+27800 key n
+28000 key 1
+28200 key 6
+28400 key 2
+28600 key enter
+30100 key x
+30900 key x
+33400 shot SKARA.PPM
+33900 move 150 150
+34000 rdown
+38000 rup
+38800 shot SKARA2.PPM
+39800 key f2
+40800 key t
+41300 key n
+41500 key 2
+41700 key 2
+41900 key 9
+42100 key enter
+43600 key x
+44400 key x
+46900 shot BUCC.PPM
+47400 move 500 50
+47500 rdown
+51500 rup
+52300 shot BUCC2.PPM
+53300 key f2
+54300 key t
+54800 key n
+55000 key 2
+55200 key 0
+55400 key 6
+55600 key enter
+57100 key x
+57900 key x
+60400 shot VESPER.PPM
+60900 move 150 50
+61000 rdown
+65000 rup
+65800 shot VESPER2.PPM
+66800 key f2
+67800 key t
+68300 key n
+68500 key 1
+68700 key 0
+68900 key 8
+69100 key enter
+70600 key x
+71400 key x
+73900 shot YEW.PPM
+74400 move 500 100
+74500 rdown
+78500 rup
+79300 shot YEW2.PPM
+80300 quit

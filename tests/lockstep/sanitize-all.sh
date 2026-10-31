@@ -25,13 +25,17 @@ for s in bg-new si-new; do
 done
 cp -r "$bg" "$start/bg-new/STATIC"
 cp -r "$si" "$start/si-new/STATIC"
-work=$out/make-bg-start
-rm -rf "${work:?}"
-cp -r "$start/bg-new" "$work"
-cp "$here/tests/lockstep/bg-newgame.scr" "$work/TEST.SCR"
-"$here/build-host/u7host" --data "$work" --lockstep --script TEST.SCR > /dev/null 2>&1
-mkdir -p "$start/bg-start"
-cp -r "$work/STATIC" "$work/GAMEDAT" "$work/GAME00.U7" "$start/bg-start/"
+# bg-start and si-start: what bg-newgame.scr and si-newgame.scr leave (both end by saving).
+for g in bg si; do
+	case $g in bg) host=$here/build-host/u7host ;; *) host=$here/build-host-si/u7host ;; esac
+	s=$g-start work=$out/make-$g-start
+	rm -rf "${work:?}"
+	cp -r "$start/$g-new" "$work"
+	cp "$here/tests/lockstep/$g-newgame.scr" "$work/TEST.SCR"
+	"$host" --data "$work" --lockstep --script TEST.SCR > /dev/null 2>&1
+	mkdir -p "$start/$s"
+	cp -r "$work/STATIC" "$work/GAMEDAT" "$work/GAME00.U7" "$start/$s/"
+done
 
 for script in "$here"/tests/lockstep/*.scr; do
 	name=$(basename "$script" .scr)

@@ -4,7 +4,9 @@
  *
  * Time moves only when the game asks for it or waits for it: each plat_ticks or
  * plat_milliseconds call moves it on by CALL_US, a yield by YIELD_US, a sleep by its length and
- * a retrace wait to the next 70 Hz refresh. The backend reads the clock without moving it
+ * a retrace wait to the next 70 Hz refresh. A loop that only pumps (the target picker's polls
+ * the mouse and nothing else) gets IDLE_PUMPS pumps per yield's worth, as time passes on a
+ * real machine whatever the game does. The backend reads the clock without moving it
  * (lockstep_ms). Game timers and the sound tick both run from plat_pump, by the virtual clock;
  * the sound tick only when no sound lock is held. Speech plays at its own rate on the same
  * clock. So the game makes the same calls, and sees the same answers, whatever the host.
@@ -25,6 +27,7 @@
 
 #define CALL_US 100
 #define YIELD_US 1000
+#define IDLE_PUMPS 64
 #define MAX_GAME_TIMERS 8
 /* Ticks the sound may fall behind before it skips ahead, as on the Atari. */
 #define MAX_SOUND_CATCH_UP 6
@@ -40,6 +43,8 @@ static plat_timer_fn sound_tick;
 static int16_t sound_lock_depth;
 static uint32_t sound_ran_to;
 static uint32_t yield_hashed_tick;
+static uint64_t pumped_at_us;
+static uint16_t idle_pumps;
 
 static uint8_t palette[768];
 static uint32_t frames, frame_sum, midi_sum, midi_bytes, pcm_sum, pcm_samples;
@@ -118,7 +123,16 @@ static void run_sound_ticks(void)
 
 void lockstep_plat_pump(void)
 {
-	uint32_t now = ticks_at(now_us);
+	uint32_t now;
+
+	if (now_us != pumped_at_us)
+		idle_pumps = 0;
+	else if (++idle_pumps >= IDLE_PUMPS) {
+		idle_pumps = 0;
+		now_us += YIELD_US;
+	}
+	pumped_at_us = now_us;
+	now = ticks_at(now_us);
 
 	input_pump();
 	while (timers_ran_to < now) {

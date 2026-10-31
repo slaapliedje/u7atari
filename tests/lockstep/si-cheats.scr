@@ -1,0 +1,117 @@
+# Serpent Isle with cheats on (argument manimal): teleport by the map (F3) to Monitor, spells
+# there by the cheat key (F5): 3, 13, 19, 33, 43 and 55, each cast by the Avatar at a spot
+# beside them; then teleports with a walk to Fawn, Moonshade, the Sleeping Bull, the ice to the
+# north, the sea by the Furnace and the swamp; last a scroll (F8) paged through.
+# Start: the save si-newgame.scr ends with. Arguments: --program si p manimal
+#@start si-start
+#@args --program si p manimal
+15000 key f3
+17000 click 280 173
+22000 shot MONITOR.PPM
+23000 key f5
+23200 key 3
+23400 key enter
+23900 click 320 95
+25400 click 420 150
+26900 shot S3A.PPM
+28900 shot S3B.PPM
+29900 key f5
+30100 key 1
+30300 key 3
+30500 key enter
+31000 click 320 95
+32500 click 420 150
+34000 shot S13A.PPM
+36000 shot S13B.PPM
+37000 key f5
+37200 key 1
+37400 key 9
+37600 key enter
+38100 click 320 95
+39600 click 420 150
+41100 shot S19A.PPM
+43100 shot S19B.PPM
+44100 key f5
+44300 key 3
+44500 key 3
+44700 key enter
+45200 click 320 95
+46700 click 420 150
+48200 shot S33A.PPM
+50200 shot S33B.PPM
+51200 key f5
+51400 key 4
+51600 key 3
+51800 key enter
+52300 click 320 95
+53800 click 420 150
+55300 shot S43A.PPM
+57300 shot S43B.PPM
+58300 key f5
+58500 key 5
+58700 key 5
+58900 key enter
+59400 click 320 95
+60900 click 420 150
+62400 shot S55A.PPM
+64400 shot S55B.PPM
+64900 move 500 150
+65000 rdown
+69000 rup
+69800 shot MONITOR2.PPM
+70800 key f3
+72800 click 286 122
+77800 shot FAWN.PPM
+78300 move 150 150
+78400 rdown
+82400 rup
+83200 shot FAWN2.PPM
+84200 key f3
+86200 click 434 127
+91200 shot MOON.PPM
+91700 move 500 60
+91800 rdown
+95800 rup
+96600 shot MOON2.PPM
+97600 key f3
+99600 click 384 97
+104600 shot BULL.PPM
+105100 move 150 60
+105200 rdown
+109200 rup
+110000 shot BULL2.PPM
+111000 key f3
+113000 click 354 50
+118000 shot ICE.PPM
+118500 move 500 100
+118600 rdown
+122600 rup
+123400 shot ICE2.PPM
+124400 key f3
+126400 click 274 32
+131400 shot FURN.PPM
+131900 move 150 100
+132000 rdown
+136000 rup
+136800 shot FURN2.PPM
+137800 key f3
+139800 click 344 108
+144800 shot SWAMP.PPM
+145300 move 500 150
+145400 rdown
+149400 rup
+150200 shot SWAMP2.PPM
+151200 key f8
+151500 key c
+151700 key 2
+151900 key enter
+152100 key 2
+152300 key enter
+154300 shot SCROLL.PPM
+155800 click 240 100
+156800 shot SCROLL2.PPM
+158300 click 240 100
+159300 shot SCROLL3.PPM
+160800 click 240 100
+161800 shot SCROLL4.PPM
+162800 quit

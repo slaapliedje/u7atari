@@ -1,5 +1,6 @@
 # Serpent Isle from the launcher: the intro (music and speech), the menu, a new game named
-# Avatar, and the opening on the ship clicked through, then a walk.
+# Avatar, and the opening on the ship clicked through, then a walk and a save to the first slot
+# as "Start": the start state for the other Serpent Isle scenarios (si-start).
 # Start: STATIC and an empty GAMEDAT. Arguments: none (the launcher).
 #@start si-new
 #@args 
@@ -40,4 +41,15 @@
 196100 rdown
 203000 rup
 204000 shot WALK.PPM
-205000 quit
+206000 key s
+208000 shot SAVEDLG.PPM
+209000 click 200 27
+210000 key S
+210200 key t
+210400 key a
+210600 key r
+210800 key t
+211500 key enter
+214000 key esc
+215000 shot SAVED.PPM
+216000 quit

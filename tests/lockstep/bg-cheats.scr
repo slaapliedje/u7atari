@@ -1,0 +1,123 @@
+# The Black Gate with cheats on: the debug menu (F2) sets the time to 10 PM, then spells by the
+# cheat key (F5, cast by the Avatar): Light, Great Light, Fireworks, Weather, Thunder, Create
+# Food, Tremor, and Lightning, Fire Field, Swarm and Explosion at a spot by the tree; then a
+# book, a scroll and a plaque (F8): the night palette, the debug console, spell sprites and
+# sounds, and the three readable fonts.
+# Start: the save bg-newgame.scr ends with. Arguments: --program u7 p ABCD<0xFF>
+#@start bg-start
+#@args --program u7 p ABCD\0377
+13000 key f2
+14500 shot MENU.PPM
+15000 key s
+15200 key 2
+15400 key 2
+15600 key enter
+15800 key 3
+16000 key enter
+16500 key x
+18000 shot NIGHT.PPM
+19000 key f5
+19200 key 1
+19400 key 3
+19600 key enter
+20100 click 310 90
+21600 shot S13A.PPM
+23600 shot S13B.PPM
+24600 key f5
+24800 key 1
+25000 key 9
+25200 key enter
+25700 click 310 90
+27200 shot S19A.PPM
+29200 shot S19B.PPM
+30200 key f5
+30400 key 3
+30600 key enter
+31100 click 310 90
+32600 shot S3A.PPM
+34600 shot S3B.PPM
+35600 key f5
+35800 key 1
+36000 key enter
+36500 click 310 90
+38000 shot S1A.PPM
+40000 shot S1B.PPM
+41000 key f5
+41200 key 7
+41400 key enter
+41900 click 310 90
+43400 shot S7A.PPM
+45400 shot S7B.PPM
+46400 key f5
+46600 key 8
+46800 key enter
+47300 click 310 90
+48800 shot S8A.PPM
+50800 shot S8B.PPM
+51800 key f5
+52000 key 5
+52200 key 5
+52400 key enter
+52900 click 310 90
+54400 shot S55A.PPM
+56400 shot S55B.PPM
+57400 key f5
+57600 key 3
+57800 key 3
+58000 key enter
+58500 click 310 90
+60000 click 400 150
+61500 shot S33A.PPM
+63500 shot S33B.PPM
+64500 key f5
+64700 key 4
+64900 key 6
+65100 key enter
+65600 click 310 90
+67100 click 400 150
+68600 shot S46A.PPM
+70600 shot S46B.PPM
+71600 key f5
+71800 key 2
+72000 key 6
+72200 key enter
+72700 click 310 90
+74200 click 400 150
+75700 shot S26A.PPM
+77700 shot S26B.PPM
+78700 key f5
+78900 key 4
+79100 key 3
+79300 key enter
+79800 click 310 90
+81300 click 400 150
+82800 shot S43A.PPM
+84800 shot S43B.PPM
+85800 key f8
+86100 key b
+86300 key 1
+86500 key enter
+86700 key 1
+86900 key enter
+88900 shot Rb.PPM
+89400 click 100 180
+90900 shot Rb2.PPM
+91900 key f8
+92200 key c
+92400 key 2
+92600 key enter
+92800 key 2
+93000 key enter
+95000 shot Rc.PPM
+95500 click 100 180
+97000 shot Rc2.PPM
+98000 key f8
+98300 key p
+98500 key 3
+98700 key enter
+98900 key 3
+99100 key enter
+101100 shot Rp.PPM
+101600 click 100 180
+103100 shot Rp2.PPM
+104100 quit

@@ -1,0 +1,45 @@
+# The Black Gate from a save: a walk, then the save dialog's Load on slot 1 (confirmed), music,
+# speech and sound effects turned off and a walk without them, turned back on, a save to slot 2
+# (compared byte for byte), and slot 2 loaded back, then a walk.
+# Start: the save bg-newgame.scr ends with. Arguments: --program u7 p
+#@start bg-start
+#@args --program u7 p
+12000 move 500 150
+12100 rdown
+17000 rup
+18000 shot WALKED.PPM
+19000 key s
+21000 click 200 27
+22500 click 326 157
+24000 click 296 109
+28000 shot LOADED.PPM
+29000 key s
+31000 click 200 170
+32000 click 328 170
+33000 click 456 170
+34000 shot TOGGLED.PPM
+35000 key esc
+36000 move 150 60
+36100 rdown
+41000 rup
+42000 shot QUIET.PPM
+43000 key s
+45000 click 200 170
+46000 click 328 170
+47000 click 456 170
+48000 click 200 41
+49000 key T
+49200 key w
+49400 key o
+50000 key enter
+52000 shot SAVED.PPM
+53000 click 200 41
+54500 click 326 157
+56000 shot ASK2.PPM
+58000 click 296 109
+62000 shot LOADED2.PPM
+62500 move 150 150
+62600 rdown
+67000 rup
+68000 shot END.PPM
+69000 quit
