@@ -130,6 +130,8 @@ static void midi_out(const uint8_t *message, int16_t length)
 	}
 #ifdef U7_DEBUG_LOG
 	sound_midi_bytes += (uint32_t) length;
+	if (lockstep)
+		lockstep_midi(message, length);
 #endif
 	plat_sound_unlock();
 }
@@ -300,6 +302,10 @@ void plat_pcm_start(uint32_t rate)
 		snprintf(text, sizeof text, "pcm start %lu Hz\r\n", (unsigned long) rate);
 		plat_log(text);
 	}
+	if (lockstep) {
+		lockstep_pcm_start(rate);
+		return;
+	}
 #endif
 	if (ring == NULL)
 		return;
@@ -314,6 +320,10 @@ int32_t plat_pcm_queue(const uint8_t *samples, int32_t count)
 	int32_t taken;
 	uint32_t room, at, written;
 
+#ifdef U7_DEBUG_LOG
+	if (lockstep)
+		return lockstep_pcm_queue(samples, count);
+#endif
 	if (ring == NULL || in_rate == 0)
 		return count;                       /* nowhere to play it: dropped */
 	plat_sound_lock();
@@ -336,6 +346,10 @@ int32_t plat_pcm_pending(void)
 {
 	uint32_t pending;
 
+#ifdef U7_DEBUG_LOG
+	if (lockstep)
+		return lockstep_pcm_pending();
+#endif
 	if (ring == NULL || in_rate == 0)
 		return 0;
 	plat_sound_lock();
@@ -347,6 +361,12 @@ int32_t plat_pcm_pending(void)
 
 void plat_pcm_stop(void)
 {
+#ifdef U7_DEBUG_LOG
+	if (lockstep) {
+		lockstep_pcm_stop();
+		return;
+	}
+#endif
 	if (ring == NULL)
 		return;
 	plat_sound_lock();

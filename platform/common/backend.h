@@ -1,4 +1,5 @@
-/* Shared state inside the Atari backend; the game sees only plat.h. */
+/* Shared state inside a backend (platform/atari, or platform/host for the PC lockstep reference)
+ * and the parts they share (platform/common); the game sees only plat.h. */
 #ifndef ATARI_BACKEND_H
 #define ATARI_BACKEND_H
 
@@ -48,6 +49,44 @@ void input_inject_key(uint16_t bios);
 void input_inject_mouse(int16_t x, int16_t y, uint16_t buttons);
 uint16_t input_mouse_buttons(void);
 void video_shot(const char *name);
+#endif
+/* The keys and mouse as the game sees them (inputq.c): backends hand over PC BIOS key words,
+ * the shift state, and the mouse's position and buttons. */
+void inputq_reset(void);
+void inputq_key(uint16_t bios);
+void inputq_modifiers(uint16_t state);
+void inputq_mouse_position(int16_t *x, int16_t *y);
+uint16_t inputq_mouse_buttons(void);
+void inputq_mouse_to(int16_t x, int16_t y);
+void inputq_mouse_set_buttons(uint16_t buttons);
+#ifdef U7_DEBUG_LOG
+/* --lockstep (lockstep.c): a virtual clock and checksums, to compare hosts. */
+extern bool lockstep;
+void lockstep_start(void);
+void lockstep_end(void);
+/* The clock, not moving it: for the backend's own use. */
+uint32_t lockstep_ms(void);
+uint32_t lockstep_plat_ticks(void);
+uint32_t lockstep_plat_milliseconds(void);
+void lockstep_plat_sleep(uint32_t milliseconds);
+void lockstep_plat_pump(void);
+void lockstep_plat_yield(void);
+void lockstep_wait_retrace(void);
+void lockstep_timer_add(void (*fn)(void));
+void lockstep_timer_remove(void (*fn)(void));
+void lockstep_sound_tick_set(void (*fn)(void));
+void lockstep_sound_lock(void);
+void lockstep_sound_unlock(void);
+void lockstep_drop_sound_lock(void);
+void lockstep_palette(int16_t first, int16_t count, const uint8_t *rgb);
+/* A frame shown: kind P from a present, R from a yield. */
+void lockstep_frame(const uint8_t *pixels, char kind);
+/* MIDI as it goes out, after any General MIDI translation. */
+void lockstep_midi(const uint8_t *message, int16_t length);
+void lockstep_pcm_start(uint32_t rate);
+int32_t lockstep_pcm_queue(const uint8_t *samples, int32_t count);
+int32_t lockstep_pcm_pending(void);
+void lockstep_pcm_stop(void);
 #endif
 /* Restores the machine and exits the process. */
 void backend_quit(int code);

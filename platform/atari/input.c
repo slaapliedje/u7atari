@@ -26,10 +26,7 @@
 #include "plat.h"
 #include "backend.h"
 
-#define KEY_BUFFER_SIZE 64
 #define MOUSE_QUEUE_SIZE 64
-#define MOUSE_WIDTH 640
-#define MOUSE_HEIGHT 200
 /* Columns and lines a mouse count moves: one game pixel each way. */
 #define MOUSE_X_SCALE 2
 #define MOUSE_Y_SCALE 1
@@ -66,15 +63,6 @@ static _KEYTAB *layout;
 /* Filled by the IKBD interrupt, emptied by plat_pump. */
 static volatile uint8_t mouse_queue[MOUSE_QUEUE_SIZE][3];
 static volatile uint16_t mouse_in, mouse_out;
-
-static uint16_t key_buffer[KEY_BUFFER_SIZE];
-static uint16_t key_head, key_count;
-static int16_t pending_scan = -1;
-static uint16_t modifiers;
-
-static plat_mouse_fn mouse_handler;
-static int16_t mouse_x, mouse_y;
-static uint16_t mouse_buttons;
 
 static void flush_keys(void)
 {
@@ -113,13 +101,7 @@ void input_shutdown(void)
 
 void input_reset(void)
 {
-	key_head = 0;
-	key_count = 0;
-	pending_scan = -1;
-	mouse_handler = NULL;
-	mouse_x = 0;
-	mouse_y = 0;
-	mouse_buttons = 0;
+	inputq_reset();
 }
 
 /* Runs in the IKBD interrupt. A full queue drops the packet; the next one carries the buttons. */
@@ -314,46 +296,9 @@ static void read_keys(void)
 		}
 #endif
 
-		/* A full buffer drops the key, as the BIOS did. */
-		if (bios != 0 && key_count < KEY_BUFFER_SIZE) {
-			key_buffer[(key_head + key_count) % KEY_BUFFER_SIZE] = bios;
-			key_count++;
-		}
+		inputq_key(bios);
 	}
-	modifiers = (uint16_t) (Kbshift(-1) & 0x0F);
-}
-
-int16_t plat_key_available(void)
-{
-	if (pending_scan < 0 && key_count == 0)
-		plat_pump();
-	return pending_scan >= 0 || key_count > 0;
-}
-
-int16_t plat_key_get(void)
-{
-	uint16_t next;
-
-	while (!plat_key_available())
-		plat_yield();
-	if (pending_scan >= 0) {
-		next = (uint16_t) pending_scan;
-		pending_scan = -1;
-		return (int16_t) next;
-	}
-	next = key_buffer[key_head];
-	key_head = (uint16_t) ((key_head + 1) % KEY_BUFFER_SIZE);
-	key_count--;
-	if ((next & 0xFF) == 0) {
-		pending_scan = (int16_t) (next >> 8);
-		return 0;
-	}
-	return (int16_t) (next & 0xFF);
-}
-
-uint16_t plat_key_modifiers(void)
-{
-	return modifiers;
+	inputq_modifiers((uint16_t) (Kbshift(-1) & 0x0F));
 }
 
 /* ---- Mouse ---- */
@@ -363,52 +308,27 @@ static int16_t clamp16(int32_t v, int32_t low, int32_t high)
 	return (int16_t) (v < low ? low : v > high ? high : v);
 }
 
-static void deliver(uint16_t events)
-{
-#ifdef U7_DEBUG_LOG
-	char text[48];
-
-	snprintf(text, sizeof text, "mouse %02x %u %d,%d\r\n", events, mouse_buttons, mouse_x, mouse_y);
-	plat_log(text);
-#endif
-	if (mouse_handler != NULL)
-		mouse_handler(events, mouse_buttons, mouse_x, mouse_y);
-	video_refresh_wanted();
-}
-
 /* Applies the queued packets: moves first, as one event, then each button change in order. */
 static void read_mouse(void)
 {
-	bool moved = false;
+	int16_t x, y;
+	uint16_t buttons = inputq_mouse_buttons();
 
+	inputq_mouse_position(&x, &y);
 	while (mouse_out != mouse_in) {
 		const volatile uint8_t *packet = mouse_queue[mouse_out];
-		uint16_t buttons = (uint16_t) ((packet[0] & IKBD_LEFT ? 1 : 0) |
-			(packet[0] & IKBD_RIGHT ? 2 : 0));
-		int16_t x = clamp16(mouse_x + (int8_t) packet[1] * MOUSE_X_SCALE, 0, MOUSE_WIDTH - 1);
-		int16_t y = clamp16(mouse_y + (int8_t) packet[2] * MOUSE_Y_SCALE, 0, MOUSE_HEIGHT - 1);
-		uint16_t changed = buttons ^ mouse_buttons;
+		uint16_t now = (uint16_t) ((packet[0] & IKBD_LEFT ? 1 : 0) | (packet[0] & IKBD_RIGHT ? 2 : 0));
 
+		x = clamp16(x + (int8_t) packet[1] * MOUSE_X_SCALE, 0, 639);
+		y = clamp16(y + (int8_t) packet[2] * MOUSE_Y_SCALE, 0, 199);
 		mouse_out = (uint16_t) ((mouse_out + 1) % MOUSE_QUEUE_SIZE);
-		if (x != mouse_x || y != mouse_y) {
-			mouse_x = x;
-			mouse_y = y;
-			moved = true;
-		}
-		if (changed == 0)
+		if (now == buttons)
 			continue;
-		if (moved) {
-			deliver(PLAT_MOUSE_MOVED);
-			moved = false;
-		}
-		mouse_buttons = buttons;
-		if (changed & 1)
-			deliver(buttons & 1 ? PLAT_MOUSE_LEFT_DOWN : PLAT_MOUSE_LEFT_UP);
-		if (changed & 2)
-			deliver(buttons & 2 ? PLAT_MOUSE_RIGHT_DOWN : PLAT_MOUSE_RIGHT_UP);
+		inputq_mouse_to(x, y);
+		inputq_mouse_set_buttons(now);
+		buttons = now;
 	}
-	if (moved)
-		deliver(PLAT_MOUSE_MOVED);
+	inputq_mouse_to(x, y);
 }
 
 void input_pump(void)
@@ -420,76 +340,4 @@ void input_pump(void)
 #ifdef U7_DEBUG_LOG
 	script_pump();
 #endif
-}
-
-#ifdef U7_DEBUG_LOG
-/* For script.c: a key word as if typed, and the mouse moved (x -1: where it is) with the
- * buttons in this state, as if from IKBD packets. */
-void input_inject_key(uint16_t bios)
-{
-	if (key_count < KEY_BUFFER_SIZE) {
-		key_buffer[(key_head + key_count) % KEY_BUFFER_SIZE] = bios;
-		key_count++;
-	}
-}
-
-void input_inject_mouse(int16_t x, int16_t y, uint16_t buttons)
-{
-	uint16_t changed = buttons ^ mouse_buttons;
-
-	if (x >= 0 && (x != mouse_x || y != mouse_y)) {
-		mouse_x = clamp16(x, 0, MOUSE_WIDTH - 1);
-		mouse_y = clamp16(y, 0, MOUSE_HEIGHT - 1);
-		deliver(PLAT_MOUSE_MOVED);
-	}
-	mouse_buttons = buttons;
-	if (changed & 1)
-		deliver(buttons & 1 ? PLAT_MOUSE_LEFT_DOWN : PLAT_MOUSE_LEFT_UP);
-	if (changed & 2)
-		deliver(buttons & 2 ? PLAT_MOUSE_RIGHT_DOWN : PLAT_MOUSE_RIGHT_UP);
-}
-
-uint16_t input_mouse_buttons(void)
-{
-	return mouse_buttons;
-}
-#endif
-
-void plat_mouse_state(int16_t *x, int16_t *y, uint16_t *buttons)
-{
-	if (x != NULL)
-		*x = mouse_x;
-	if (y != NULL)
-		*y = mouse_y;
-	if (buttons != NULL)
-		*buttons = mouse_buttons;
-}
-
-void plat_mouse_set_handler(plat_mouse_fn fn)
-{
-	mouse_handler = fn;
-}
-
-void plat_mouse_move_to(int16_t x, int16_t y)
-{
-	mouse_x = clamp16(x, 0, MOUSE_WIDTH - 1);
-	mouse_y = clamp16(y, 0, MOUSE_HEIGHT - 1);
-}
-
-/* ---- Pointer: the game draws its own ---- */
-
-int16_t plat_cursor_is_hardware(void)
-{
-	return 0;
-}
-
-void plat_cursor_set_shape(const uint8_t *pixels, int16_t width, int16_t height,
-	int16_t hot_x, int16_t hot_y)
-{
-	(void) pixels; (void) width; (void) height; (void) hot_x; (void) hot_y;
-}
-
-void plat_cursor_show(int16_t visible)
-{
-	(void) visible;
 }

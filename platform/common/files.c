@@ -20,8 +20,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef __MINT__
 #include <mint/osbind.h>
 #include <mint/ostruct.h>
+#else
+#include <sys/statvfs.h>
+#endif
 
 #include "plat.h"
 #include "backend.h"
@@ -471,9 +475,15 @@ int16_t plat_file_rename(const char *from, const char *to)
 	return rename(from_path, to_path) == 0;
 }
 
-/* Free bytes on the data directory's drive, from GEMDOS Dfree. */
+/* Free bytes on the data directory's drive, from GEMDOS Dfree; a fixed 32 MB in lockstep, the
+ * same on every host. */
 uint32_t plat_disk_free(void)
 {
+#ifdef U7_DEBUG_LOG
+	if (lockstep)
+		return UINT32_C(32) << 20;
+#endif
+#ifdef __MINT__
 	_DISKINFO info;
 	int16_t drive = 0;  /* the current drive */
 	uint64_t bytes;
@@ -483,6 +493,14 @@ uint32_t plat_disk_free(void)
 	if (Dfree(&info, drive) != 0)
 		return 0;
 	bytes = (uint64_t) info.b_free * info.b_secsiz * info.b_clsiz;
+#else
+	struct statvfs info;
+	uint64_t bytes;
+
+	if (statvfs(root, &info) != 0)
+		return 0;
+	bytes = (uint64_t) info.f_bavail * info.f_frsize;
+#endif
 	/* Callers may hold this in a signed long. */
 	return bytes > INT32_MAX ? INT32_MAX : (uint32_t) bytes;
 }
@@ -552,8 +570,14 @@ static void add_found(find_list *list, const char fields[11], uint32_t size)
 	f->size = size;
 }
 
+static int by_name(const void *a, const void *b)
+{
+	return strcmp(((const found_file *) a)->name, ((const found_file *) b)->name);
+}
+
 /* Every file in the pattern's directory whose 8.3 name matches, listed up front so
- * deleting files during the listing is safe. */
+ * deleting files during the listing is safe, and sorted by name, so every host lists them in
+ * the same order. */
 static find_list *list_matches(const char *dos_pattern)
 {
 	char dir_dos[PATH_SIZE];
@@ -586,6 +610,8 @@ static find_list *list_matches(const char *dos_pattern)
 	}
 	if (d != NULL)
 		closedir(d);
+	if (list->count > 1)
+		qsort(list->files, list->count, sizeof *list->files, by_name);
 	return list;
 }
 

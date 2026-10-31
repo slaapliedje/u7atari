@@ -8,9 +8,43 @@ if(NOT EXISTS "${U7_UPSTREAM_DIR}/CMakeLists.txt")
     message(FATAL_ERROR "Missing ${U7_UPSTREAM_DIR}; run: git submodule update --init")
 endif()
 
+# Cross-compiled, this builds the Atari game. Built for the PC, it builds u7host instead: the
+# same game with platform/host, the lockstep reference the Atari build is compared with
+# (tools/lockstep-compare.sh). Build that 32-bit, as the Atari is:
+#   cmake -B build-host -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32
+if(CMAKE_CROSSCOMPILING)
+    set(U7_HOST OFF)
+else()
+    set(U7_HOST ON)
+endif()
+
 # Upstream builds the game as the u7_game object library; we supply the backend instead of
 # libmatoya, munt and Nuked OPL3.
 set(U7_BACKEND_MATOYA OFF CACHE BOOL "" FORCE)
+# The game's arena: upstream gives it 32 MB, of which the game uses about 2 MB (both games,
+# measured under Hatari). 4 MB leaves room to spare and lets a 14 MB Falcon run from ST RAM.
+add_compile_definitions("LINEAR_MEMORY_SIZE=(UINT32_C(4)<<20)")
+
+if(U7_HOST)
+    add_subdirectory("${U7_UPSTREAM_DIR}" game)
+    file(GLOB U7_HOST_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/platform/common/*.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/platform/host/*.c")
+    add_executable(u7host ${U7_HOST_SOURCES} tests/save_test.cpp tests/speech_hook.cpp)
+    if(U7_GAME STREQUAL "Serpent Isle")
+        target_compile_definitions(u7host PRIVATE U7_SERPENT_ISLE)
+    endif()
+    target_compile_definitions(u7host PRIVATE U7_DEBUG_LOG)
+    target_include_directories(u7host PRIVATE platform/common
+        "${U7_UPSTREAM_DIR}/platform" "${U7_UPSTREAM_DIR}/platform/matoya")
+    target_compile_options(u7host PRIVATE -Wall -Wextra)
+    set_source_files_properties(tests/save_test.cpp tests/speech_hook.cpp PROPERTIES
+        INCLUDE_DIRECTORIES "$<TARGET_PROPERTY:u7_game,INCLUDE_DIRECTORIES>"
+        COMPILE_OPTIONS "$<TARGET_PROPERTY:u7_game,COMPILE_OPTIONS>;-w")
+    target_link_libraries(u7host PRIVATE u7_game)
+    return()
+endif()
+
 # The 030 reads and writes words and longs at any address, so let GCC do so: with its m68k
 # default it copies and compares anything not known to be aligned a byte at a time.
 add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-mno-strict-align>)
@@ -19,14 +53,12 @@ add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-mno-strict-align>)
 add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-msoft-float>)
 # C++ type_info at even addresses despite upstream's #pragma pack(1): see the header.
 add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:--include=${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/rtti_align.h>")
-# The game's arena: upstream gives it 32 MB, of which the game uses about 2 MB (both games,
-# measured under Hatari). 4 MB leaves room to spare and lets a 14 MB Falcon run from ST RAM.
-add_compile_definitions("LINEAR_MEMORY_SIZE=(UINT32_C(4)<<20)")
 add_subdirectory("${U7_UPSTREAM_DIR}" game)
 # Copy-mode shape spans are drawn by platform/atari/shapes.S.
 target_compile_definitions(u7_game PRIVATE U7_SHAPE_SPANS_68K)
 
 file(GLOB U7_ATARI_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/common/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/*.S")
 add_executable(u7 ${U7_ATARI_SOURCES})
@@ -40,6 +72,8 @@ set_target_properties(u7 PROPERTIES OUTPUT_NAME ${U7_PRG_NAME})
 # A link map, to turn addresses from Hatari's debugger into function names.
 target_link_options(u7 PRIVATE "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/${U7_PRG_NAME}.map")
 target_include_directories(u7 PRIVATE
+    platform/common
+    platform/atari
     "${U7_UPSTREAM_DIR}/platform"
     "${U7_UPSTREAM_DIR}/platform/matoya")   # vgafont8.h
 target_compile_options(u7 PRIVATE -Wall -Wextra)

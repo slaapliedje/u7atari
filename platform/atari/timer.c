@@ -48,8 +48,18 @@ static bool sound_timer_on;
 
 void timer_sound_vector(void);          /* timerint.S */
 
+#ifdef U7_DEBUG_LOG
+/* --lockstep: time and ticks come from lockstep.c instead. */
+#define LOCKSTEP(call) do { if (lockstep) { call; return; } } while (0)
+#define LOCKSTEP_VALUE(call) do { if (lockstep) return call; } while (0)
+#else
+#define LOCKSTEP(call) do { } while (0)
+#define LOCKSTEP_VALUE(call) do { } while (0)
+#endif
+
 void timer_init(void)
 {
+	LOCKSTEP((void) 0);
 	start_200 = *hz_200;
 	timers_ran_to = 0;
 	sound_ticks_run = sound_ticks_due;
@@ -61,6 +71,7 @@ void timer_init(void)
 void timer_shutdown(void)
 {
 	sound_tick = NULL;
+	LOCKSTEP((void) 0);
 	if (!sound_timer_on)
 		return;
 	sound_timer_on = false;
@@ -103,16 +114,19 @@ void timer_sound_run(void)
 
 uint32_t plat_ticks(void)
 {
+	LOCKSTEP_VALUE(lockstep_plat_ticks());
 	return (uint32_t) (((uint64_t) (*hz_200 - start_200) * PLAT_TICKS_PER_SECOND) / 200);
 }
 
 uint32_t plat_milliseconds(void)
 {
+	LOCKSTEP_VALUE(lockstep_plat_milliseconds());
 	return (*hz_200 - start_200) * 5;
 }
 
 void plat_sleep(uint32_t milliseconds)
 {
+	LOCKSTEP(lockstep_plat_sleep(milliseconds));
 	uint32_t until = plat_milliseconds() + milliseconds;
 
 	while ((int32_t) (until - plat_milliseconds()) > 0)
@@ -121,6 +135,7 @@ void plat_sleep(uint32_t milliseconds)
 
 void plat_pump(void)
 {
+	LOCKSTEP(lockstep_plat_pump());
 	uint32_t now = plat_ticks();
 
 	input_pump();
@@ -151,12 +166,14 @@ void plat_pump(void)
 
 void plat_yield(void)
 {
+	LOCKSTEP(lockstep_plat_yield());
 	plat_pump();
 	video_refresh();
 }
 
 void plat_game_timer_add(plat_timer_fn fn)
 {
+	LOCKSTEP(lockstep_timer_add(fn));
 	for (int i = 0; i < MAX_GAME_TIMERS; i++)
 		if (game_timers[i] == NULL) {
 			game_timers[i] = fn;
@@ -167,6 +184,7 @@ void plat_game_timer_add(plat_timer_fn fn)
 
 void plat_game_timer_remove(plat_timer_fn fn)
 {
+	LOCKSTEP(lockstep_timer_remove(fn));
 	for (int i = 0; i < MAX_GAME_TIMERS; i++)
 		if (game_timers[i] == fn)
 			game_timers[i] = NULL;
@@ -174,6 +192,7 @@ void plat_game_timer_remove(plat_timer_fn fn)
 
 void plat_sound_tick_set(plat_timer_fn fn)
 {
+	LOCKSTEP(lockstep_sound_tick_set(fn));
 	plat_sound_lock();
 	sound_tick = fn;
 	sound_ticks_run = sound_ticks_due;    /* a new tick starts now, with no backlog */
@@ -182,11 +201,13 @@ void plat_sound_tick_set(plat_timer_fn fn)
 
 void plat_sound_lock(void)
 {
+	LOCKSTEP(lockstep_sound_lock());
 	sound_lock_depth++;
 }
 
 void plat_sound_unlock(void)
 {
+	LOCKSTEP(lockstep_sound_unlock());
 	if (--sound_lock_depth == 0 && sound_ticks_run != sound_ticks_due)
 		run_sound_ticks();
 }
@@ -194,5 +215,6 @@ void plat_sound_unlock(void)
 /* The program left by plat_exit, maybe from inside a lock it will never let go. */
 void timer_drop_sound_lock(void)
 {
+	LOCKSTEP(lockstep_drop_sound_lock());
 	sound_lock_depth = 0;
 }

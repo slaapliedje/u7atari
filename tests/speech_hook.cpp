@@ -1,4 +1,4 @@
-// Debug builds: the script step "speech N" (platform/atari/script.c) starts speech track N as the
+// Debug builds: the script step "speech N" (platform/common/script.c) starts speech track N as the
 // usecode's StartSpeech intrinsic does, so the main game's speech path can be tested without
 // waiting for the story to call for it.
 #include "u7port.h"

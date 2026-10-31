@@ -36,18 +36,23 @@ platform/atari/      the backend: implements upstream's platform/plat.h
   main.c             main(), program runner (setjmp/longjmp in place of threads), exit
   timer.c            60 Hz ticks from _hz_200, game timers, sound tick (MFP Timer B) and lock
   video.c            chunky-to-planar present, palette, retrace, the text-mode screen
-  console.c          the game's printf and conio text: 8x8 in graphics mode, 80x25 text mode
-  game.h             what differs between The Black Gate and Serpent Isle builds
-  input.c            keys from the BIOS buffer, mouse from the IKBD mousevec, PC key words
+  input.c            keys from the BIOS buffer as PC key words, mouse from the IKBD mousevec
   ikbd.S             the mousevec wrapper and the Alt-Help screen-dump stub
   timerint.S         the Timer B interrupt that runs the sound tick on its own stack
   c2p.S              chunky-to-planar for the frame, converting only the 16-pixel groups that changed
   shapes.S           shape drawing in copy mode, the game's hottest path (called from the fork)
   sound.c            MIDI out, DMA speech; AdLib reported absent
-  gm.c               --gm: the game's MT-32 MIDI translated for a General MIDI synth (tests/gm_test.c)
   c2p.h              chunky-to-planar for 16 pixels in C, the reference for c2p.S (tests/c2p_test.c)
   resample.h         speech resampling into the DMA ring (tests/resample_test.c checks it)
-  files.c            GEMDOS file access for the game's DOS names
+platform/common/     shared by the Atari backend and the PC reference
+  files.c            file access for the game's DOS names
+  console.c          the game's printf and conio text: 8x8 in graphics mode, 80x25 text mode
+  inputq.c           the key queue and the mouse as the game sees them
+  gm.c               --gm: the game's MT-32 MIDI translated for a General MIDI synth (tests/gm_test.c)
+  script.c           --script: scripted keys and mouse (debug builds)
+  lockstep.c         --lockstep: the virtual clock and checksums (debug builds)
+  game.h             what differs between The Black Gate and Serpent Isle builds
+platform/host/       u7host, the PC lockstep reference
 release/README.TXT   the instructions shipped with a release (tools/make-release.sh)
 CMakeLists.txt       builds upstream's u7_game library + this backend → ULTIMA7.PRG or SERPENT.PRG
 ```
@@ -214,6 +219,19 @@ game needs about 6 MB in all, from fast RAM when there is enough, else from ST R
 sound buffer.
 
 ## Testing
+
+**Lockstep comparison.** Both games' code also builds for the PC, as `u7host` (`platform/host`,
+a 32-bit build: `cmake -B build-host -DCMAKE_C_FLAGS=-m32 -DCMAKE_CXX_FLAGS=-m32`, and
+`build-host-si` with `-DU7_GAME="Serpent Isle"`). With `--lockstep` (debug builds), the game runs on a
+virtual clock that moves only when the game asks the time or waits, its timers and sound tick
+run from that clock, and the backend logs checksums of each new frame, of every MIDI byte and of
+every speech sample (`platform/common/lockstep.c`). The same script then plays the same game on
+both, and `tools/lockstep-compare.sh <tt|falcon> <game-dir> <script> <out-dir> [arguments]`
+runs both and compares the logs and the files the game wrote. The first line that differs is
+where the Atari build went wrong: a byte-order or alignment fault in the port, not a question of
+how the original behaved. The backends share `platform/common` (files, console, keys and mouse,
+the General MIDI translation, scripts) so that they behave alike.
+
 
 `tools/hatari-test.sh <tt|falcon> <hd-dir>` runs the game headless (MIDI off unless
 `U7_TEST_MIDI=1`); add `--avirecord --avi-vcodec png --avi-file f.avi` to record frames.

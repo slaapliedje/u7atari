@@ -1,8 +1,8 @@
 /* Scripted input for testing under Hatari, in builds with U7_DEBUG_LOG: --script <file>.
  *
  * Each line of the file is a time and an action, the time in milliseconds of the machine's own
- * clock since start-up, so steps land at the same point in the game however fast the emulator
- * runs:
+ * clock since start-up (with --lockstep, the virtual clock), so steps land at the same point in
+ * the game however fast the emulator runs:
  *   3000 key i          a key: a character, or esc, enter, space, bs, tab, up, down, left,
  *                       right, home, end, pgup, pgdn, f1 to f10, alt-<letter>
  *   3500 move 320 100   the mouse, in the game's 640x200 mouse space
@@ -172,7 +172,8 @@ void script_load(const char *path)
 /* Runs the steps that are due; from plat_pump, after the real input. */
 void script_pump(void)
 {
-	uint32_t now = plat_milliseconds();
+	/* in lockstep, without moving the clock */
+	uint32_t now = lockstep ? lockstep_ms() : plat_milliseconds();
 
 	while (next_step < step_count && steps[next_step].at <= now) {
 		step *s = &steps[next_step++];
@@ -204,6 +205,8 @@ void script_pump(void)
 			break;
 		case QUIT:
 			plat_log("script: quit\r\n");
+			if (lockstep)
+				lockstep_end();
 			backend_quit(0);
 			break;
 		}

@@ -213,6 +213,10 @@ void plat_video_set_palette(int16_t first, int16_t count, const uint8_t *rgb)
 	if (count <= 0)
 		return;
 	memcpy(palette + 3 * first, rgb, (size_t) count * 3);
+#ifdef U7_DEBUG_LOG
+	if (lockstep)
+		lockstep_palette(first, count, rgb);
+#endif
 	if (!text_shown)
 		write_palette(first, count, rgb);
 }
@@ -250,8 +254,9 @@ static void show_frame(const uint8_t *pixels)
 		int top = 0;
 		char text[96];
 
-		/* Only on the presents it reports: counting costs a frame's worth of time. */
-		if (presents++ % 20 == 0) {
+		/* Only on the presents it reports: counting costs a frame's worth of time. Not in
+		 * lockstep, where reading the clock moves it. */
+		if (presents++ % 20 == 0 && !lockstep) {
 			memset(counts, 0, sizeof counts);
 			for (int i = 0; i < WIDTH * HEIGHT; i++)
 				counts[pixels[i]]++;
@@ -274,6 +279,10 @@ void plat_video_present(const uint8_t *pixels)
 {
 	last_pixels = pixels;
 	refresh_wanted = false;
+#ifdef U7_DEBUG_LOG
+	if (lockstep)
+		lockstep_frame(pixels, 'P');
+#endif
 	if (!text_shown)
 		show_frame(pixels);
 }
@@ -282,6 +291,12 @@ void plat_video_wait_retrace(void)
 {
 	uint32_t now = vbl_count();
 
+#ifdef U7_DEBUG_LOG
+	if (lockstep) {
+		lockstep_wait_retrace();
+		return;
+	}
+#endif
 	plat_pump();
 	while (vbl_count() == now)
 		;

@@ -18,6 +18,16 @@
 
 machine_type atari_machine = MACHINE_OTHER;
 
+#ifdef U7_DEBUG_LOG
+/* Hatari's NatFeats (--natfeats, under Hatari's own --natfeats on only: the opcodes are illegal
+ * instructions anywhere else): the log goes to Hatari's stderr, and leaving the game quits
+ * Hatari. nf_id is opcode $7300 and nf_call $7301, with C arguments on the stack. */
+__asm__(".text\n.even\n_nf_id:\n\t.dc.w 0x7300\n\trts\n_nf_call:\n\t.dc.w 0x7301\n\trts\n");
+extern long nf_id(const char *name) __asm__("_nf_id");
+extern long nf_call(long id, ...) __asm__("_nf_call");
+static long nf_stderr, nf_shutdown;
+#endif
+
 static jmp_buf *program_jump;
 static int16_t program_code;
 static char *self_name = GAME_PRG;
@@ -43,6 +53,13 @@ static void shutdown_all(void)
 	timer_shutdown();
 }
 
+#ifdef U7_DEBUG_LOG
+static long nf_quit(void)
+{
+	return nf_call(nf_shutdown);
+}
+#endif
+
 static void end_process(int code)
 {
 #ifdef U7_DEBUG_LOG
@@ -50,9 +67,15 @@ static void end_process(int code)
 
 	snprintf(text, sizeof text, "exit %d\r\n", code);
 	plat_log(text);
+	if (lockstep)
+		lockstep_end();
 #endif
 	shutdown_all();
 	fflush(NULL);
+#ifdef U7_DEBUG_LOG
+	if (nf_shutdown != 0)
+		Supexec(nf_quit);
+#endif
 	exit(code);
 }
 
@@ -94,6 +117,12 @@ void plat_fatal(const char *message)
 
 void plat_log(const char *text)
 {
+#ifdef U7_DEBUG_LOG
+	if (nf_stderr != 0) {
+		nf_call(nf_stderr, text);
+		return;
+	}
+#endif
 	console_text(text);
 }
 
@@ -212,7 +241,10 @@ static const char *script_path;
  *   --line-in           Falcon: mixes the input jack into the sound output, for a MIDI synth
  *                       plugged in there
  *   --gm                music and effects for a General MIDI synth instead of an MT-32
- *   --script <file>     debug builds: scripted keys and mouse (script.c) */
+ *   --script <file>     debug builds: scripted keys and mouse (script.c)
+ *   --lockstep          debug builds: the virtual clock and checksums of lockstep.c
+ *   --natfeats          debug builds, under Hatari with --natfeats on: log to Hatari's stderr,
+ *                       and quit Hatari on leaving */
 static const char *take_options(int *argc, char **argv)
 {
 	const char *dir = getenv("U7_DATA");
@@ -230,6 +262,12 @@ static const char *take_options(int *argc, char **argv)
 #ifdef U7_DEBUG_LOG
 		else if (strcmp(argv[i], "--script") == 0 && i + 1 < *argc)
 			script_path = argv[++i];
+		else if (strcmp(argv[i], "--lockstep") == 0)
+			lockstep = true;
+		else if (strcmp(argv[i], "--natfeats") == 0) {
+			nf_stderr = nf_id("NF_STDERR");
+			nf_shutdown = nf_id("NF_SHUTDOWN");
+		}
 #endif
 		else
 			argv[kept++] = argv[i];
@@ -308,6 +346,12 @@ int main(int argc, char **argv)
 	if (!files_check_data(problem, sizeof problem))
 		plat_fatal(problem);
 
+#ifdef U7_DEBUG_LOG
+	if (lockstep) {
+		lockstep_start();
+		argv[0] = self_name;    /* as the PC reference has it */
+	}
+#endif
 	/* The game owns the machine: video, IKBD, MFP timers and the sound DMA. */
 	Super(0L);
 	machine_taken = true;
