@@ -7,7 +7,8 @@
 # an empty GAMEDAT, and bg-start and si-start are what u7host leaves after bg-newgame.scr and
 # si-newgame.scr (they end by saving).
 # A script's "#@args" line holds its game arguments; \0377 and the like are bytes.
-# bg-import.scr runs only when EXULT_SAVE names an Exult saved game of the Black Gate.
+# bg-import.scr runs only when EXULT_SAVE names an Exult saved game of the Black Gate, si-import.scr
+# only when EXULT_SAVE_SI names one of Serpent Isle.
 # Needs build-host, build-host-si, build-dbg and build-si-dbg built from the same sources.
 set -eu
 here=$(cd "$(dirname "$0")/../.." && pwd)
@@ -33,12 +34,18 @@ for g in bg si; do
 	mkdir -p "$start/$s"
 	cp -r "$work/STATIC" "$work/GAMEDAT" "$work/GAME00.U7" "$start/$s/"
 done
-# bg-import: STATIC and, as GAMEDAT, the Exult saved game EXULT_SAVE names, converted by
-# tools/exult2u7.py; without EXULT_SAVE the scenarios starting from it are left out.
+# bg-import and si-import: STATIC and, as GAMEDAT, the Exult saved game EXULT_SAVE (the Black
+# Gate) or EXULT_SAVE_SI (Serpent Isle) names, converted by tools/exult2u7.py; without it the
+# scenarios starting from it are left out.
 if [ -n "${EXULT_SAVE:-}" ]; then
 	mkdir -p "$start/bg-import/GAMEDAT"
 	cp -r "$bg" "$start/bg-import/STATIC"
 	python3 "$here/tools/exult2u7.py" "$EXULT_SAVE" "$bg" "$start/bg-import/GAMEDAT" > /dev/null 2>&1
+fi
+if [ -n "${EXULT_SAVE_SI:-}" ]; then
+	mkdir -p "$start/si-import/GAMEDAT"
+	cp -r "$si" "$start/si-import/STATIC"
+	python3 "$here/tools/exult2u7.py" "$EXULT_SAVE_SI" "$si" "$start/si-import/GAMEDAT" > /dev/null 2>&1
 fi
 
 for script in "$here"/tests/lockstep/*.scr; do

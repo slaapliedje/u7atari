@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""Converts an Exult saved game of Ultima VII: The Black Gate into a saved game for u7atari.
-    tools/exult2u7.py [--title TEXT] <exultNNbg.sav | gamedat folder> <STATIC folder> <GAMEnn.U7>
+"""Converts an Exult saved game of Ultima VII, The Black Gate or Serpent Isle, into a saved game
+for u7atari.
+    tools/exult2u7.py [--title TEXT] <exultNNbg.sav | exultNNsi.sav | gamedat folder>
+        <STATIC folder> <GAMEnn.U7>
 
-The STATIC folder is the game's own (TFA.DAT and INITGAME.DAT are read from it). Copy the
-GAMEnn.U7 written (GAME00.U7 to GAME09.U7, slot 1 to 10) into the game's folder and load it
+The STATIC folder is the game's own (TFA.DAT and INITGAME.DAT are read from it), and says
+which game it is. Copy the GAMEnn.U7 written (GAME00.U7 to GAME09.U7, slot 1 to 10) into the
+game's folder and load it
 from the game's menu: the game restarts and builds the imported game the way it builds a new
 one, from the NPCs, the map's objects, the flags, the clocks and the party. Given an empty
 folder instead of GAMEnn.U7, it writes the files there: as the game's GAMEDAT, the game starts
 with the imported game.
 
 Left out, as the original game has no place for them: monsters roaming the map (eggs make new
-ones), Exult's scheduled usecode and object attributes, and what Exult added (notebook, keyring,
-shapes over 1023, other maps).
+ones), Exult's scheduled usecode and object attributes, and what Exult added (notebook, the
+Black Gate's keyring, shapes over 1023, other maps).
 """
 import io, os, struct, sys, zipfile
 
 NPC_RECORD = 117            # bytes of an NPC.DAT record before its inventory
-TIMER_COUNT = 12            # usecode timers
 SAVE_VERSION = 300
 UNSET_TIMER = 43 * 1500     # what a timer holds until usecode sets it (hour 43)
 AVATAR_SHAPE = 721
@@ -81,6 +83,9 @@ class Converter:
         tfa = open(find_file(static, 'TFA.DAT'), 'rb').read()
         self.classes = [tfa[i * 3 + 1] & 15 for i in range(len(tfa) // 3)]
         self.initgame = read_flex(open(find_file(static, 'INITGAME.DAT'), 'rb').read())
+        # Serpent Isle's new game has PHILBERT.DAT (the keyring and such)
+        self.serpent_isle = 'philbert.dat' in self.initgame
+        self.timer_count = 13 if self.serpent_isle else 12
 
     def type_class(self, shape):
         return self.classes[shape] if shape < len(self.classes) else 0
@@ -154,6 +159,10 @@ class Converter:
     def write_object(self, obj, region, contained, out):
         """Appends obj's entry, and what it holds, in the original's format."""
         shape, frame, entry = obj['shape'], obj['frame'], obj['entry']
+        if self.serpent_isle and shape == 975 and frame == 0:
+            # Serpent Isle's new game gives Morghrim shape 975 for 792, and the game turns
+            # each 975 frame 0 it loads after him into 792; Exult keeps the 975
+            shape = 792
         if shape > 1023 or frame > 63:
             warn(f'shapes over 1023 and frames over 63 are left out (shape {shape})')
             return
@@ -278,7 +287,18 @@ class Converter:
             status |= 0x8000
         out[nb + 4:nb + 6] = struct.pack('<H', status)
         strength = record[18]
-        out[nb + 6] = strength if number == 0 else (strength & 0x3f) | (base[18] & 0xc0)
+        if self.serpent_isle:
+            # strength in bits 0-4, the avatar's skin colour in 5-6, frozen in 7
+            if number == 0:
+                skin = record[78] if struct.unpack_from('<H', record, 4)[0] & 16 \
+                    else strength >> 5 & 3
+                if skin > 2:
+                    warn(f'the avatar\'s skin colour {skin} is Exult\'s own; made the first')
+                    skin = 0
+                strength = (strength & 0x9f) | skin << 5
+            out[nb + 6] = strength
+        else:
+            out[nb + 6] = strength if number == 0 else (strength & 0x3f) | (base[18] & 0xc0)
         out[nb + 7] = record[19]                # dexterity
         out[nb + 8] = record[20] & 0x7f         # intelligence, read, tournament
         out[nb + 9] = record[21]                # combat, petra
@@ -359,8 +379,9 @@ class Converter:
 
     def import_data(self, files):
         """IMPORT.DAT, which the game reads once, as little-endian words: its version, flags
-        (1: the avatar can't move, 2: Armageddon is done), the clock's ticks and days, each
-        usecode timer's ticks and days, then the party's size and its NPC numbers."""
+        (1: the avatar can't move, 2: Armageddon is done, 4: infravision), the clock's ticks and
+        days, each usecode timer's ticks and days, for Serpent Isle the keyring's 256 bits and
+        the position usecode marked, then the party's size and its NPC numbers."""
         gamewin = files['gamewin.dat']
         _, _, day, hour, minute = struct.unpack_from('<5H', gamewin, 0)
         avatar_flags = struct.unpack_from('<I', self.avatar, 68)[0]
@@ -369,9 +390,11 @@ class Converter:
             flags |= 1
         if len(gamewin) > 22 and gamewin[22] == 1:
             flags |= 2
+        if len(gamewin) > 25 and gamewin[25] == 1:
+            flags |= 4
         words = [1, flags, hour * 1500 + minute * 25, day]
         use = files.get('usecode.dat', b'')
-        party, timers = [], {}
+        party, timers, marked = [], {}, None
         if len(use) >= 18:
             size = struct.unpack_from('<H', use, 0)[0]
             party = list(struct.unpack_from('<8H', use, 2))[:min(size, 8)]
@@ -384,17 +407,34 @@ class Converter:
                         break
                     timers[tid] = struct.unpack_from('<I', use, p + 2)[0]
                     p += 6
+                p += 2
             else:                               # Exult 1.2: twenty hours in a row
                 for tid in range(20):
                     timers[tid] = struct.unpack_from('<I', use, p + 4 * tid)[0]
-        for tid in range(TIMER_COUNT):
+                p += 80
+            if p + 6 <= len(use):                   # where usecode marked the avatar
+                marked = struct.unpack_from('<3h', use, p)
+        for tid in range(self.timer_count):
             hours = timers.get(tid, 0)
             if hours > 0:
                 words += [hours % 24 * 1500, hours // 24]
             else:
                 words += [UNSET_TIMER, 0]
-        if any(hours for tid, hours in timers.items() if tid >= TIMER_COUNT):
-            warn('usecode timers past 11 are left out')
+        if any(hours for tid, hours in timers.items() if tid >= self.timer_count):
+            warn(f'usecode timers past {self.timer_count - 1} are left out')
+        if self.serpent_isle:
+            keys = bytearray(32)
+            ring = files.get('keyring.dat', b'')
+            for i in range(0, len(ring) - 1, 2):
+                key = struct.unpack_from('<H', ring, i)[0]
+                if key < 256:
+                    keys[key // 8] |= 1 << key % 8
+                else:
+                    warn(f'key {key} on the keyring is past the 255 the game knows')
+            words += list(struct.unpack('<16H', keys))
+            if marked is None or not 0 <= marked[2] <= 15 or marked[0] < 0 or marked[1] < 0:
+                marked = (0, 0, 0)              # unset, as in a new game
+            words += list(marked)
         party = [n for n in party if n]
         words += [len(party)] + party
         return struct.pack(f'<{len(words)}H', *words)
@@ -402,6 +442,8 @@ class Converter:
     def convert(self, files):
         if 'npc.dat' not in files or 'gamewin.dat' not in files:
             sys.exit('exult2u7: not an Exult saved game (no npc.dat or gamewin.dat)')
+        if files.get('identity', self.initgame['identity']) != self.initgame['identity']:
+            sys.exit('exult2u7: the saved game is of another game than the STATIC folder')
         out = {'NPC.DAT': self.convert_npcs(files['npc.dat']),
                'FLAGINIT': self.convert_flags(files.get('flaginit', b'')),
                'FRAMES.FLG': self.initgame['frames.flg'],
