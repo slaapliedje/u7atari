@@ -2,3 +2,6 @@
 *.prg
 *.o
 /dist/
+/.cache/
+/.claude/
+__pycache__/
