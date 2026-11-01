@@ -1,0 +1,35 @@
+# The Black Gate imported from an Exult saved game (tools/exult2u7.py): the game builds it at
+# start-up, then a walk north with the party following, the inventory, a walk east, a save to the
+# first slot and the save loaded back, then a walk west.
+# Start: STATIC and the converted game as GAMEDAT, made only when EXULT_SAVE names an Exult
+# saved game (tests/lockstep/run-all.sh). Arguments: --program u7 p
+#@start bg-import
+#@args --program u7 p
+6000 shot START.PPM
+7000 move 320 20
+7100 rdown
+10000 rup
+11000 shot NORTH.PPM
+12000 key i
+13500 shot INV.PPM
+14000 key esc
+15000 move 600 200
+15100 rdown
+18000 rup
+19000 shot EAST.PPM
+20000 key s
+22000 click 200 27
+23000 key I
+23200 key m
+23400 key p
+24000 key enter
+26000 shot SAVED.PPM
+27000 click 200 27
+28500 click 326 157
+30000 click 296 109
+34000 shot LOADED.PPM
+35000 move 20 200
+35100 rdown
+38000 rup
+39000 shot END.PPM
+40000 quit

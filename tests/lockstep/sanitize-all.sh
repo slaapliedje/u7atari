@@ -36,11 +36,19 @@ for g in bg si; do
 	mkdir -p "$start/$s"
 	cp -r "$work/STATIC" "$work/GAMEDAT" "$work/GAME00.U7" "$start/$s/"
 done
+# bg-import: STATIC and, as GAMEDAT, the Exult saved game EXULT_SAVE names, converted by
+# tools/exult2u7.py; without EXULT_SAVE the scenarios starting from it are left out.
+if [ -n "${EXULT_SAVE:-}" ]; then
+	mkdir -p "$start/bg-import/GAMEDAT"
+	cp -r "$bg" "$start/bg-import/STATIC"
+	python3 "$here/tools/exult2u7.py" "$EXULT_SAVE" "$bg" "$start/bg-import/GAMEDAT" > /dev/null 2>&1
+fi
 
 for script in "$here"/tests/lockstep/*.scr; do
 	name=$(basename "$script" .scr)
 	state=$(sed -n 's/^#@start //p' "$script")
 	args=$(sed -n 's/^#@args *//p' "$script")
+	[ -d "$start/$state" ] || continue
 	case $name in si-*) host=$here/build-host-si-asan/u7host ;; *) host=$here/build-host-asan/u7host ;; esac
 	dir=$out/$name
 	rm -rf "${dir:?}"
@@ -57,6 +65,7 @@ for script in "$here"/tests/lockstep/*.scr; do
 	name=$(basename "$script" .scr)
 	state=$(sed -n 's/^#@start //p' "$script")
 	args=$(sed -n 's/^#@args *//p' "$script")
+	[ -d "$start/$state" ] || continue
 	case $name in si-*) host=$here/build-host-si/u7host ;; *) host=$here/build-host/u7host ;; esac
 	dir=$out/stack-$name
 	rm -rf "${dir:?}"
@@ -73,6 +82,7 @@ for script in "$here"/tests/lockstep/*.scr; do
 	name=$(basename "$script" .scr)
 	state=$(sed -n 's/^#@start //p' "$script")
 	args=$(sed -n 's/^#@args *//p' "$script")
+	[ -d "$start/$state" ] || continue
 	case $name in si-*) host=$here/build-host-si-vg/u7host ;; *) host=$here/build-host-vg/u7host ;; esac
 	dir=$out/vg-$name
 	rm -rf "${dir:?}"

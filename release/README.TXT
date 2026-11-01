@@ -50,6 +50,27 @@ Serpent Isle goes in a folder of its own, such as C:\SI, with its own
 STATIC folder and SERPENT.PRG.
 
 
+GAMES SAVED UNDER EXULT
+-----------------------
+
+A Black Gate game saved under Exult can be carried over. On a PC with
+Python 3, convert it with EXULT2U7.PY, giving it the Exult saved game,
+the game's STATIC folder, and the saved game to write:
+
+  python3 EXULT2U7.PY exult00bg.sav STATIC GAME09.U7
+
+GAME00.U7 to GAME09.U7 are the save slots, first to last; pick one you
+are not using. Copy it into the game's folder and load it from the
+game's menu. The game starts again and builds the game from it.
+
+Your party, everyone's belongings, the world's objects, what you have
+done, and the time of day carry over. Left out, as the original game
+has no place for them: monsters roaming the map (new ones turn up), a
+Light spell still shining, and what Exult adds (its notebook, Exult
+Studio changes, and objects that only exist in Exult). Serpent Isle
+games from Exult cannot be converted yet.
+
+
 OPTIONS
 -------
 

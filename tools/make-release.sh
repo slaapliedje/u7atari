@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds both games for release and packs them, with release/README.TXT and the port's and upstream's licences,
+# Builds both games for release and packs them, with release/README.TXT, tools/exult2u7.py and the port's and upstream's licences,
 # into dist/u7atari-<version>.zip, in a folder U7ATARI. The version is the project's in CMakeLists.txt.
 #   tools/make-release.sh
 # Uses (and configures, when missing) the release build folders build and build-si. Refuses to
@@ -29,6 +29,7 @@ zipfile=u7atari-$version.zip
 rm -rf "${out:?}" "dist/$zipfile"
 mkdir -p "$out"
 cp build/ULTIMA7.PRG build-si/SERPENT.PRG "$out/"
+cp tools/exult2u7.py "$out/EXULT2U7.PY"
 sed "s/@VERSION@/$version ($(git rev-parse --short HEAD))/" release/README.TXT > "$out/README.TXT"
 # the port's licence, then upstream's; TOS has no UTF-8, so curly quotes become plain ones
 {
