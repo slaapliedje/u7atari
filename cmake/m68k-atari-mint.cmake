@@ -13,7 +13,9 @@ set(CMAKE_RANLIB       ${U7_MINT_PREFIX}ranlib)
 # 68020-60 code runs on the 030 in both machines and selects the matching multilib.
 # This also selects MiNTLib's FPU multilib, whose startup refuses to run without a 68881/68882;
 # the game replaces that check (_checkcpu in platform/atari/main.c) and builds with -msoft-float.
-set(U7_CPU_FLAGS "-m68020-60 -mtune=68030")
+# No -mtune=68030: tuned for the 030, gcc divides by constants with the 64-bit MULU.L, which the
+# 060 lacks (unimplemented-instruction trap; EmuTOS doesn't emulate it, so a 060 Falcon crashes).
+set(U7_CPU_FLAGS "-m68020-60")
 set(CMAKE_C_FLAGS_INIT   "${U7_CPU_FLAGS}")
 set(CMAKE_CXX_FLAGS_INIT "${U7_CPU_FLAGS}")
 set(CMAKE_ASM_FLAGS_INIT "${U7_CPU_FLAGS}")
