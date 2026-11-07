@@ -24,6 +24,9 @@ void timer_shutdown(void);
 void timer_drop_sound_lock(void);
 /* --no-card: the TT's own video even with an ATW800/2 in the machine. */
 extern bool video_no_card;
+/* --fps: counts the frames presented; video_fps_report() writes U7FPS.TXT. */
+extern bool video_fps;
+void video_fps_report(void);
 void video_init(void);
 void video_shutdown(void);
 void video_reset(void);

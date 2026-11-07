@@ -47,6 +47,7 @@ typedef struct {
 } screen;
 
 bool video_no_card;
+bool video_fps;
 static bool card;
 static bool active;
 static void *screen_memory;
@@ -85,6 +86,20 @@ static uint32_t old_falcon_palette[256];
 static uint32_t vbl_count(void)
 {
 	return *_frclock;
+}
+
+/* Where the shifter or VIDEL is reading the screen now: the video address counter, read until
+ * two reads agree, as it may move between the bytes. */
+static uint32_t scan_address(void)
+{
+	volatile uint8_t *counter = (volatile uint8_t *) 0xffff8205;
+	uint32_t a, b;
+
+	do {
+		a = (uint32_t) counter[0] << 16 | (uint32_t) counter[2] << 8 | counter[4];
+		b = (uint32_t) counter[0] << 16 | (uint32_t) counter[2] << 8 | counter[4];
+	} while ((a ^ b) & ~UINT32_C(0xff));
+	return b;
 }
 
 static void show(uint8_t *base)
@@ -267,6 +282,16 @@ static void show_frame(const uint8_t *pixels)
 	while (vbl_count() == shown_at_vbl)
 		;
 	s = &screens[card ? 0 : hidden];
+	/* The blank does not always mean the hardware took the new address: when it still reads
+	 * this screen, a conversion starting at the top is overtaken by the beam, and its top rows
+	 * flicker. Wait for the next frame then, but not past a second blank. */
+	if (!card) {
+		uint32_t base = (uint32_t) (uintptr_t) s->base;
+
+		while (scan_address() - base < (uint32_t) screen_lines * LINE_BYTES &&
+			vbl_count() - shown_at_vbl < 2)
+			;
+	}
 #ifdef U7_DEBUG_LOG
 	{
 		static uint32_t presents;
@@ -297,8 +322,52 @@ static void show_frame(const uint8_t *pixels)
 	hidden ^= 1;
 }
 
+/* --fps: the frames presented in each 10 s, kept in memory, as writing a file mid-game would
+ * stall it; video_fps_report() writes them out on leaving. */
+#define FPS_PERIOD (10 * 200)       /* in _hz_200 ticks */
+#define FPS_PERIODS 720             /* two hours */
+static uint16_t fps_frames[FPS_PERIODS];
+static uint16_t fps_periods;
+static uint32_t fps_start, fps_period_start, fps_total;
+
+static void count_frame(void)
+{
+	uint32_t now = *_hz_200;
+
+	if (fps_start == 0)
+		fps_start = fps_period_start = now;
+	while (now - fps_period_start >= FPS_PERIOD && fps_periods < FPS_PERIODS) {
+		fps_periods++;
+		fps_period_start += FPS_PERIOD;
+	}
+	if (fps_periods < FPS_PERIODS)
+		fps_frames[fps_periods]++;
+	fps_total++;
+}
+
+void video_fps_report(void)
+{
+	FILE *f;
+	uint32_t ticks;
+
+	if (!video_fps || fps_start == 0 || (f = fopen("U7FPS.TXT", "w")) == NULL)
+		return;
+	ticks = *_hz_200 - fps_start;
+	fprintf(f, "Frames a second, each 10 seconds from the first frame:\r\n");
+	for (uint16_t i = 0; i < fps_periods; i++)
+		fprintf(f, "%4u s  %3u.%u\r\n", i * 10u, fps_frames[i] / 10u, fps_frames[i] % 10u);
+	if (ticks > 0)
+		fprintf(f, "All: %lu frames in %lu.%02lu s, %lu.%02lu a second\r\n",
+			(unsigned long) fps_total, (unsigned long) (ticks / 200),
+			(unsigned long) (ticks % 200 / 2), (unsigned long) (fps_total * 200 / ticks),
+			(unsigned long) ((uint64_t) fps_total * 20000 / ticks % 100));
+	fclose(f);
+}
+
 void plat_video_present(const uint8_t *pixels)
 {
+	if (video_fps)
+		count_frame();
 	last_pixels = pixels;
 	refresh_wanted = false;
 #ifdef U7_DEBUG_LOG

@@ -76,6 +76,7 @@ static void end_process(int code)
 		lockstep_end();
 #endif
 	shutdown_all();
+	video_fps_report();
 	fflush(NULL);
 #ifdef U7_DEBUG_LOG
 	if (nf_shutdown != 0)
@@ -256,6 +257,8 @@ static const char *script_path;
  *                       plugged in there
  *   --gm                music and effects for a General MIDI synth instead of an MT-32
  *   --no-card           the TT's own video even with an ATW800/2 graphics card in the machine
+ *   --fps               counts the frames shown, and writes them to U7FPS.TXT in the current
+ *                       folder on leaving
  *   --script <file>     debug builds: scripted keys and mouse (script.c)
  *   --lockstep          debug builds: the virtual clock and checksums of lockstep.c
  *   --natfeats          debug builds, under Hatari with --natfeats on: log to Hatari's stderr,
@@ -276,6 +279,8 @@ static const char *take_options(int *argc, char **argv)
 			sound_gm = true;
 		else if (strcmp(argv[i], "--no-card") == 0)
 			video_no_card = true;
+		else if (strcmp(argv[i], "--fps") == 0)
+			video_fps = true;
 #ifdef U7_DEBUG_LOG
 		else if (strcmp(argv[i], "--script") == 0 && i + 1 < *argc)
 			script_path = argv[++i];

@@ -98,6 +98,11 @@ Or rename the program to ULTIMA7.TTP and type them when it starts.
   --no-card       TT only: use the TT's own video even when an
                   ATW800/2 graphics card is fitted.
 
+  --fps           Counts the frames shown and, on quitting, writes
+                  them to U7FPS.TXT: frames a second for every 10
+                  seconds, and the average. For comparing machines and
+                  settings.
+
   --data <folder> Where the game's files are, if not in the program's
                   own folder. For example: --data D:\GAMES\U7
 
@@ -175,6 +180,9 @@ CHANGES
 - The ATW800/2 graphics card on the TT, and --no-card.
 - Quitting no longer crashes on the way out; the question whether to
   leave says TOS instead of DOS.
+- When the game had to run MAPROM itself (booted with Control held),
+  New Game showed the version and quit. Fixed.
+- --fps, a frame counter.
 
 0.1.0
 - The first test release.
