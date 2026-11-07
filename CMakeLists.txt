@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(u7atari VERSION 0.1.0 LANGUAGES C CXX ASM)
+project(u7atari VERSION 0.2.0 LANGUAGES C CXX ASM)
 
 # Which game: "Black Gate" or "Serpent Isle" (both ultima7-portable trees share plat.h).
 set(U7_GAME "Black Gate" CACHE STRING "Upstream ultima7-portable game to build")
