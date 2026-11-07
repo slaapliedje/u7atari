@@ -22,6 +22,9 @@ static uint16_t modifiers;
 static plat_mouse_fn mouse_handler;
 static int16_t mouse_x, mouse_y;
 static uint16_t mouse_buttons;
+/* Rows the game's pointer drew in while the mouse handler ran (plat_cursor_rows_drawn). */
+static bool in_handler;
+static int16_t drawn_top, drawn_bottom;
 
 void inputq_reset(void)
 {
@@ -98,9 +101,17 @@ static void deliver(uint16_t events)
 	snprintf(text, sizeof text, "mouse %02x %u %d,%d\r\n", events, mouse_buttons, mouse_x, mouse_y);
 	plat_log(text);
 #endif
+	drawn_top = INT16_MAX;
+	drawn_bottom = -1;
+	in_handler = true;
 	if (mouse_handler != NULL)
 		mouse_handler(events, mouse_buttons, mouse_x, mouse_y);
-	video_refresh_wanted();
+	in_handler = false;
+	/* Only the pointer moved: show those rows, not the whole frame again. */
+	if (drawn_bottom >= 0)
+		video_rows_wanted(drawn_top, drawn_bottom);
+	else
+		video_refresh_wanted();
 }
 
 void inputq_mouse_position(int16_t *x, int16_t *y)
@@ -170,6 +181,16 @@ void plat_cursor_set_shape(const uint8_t *pixels, int16_t width, int16_t height,
 	int16_t hot_x, int16_t hot_y)
 {
 	(void) pixels; (void) width; (void) height; (void) hot_x; (void) hot_y;
+}
+
+void plat_cursor_rows_drawn(int16_t top, int16_t bottom)
+{
+	if (!in_handler)
+		return;
+	if (top < drawn_top)
+		drawn_top = top;
+	if (bottom > drawn_bottom)
+		drawn_bottom = bottom;
 }
 
 void plat_cursor_show(int16_t visible)

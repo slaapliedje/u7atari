@@ -70,6 +70,7 @@ void plat_video_present(const uint8_t *pixels)
 void plat_video_wait_retrace(void) { lockstep_wait_retrace(); }
 void video_refresh(void) {}
 void video_refresh_wanted(void) {}
+void video_rows_wanted(int16_t top, int16_t bottom) { (void) top; (void) bottom; }
 void video_pump(void) {}
 uint8_t *video_frame(void) { return (uint8_t *) last_pixels; }
 /* Serpent Isle's debug screens: not compared. */

@@ -13,6 +13,8 @@
  *
  * Palette writes go to the hardware at once, as the VGA DAC took them; fades rely on that.
  *
+ * With an ATW800/2 graphics card on a TT (atw800.c), the frames and colours go there instead.
+ *
  * Serpent Isle's debug screens switch to 80x25 colour text (console.c); it is drawn into a frame
  * of its own, 4x8 pixels a cell, in the 16 text colours, with the game's palette put back after.
  */
@@ -44,6 +46,8 @@ typedef struct {
 	uint8_t *shadow;            /* the chunky frame this screen shows; NULL until it has one */
 } screen;
 
+bool video_no_card;
+static bool card;
 static bool active;
 static void *screen_memory;
 /* TOS's logical screen while the game runs: console text lands here, off the display, and a
@@ -59,6 +63,8 @@ static int16_t line_repeat;     /* 2 on the TT, which shows each game line twice
 static const uint8_t *last_pixels;
 static uint8_t palette[768];               /* the game's, 6-bit VGA */
 static bool refresh_wanted;
+/* Rows of the last frame to show again, where the game's pointer moved; none while bottom < 0. */
+static int16_t rows_top, rows_bottom = -1;
 
 /* Text mode: the cells drawn as a frame, shown instead of the game's. */
 static bool text_shown;
@@ -120,6 +126,12 @@ void video_init(void)
 {
 	size_t bytes;
 
+	if (atari_machine == MACHINE_TT && !video_no_card && atw800_start()) {
+		card = true;
+		shown_at_vbl = vbl_count();
+		active = true;
+		return;
+	}
 	old_logical = Logbase();
 	old_physical = Physbase();
 	if (atari_machine == MACHINE_TT ? !setup_tt() : !setup_falcon())
@@ -154,7 +166,9 @@ void video_shutdown(void)
 	if (!active)
 		return;
 	active = false;
-	if (atari_machine == MACHINE_TT) {
+	if (card) {
+		atw800_stop();
+	} else if (atari_machine == MACHINE_TT) {
 		EsetShift(old_mode);
 		VsetScreen(old_logical, old_physical, -1, -1);
 		EsetPalette(0, 256, old_tt_palette);
@@ -178,7 +192,9 @@ void video_reset(void)
 
 static void write_palette(int16_t first, int16_t count, const uint8_t *rgb)
 {
-	if (atari_machine == MACHINE_TT) {
+	if (card) {
+		atw800_palette(first, count, rgb);
+	} else if (atari_machine == MACHINE_TT) {
 		uint16_t words[256];
 
 		/* 0000 RRRR GGGG BBBB from 6-bit VGA */
@@ -232,6 +248,10 @@ static void convert(screen *s, const uint8_t *pixels)
 
 	if (full && (s->shadow = malloc(WIDTH * HEIGHT)) == NULL)
 		plat_fatal("Out of memory for the screen copy.");
+	if (card) {
+		atw800_frame(pixels, s->shadow, full);
+		return;
+	}
 	c2p_frame(pixels, s->shadow, s->base + top_line * LINE_BYTES, HEIGHT, line_repeat * LINE_BYTES,
 		line_repeat == 2 ? LINE_BYTES : 0, full);
 }
@@ -246,7 +266,7 @@ static void show_frame(const uint8_t *pixels)
 	 * hidden one may still be on display. */
 	while (vbl_count() == shown_at_vbl)
 		;
-	s = &screens[hidden];
+	s = &screens[card ? 0 : hidden];
 #ifdef U7_DEBUG_LOG
 	{
 		static uint32_t presents;
@@ -270,7 +290,9 @@ static void show_frame(const uint8_t *pixels)
 	}
 #endif
 	convert(s, pixels);
-	show(s->base);
+	rows_bottom = -1;
+	if (!card)
+		show(s->base);
 	shown_at_vbl = vbl_count();
 	hidden ^= 1;
 }
@@ -325,6 +347,8 @@ void video_shot(const char *name)
 		fwrite(row, 1, sizeof row, f);
 	}
 	fclose(f);
+	if (card)
+		atw800_check(pixels, colours);
 }
 #endif
 
@@ -343,8 +367,41 @@ void video_refresh_wanted(void)
 	refresh_wanted = true;
 }
 
+void video_rows_wanted(int16_t top, int16_t bottom)
+{
+	if (top < 0)
+		top = 0;
+	if (bottom > HEIGHT - 1)
+		bottom = HEIGHT - 1;
+	if (top > bottom)
+		return;
+	if (rows_bottom < 0 || top < rows_top)
+		rows_top = top;
+	if (bottom > rows_bottom)
+		rows_bottom = bottom;
+}
+
+/* Converts the rows the pointer moved in straight into the screen on display, as TOS draws its
+ * mouse: a frame's worth of comparing for a few rows would be wasted. */
+static void show_rows(void)
+{
+	screen *s = &screens[hidden ^ 1];
+	int16_t top = rows_top, rows = rows_bottom - rows_top + 1;
+
+	rows_bottom = -1;
+	if (!active || s->shadow == NULL || card) {
+		refresh_wanted = true;
+		return;
+	}
+	c2p_frame(last_pixels + top * WIDTH, s->shadow + top * WIDTH,
+		s->base + (top_line + top * line_repeat) * LINE_BYTES, rows, line_repeat * LINE_BYTES,
+		line_repeat == 2 ? LINE_BYTES : 0, 0);
+}
+
 void video_pump(void)
 {
+	if (rows_bottom >= 0 && !refresh_wanted && !text_shown && last_pixels != NULL)
+		show_rows();
 	if (refresh_wanted && !text_shown && last_pixels != NULL && vbl_count() != shown_at_vbl) {
 		refresh_wanted = false;
 		show_frame(last_pixels);

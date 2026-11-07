@@ -22,6 +22,8 @@ void timer_init(void);
 void timer_shutdown(void);
 /* Lets go of every sound lock a program left by plat_exit was holding. */
 void timer_drop_sound_lock(void);
+/* --no-card: the TT's own video even with an ATW800/2 in the machine. */
+extern bool video_no_card;
 void video_init(void);
 void video_shutdown(void);
 void video_reset(void);
@@ -30,6 +32,8 @@ void video_refresh(void);
 /* Asks for the last frame to be shown again once a blank has passed: the game drew the pointer
  * into it. video_pump does it without waiting. */
 void video_refresh_wanted(void);
+/* Asks plat_pump to show rows top to bottom of the last frame again: the pointer moved there. */
+void video_rows_wanted(int16_t top, int16_t bottom);
 void video_pump(void);
 /* The game's last frame, which the console draws text into; NULL before the first. */
 uint8_t *video_frame(void);
@@ -37,6 +41,15 @@ uint8_t *video_frame(void);
  * frames until video_show_game. */
 void video_show_text(const uint16_t *cells, int16_t cursor_x, int16_t cursor_y);
 void video_show_game(void);
+/* The ATW800/2 graphics card (atw800.c). Start finds it and takes it over, in supervisor mode;
+ * false when there is none. */
+bool atw800_start(void);
+void atw800_stop(void);
+void atw800_palette(int16_t first, int16_t count, const uint8_t *rgb);
+void atw800_frame(const uint8_t *pixels, uint8_t *shadow, bool full);
+#ifdef U7_DEBUG_LOG
+void atw800_check(const uint8_t *pixels, const uint8_t *colours);
+#endif
 void input_init(void);
 void input_shutdown(void);
 void input_reset(void);

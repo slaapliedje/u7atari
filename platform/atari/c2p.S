@@ -4,7 +4,7 @@
 |	int32_t outStride, int32_t secondLine, int32_t full)
 |
 | in is the game's frame, 320 bytes a row, and shadow what out shows of it. Each row is compared
-| with its shadow a long at a time; a 16-pixel group that differs is copied to the shadow and
+| with its shadow a long at a time, four to a group; a 16-pixel group that differs is copied to the shadow and
 | converted to 8 interleaved plane words at the same offset in out's row (which is 320 bytes too),
 | and again secondLine bytes on when that is not 0 (the TT shows each line twice). Rows of out
 | are outStride bytes apart. With full set, every group is converted.
@@ -23,67 +23,45 @@
 	eor.l	d4,\x
 	.endm
 
-| Exchanges the bits of x selected by mask with those s places above them: C2P_SWAP_BITS.
-	.macro	SWAP_BITS x, mask, s
-	move.l	\x,d4
-	lsr.l	\s,d4
-	eor.l	\x,d4
-	and.l	\mask,d4
-	eor.l	d4,\x
-	lsl.l	\s,d4
-	eor.l	d4,\x
+| Exchanges the high word of x with the low word of y.
+	.macro	HIGH_LOW x, y
+	swap	\x
+	eor.w	\x,\y
+	eor.w	\y,\x
+	eor.w	\x,\y
+	swap	\x
 	.endm
 
 | Converts the group at (a0)+, copying it to (a1)+, into 8 words at (a2)+ and at secondLine
-| (a6) bytes on. c2p16's r0, r1, r2, r3 are d3, d2, d1, d0. Uses d0-d5.
+| (a6) bytes on. Uses d0-d4.
+| The longs d0-d3 hold pixels 0-3, 4-7, 8-11 and 12-15. Each step exchanges one bit of a pixel's
+| place (which long, or which bit pair, nibble, byte or word in it) with one bit of its place in
+| the long, pixel and plane alike, until each long holds two planes' words: d1 planes 0 and 1,
+| d3 2 and 3, d0 4 and 5, d2 6 and 7. tests/c2p_frame_test.c checks it against c2p16 in c2p.h.
 	.macro	GROUP
 	movem.l	(a0)+,d0-d3
 	movem.l	d0-d3,(a1)
 	lea	16(a1),a1
-	MERGE	d3, d1, #0x55555555, #1
+	MERGE	d2, d0, #0x00ff00ff, #8
+	MERGE	d3, d1, #0x00ff00ff, #8
 	MERGE	d2, d0, #0x55555555, #1
-	MERGE	d3, d2, #0x33333333, #2
-	MERGE	d1, d0, #0x33333333, #2
-	moveq	#14,d5
-	SWAP_BITS d3, #0x0000cccc, d5
-	SWAP_BITS d2, #0x0000cccc, d5
-	SWAP_BITS d1, #0x0000cccc, d5
-	SWAP_BITS d0, #0x0000cccc, d5
-	SWAP_BITS d3, #0x00aa00aa, #7
-	SWAP_BITS d2, #0x00aa00aa, #7
-	SWAP_BITS d1, #0x00aa00aa, #7
-	SWAP_BITS d0, #0x00aa00aa, #7
-	moveq	#12,d5
-	SWAP_BITS d3, #0x0000f0f0, d5
-	SWAP_BITS d2, #0x0000f0f0, d5
-	SWAP_BITS d1, #0x0000f0f0, d5
-	SWAP_BITS d0, #0x0000f0f0, d5
-	move.w	d3,(a2)
-	move.w	d1,2(a2)
-	move.w	d2,4(a2)
-	move.w	d0,6(a2)
-	swap	d3
-	swap	d1
-	swap	d2
-	swap	d0
-	move.w	d3,8(a2)
-	move.w	d1,10(a2)
-	move.w	d2,12(a2)
-	move.w	d0,14(a2)
+	MERGE	d3, d1, #0x55555555, #1
+	HIGH_LOW d0, d2
+	HIGH_LOW d1, d3
+	MERGE	d0, d2, #0x33333333, #2
+	MERGE	d1, d3, #0x33333333, #2
+	MERGE	d1, d0, #0x0f0f0f0f, #4
+	MERGE	d3, d2, #0x0f0f0f0f, #4
+	move.l	d1,(a2)
+	move.l	d3,4(a2)
+	move.l	d0,8(a2)
+	move.l	d2,12(a2)
 	move.l	a6,d4
 	beq.s	1f
-	move.w	d3,8(a2,a6.l)
-	move.w	d1,10(a2,a6.l)
-	move.w	d2,12(a2,a6.l)
-	move.w	d0,14(a2,a6.l)
-	swap	d3
-	swap	d1
-	swap	d2
-	swap	d0
-	move.w	d3,(a2,a6.l)
-	move.w	d1,2(a2,a6.l)
-	move.w	d2,4(a2,a6.l)
-	move.w	d0,6(a2,a6.l)
+	move.l	d1,(a2,a6.l)
+	move.l	d3,4(a2,a6.l)
+	move.l	d0,8(a2,a6.l)
+	move.l	d2,12(a2,a6.l)
 1:	lea	16(a2),a2
 	.endm
 
@@ -102,10 +80,17 @@ row:	move.l	a3,a0
 	tst.l	72(sp)
 	bne	full
 
-	moveq	#79,d7			| longs in the row
+	moveq	#19,d7			| groups in the row
 scan:	cmpm.l	(a0)+,(a1)+
+	bne.s	differs
+	cmpm.l	(a0)+,(a1)+
+	bne.s	differs
+	cmpm.l	(a0)+,(a1)+
+	bne.s	differs
+	cmpm.l	(a0)+,(a1)+
 	dbne	d7,scan
 	beq	next			| the rest of the row is unchanged
+differs:
 	move.l	a0,d6			| the group holding the long before a0
 	sub.l	a3,d6
 	subq.l	#4,d6
@@ -118,7 +103,7 @@ scan:	cmpm.l	(a0)+,(a1)+
 	move.w	#320,d7
 	sub.w	d6,d7
 	beq	next
-	lsr.w	#2,d7
+	lsr.w	#4,d7
 	subq.w	#1,d7
 	bra	scan
 

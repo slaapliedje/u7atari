@@ -42,7 +42,8 @@ static void end_process(int code)
 	lockstep_end();
 	shutdown_all();
 	fflush(NULL);
-	exit(code);
+	/* As the Atari backend: destroying the game's static objects crashes. */
+	_exit(code);
 }
 
 void backend_quit(int code)
@@ -65,7 +66,7 @@ void plat_fatal(const char *message)
 	shutdown_all();
 	fprintf(stdout, "u7: %s\n", message);
 	fflush(NULL);
-	exit(1);
+	_exit(1);
 }
 
 void plat_log(const char *text)

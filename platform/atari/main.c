@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <mint/basepage.h>
 #include <mint/cookie.h>
@@ -80,7 +81,9 @@ static void end_process(int code)
 	if (nf_shutdown != 0)
 		Supexec(nf_quit);
 #endif
-	exit(code);
+	/* Not exit(): the game's static objects hold what its programs left behind, and destroying
+	 * them crashes (MainMenu's device list, after a program has ended). */
+	_exit(code);
 }
 
 void backend_quit(int code)
@@ -116,7 +119,8 @@ void plat_fatal(const char *message)
 	console_text(message);
 	console_text("\n\nPress any key.\n");
 	Cnecin();
-	exit(1);
+	fflush(NULL);
+	_exit(1);
 }
 
 void plat_log(const char *text)
@@ -245,6 +249,7 @@ static const char *script_path;
  *   --line-in           Falcon: mixes the input jack into the sound output, for a MIDI synth
  *                       plugged in there
  *   --gm                music and effects for a General MIDI synth instead of an MT-32
+ *   --no-card           the TT's own video even with an ATW800/2 graphics card in the machine
  *   --script <file>     debug builds: scripted keys and mouse (script.c)
  *   --lockstep          debug builds: the virtual clock and checksums of lockstep.c
  *   --natfeats          debug builds, under Hatari with --natfeats on: log to Hatari's stderr,
@@ -263,6 +268,8 @@ static const char *take_options(int *argc, char **argv)
 			sound_line_in = true;
 		else if (strcmp(argv[i], "--gm") == 0)
 			sound_gm = true;
+		else if (strcmp(argv[i], "--no-card") == 0)
+			video_no_card = true;
 #ifdef U7_DEBUG_LOG
 		else if (strcmp(argv[i], "--script") == 0 && i + 1 < *argc)
 			script_path = argv[++i];

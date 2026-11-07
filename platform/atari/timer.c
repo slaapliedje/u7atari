@@ -83,17 +83,38 @@ void timer_shutdown(void)
 /* Runs the ticks that are due. Called with no lock held, from the interrupt or from the last
  * unlock. A tick that falls due between the last check and the lock's release finds the lock
  * free and runs from its own interrupt, or is caught by the check after. */
+#ifdef U7_DEBUG_LOG
+/* For the pump's report: the longest backlog of ticks, ticks skipped, the longest a lock was
+ * held and the longest a tick ran, in 200 Hz counts. */
+static uint16_t most_ticks_behind, ticks_skipped;
+static uint32_t longest_hold, longest_tick, lock_taken_at;
+static void *lock_taker, *longest_taker;
+#endif
+
 static void run_sound_ticks(void)
 {
 	do {
 		sound_lock_depth = 1;
 		while (sound_ticks_run != sound_ticks_due) {
+#ifdef U7_DEBUG_LOG
+			uint16_t behind = (uint16_t) (sound_ticks_due - sound_ticks_run);
+			uint32_t began = *hz_200;
+
+			if (behind > most_ticks_behind)
+				most_ticks_behind = behind;
+			if (behind > MAX_SOUND_CATCH_UP)
+				ticks_skipped += behind - MAX_SOUND_CATCH_UP;
+#endif
 			if ((uint16_t) (sound_ticks_due - sound_ticks_run) > MAX_SOUND_CATCH_UP)
 				sound_ticks_run = sound_ticks_due - MAX_SOUND_CATCH_UP;
 			sound_ticks_run++;
 			sound_service();
 			if (sound_tick != NULL)
 				sound_tick();
+#ifdef U7_DEBUG_LOG
+			if (*hz_200 - began > longest_tick)
+				longest_tick = *hz_200 - began;
+#endif
 		}
 		sound_lock_depth = 0;
 	} while (sound_ticks_run != sound_ticks_due);
@@ -145,12 +166,18 @@ void plat_pump(void)
 
 		if (now - last_report >= 5 * PLAT_TICKS_PER_SECOND) {
 			last_report = now;
-			char text[96];
+			char text[128];
 
 			snprintf(text, sizeof text, "pump: sound ticks %u, MIDI bytes %lu, PCM %lu\r\n",
 				(unsigned) sound_ticks_run, (unsigned long) sound_midi_bytes,
 				(unsigned long) sound_pcm_samples);
 			plat_log(text);
+			snprintf(text, sizeof text, "pump: ticks behind %u, skipped %u, lock held %lu "
+				"by %p, tick ran %lu (1/200 s)\r\n", most_ticks_behind, ticks_skipped,
+				(unsigned long) longest_hold, longest_taker, (unsigned long) longest_tick);
+			plat_log(text);
+			most_ticks_behind = ticks_skipped = 0;
+			longest_hold = longest_tick = 0;
 		}
 	}
 #endif
@@ -202,12 +229,24 @@ void plat_sound_tick_set(plat_timer_fn fn)
 void plat_sound_lock(void)
 {
 	LOCKSTEP(lockstep_sound_lock());
+#ifdef U7_DEBUG_LOG
+	if (sound_lock_depth == 0) {
+		lock_taken_at = *hz_200;
+		lock_taker = __builtin_return_address(0);
+	}
+#endif
 	sound_lock_depth++;
 }
 
 void plat_sound_unlock(void)
 {
 	LOCKSTEP(lockstep_sound_unlock());
+#ifdef U7_DEBUG_LOG
+	if (sound_lock_depth == 1 && *hz_200 - lock_taken_at > longest_hold) {
+		longest_hold = *hz_200 - lock_taken_at;
+		longest_taker = lock_taker;
+	}
+#endif
 	if (--sound_lock_depth == 0 && sound_ticks_run != sound_ticks_due)
 		run_sound_ticks();
 }
