@@ -7,7 +7,12 @@
 | with its shadow a long at a time, four to a group; a 16-pixel group that differs is copied to the shadow and
 | converted to 8 interleaved plane words at the same offset in out's row (which is 320 bytes too),
 | and again secondLine bytes on when that is not 0 (the TT shows each line twice). Rows of out
-| are outStride bytes apart. With full set, every group is converted.
+| are outStride bytes apart. With full set, every group is converted: the shadow is first made
+| to differ from in everywhere.
+|
+| The loop that compares and converts must stay inside the 68030's 256-byte instruction cache,
+| or each group fetches its code again: masks are kept in registers, and the TT's doubled lines
+| have a loop of their own.
 |
 | The conversion is c2p16 in c2p.h, which tests/c2p_test.c checks; tests/c2p_frame_test.c checks
 | this against it.
@@ -32,37 +37,92 @@
 	swap	\x
 	.endm
 
-| Converts the group at (a0)+, copying it to (a1)+, into 8 words at (a2)+ and at secondLine
-| (a6) bytes on. Uses d0-d4.
+| Converts the group at (a0)+, copying it to (a1)+, into 8 words at (a2)+, and with second set
+| at secondLine (a6) bytes on too. Uses d0-d4; d5 holds 0x00ff00ff and d6 0x55555555, and
+| without second d7 0x33333333.
 | The longs d0-d3 hold pixels 0-3, 4-7, 8-11 and 12-15. Each step exchanges one bit of a pixel's
 | place (which long, or which bit pair, nibble, byte or word in it) with one bit of its place in
 | the long, pixel and plane alike, until each long holds two planes' words: d1 planes 0 and 1,
 | d3 2 and 3, d0 4 and 5, d2 6 and 7. tests/c2p_frame_test.c checks it against c2p16 in c2p.h.
-	.macro	GROUP
+	.macro	GROUP second
 	movem.l	(a0)+,d0-d3
 	movem.l	d0-d3,(a1)
 	lea	16(a1),a1
-	MERGE	d2, d0, #0x00ff00ff, #8
-	MERGE	d3, d1, #0x00ff00ff, #8
-	MERGE	d2, d0, #0x55555555, #1
-	MERGE	d3, d1, #0x55555555, #1
+	MERGE	d2, d0, d5, #8
+	MERGE	d3, d1, d5, #8
+	MERGE	d2, d0, d6, #1
+	MERGE	d3, d1, d6, #1
 	HIGH_LOW d0, d2
 	HIGH_LOW d1, d3
+	.if \second
 	MERGE	d0, d2, #0x33333333, #2
 	MERGE	d1, d3, #0x33333333, #2
+	.else
+	MERGE	d0, d2, d7, #2
+	MERGE	d1, d3, d7, #2
+	.endif
 	MERGE	d1, d0, #0x0f0f0f0f, #4
 	MERGE	d3, d2, #0x0f0f0f0f, #4
-	move.l	d1,(a2)
-	move.l	d3,4(a2)
-	move.l	d0,8(a2)
-	move.l	d2,12(a2)
-	move.l	a6,d4
-	beq.s	1f
+	.if \second
 	move.l	d1,(a2,a6.l)
 	move.l	d3,4(a2,a6.l)
 	move.l	d0,8(a2,a6.l)
 	move.l	d2,12(a2,a6.l)
-1:	lea	16(a2),a2
+	.endif
+	move.l	d1,(a2)+
+	move.l	d3,(a2)+
+	move.l	d0,(a2)+
+	move.l	d2,(a2)+
+	.endm
+
+| Counts a group of the row done, and goes on to the next while there is one: d7 counts the
+| groups with second, and without it a6 points at the end of out's row.
+	.macro	NEXT_GROUP second, label
+	.if \second
+	dbra	d7,\label
+	.else
+	cmpa.l	a6,a2
+	bne	\label
+	.endif
+	.endm
+
+| The rows: each group compared with its shadow a long at a time, and converted when one
+| differs. The compare has gone past the long that differed; 3: to 6: step back to the group.
+	.macro	ROWS second
+1:	move.l	a3,a0			| in, shadow and out of the row
+	move.l	a4,a1
+	move.l	a5,a2
+	.if \second
+	moveq	#19,d7			| groups in the row
+	.else
+	lea	320(a5),a6
+	.endif
+2:	cmpm.l	(a0)+,(a1)+
+	bne.s	6f
+	cmpm.l	(a0)+,(a1)+
+	bne.s	5f
+	cmpm.l	(a0)+,(a1)+
+	bne.s	4f
+	cmpm.l	(a0)+,(a1)+
+	bne.s	3f
+	lea	16(a2),a2
+	NEXT_GROUP \second, 2b
+	bra	7f
+3:	subq.l	#4,a0
+	subq.l	#4,a1
+4:	subq.l	#4,a0
+	subq.l	#4,a1
+5:	subq.l	#4,a0
+	subq.l	#4,a1
+6:	subq.l	#4,a0
+	subq.l	#4,a1
+	GROUP	\second
+	NEXT_GROUP \second, 2b
+7:	lea	320(a3),a3
+	lea	320(a4),a4
+	adda.l	64(sp),a5
+	subq.l	#1,60(sp)
+	bne	1b
 	.endm
 
 	.text
@@ -74,48 +134,28 @@ _c2p_frame:
 	move.l	56(sp),a5
 	move.l	68(sp),a6		| secondLine
 
-row:	move.l	a3,a0
-	move.l	a4,a1
-	move.l	a5,a2
 	tst.l	72(sp)
-	bne	full
+	beq.s	compare
+	move.l	a3,a0			| full: the shadow made the opposite of in
+	move.l	a4,a1
+	move.l	60(sp),d7
+	mulu.w	#80,d7
+	bra.s	2f
+1:	move.l	(a0)+,d0
+	not.l	d0
+	move.l	d0,(a1)+
+2:	subq.l	#1,d7
+	bcc.s	1b
 
-	moveq	#19,d7			| groups in the row
-scan:	cmpm.l	(a0)+,(a1)+
-	bne.s	differs
-	cmpm.l	(a0)+,(a1)+
-	bne.s	differs
-	cmpm.l	(a0)+,(a1)+
-	bne.s	differs
-	cmpm.l	(a0)+,(a1)+
-	dbne	d7,scan
-	beq	next			| the rest of the row is unchanged
-differs:
-	move.l	a0,d6			| the group holding the long before a0
-	sub.l	a3,d6
-	subq.l	#4,d6
-	and.w	#0xfff0,d6
-	lea	(a3,d6.l),a0
-	lea	(a4,d6.l),a1
-	lea	(a5,d6.l),a2
-	GROUP
-	add.w	#16,d6
-	move.w	#320,d7
-	sub.w	d6,d7
-	beq	next
-	lsr.w	#4,d7
-	subq.w	#1,d7
-	bra	scan
-
-full:	moveq	#19,d7			| groups in the row
-group:	GROUP
-	dbra	d7,group
-
-next:	lea	320(a3),a3
-	lea	320(a4),a4
-	adda.l	64(sp),a5
-	subq.l	#1,60(sp)
-	bne	row
-
-	movem.l	(sp)+,d2-d7/a2-a6
+compare:
+	move.l	#0x00ff00ff,d5
+	move.l	#0x55555555,d6
+	move.l	a6,d0
+	bne	doubled
+	move.l	#0x33333333,d7
+	ROWS	0
+	bra	done
+doubled:
+	ROWS	1
+done:	movem.l	(sp)+,d2-d7/a2-a6
 	rts

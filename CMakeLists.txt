@@ -137,3 +137,7 @@ set_target_properties(c2p_frame_test PROPERTIES SUFFIX ".PRG")
 target_include_directories(c2p_frame_test PRIVATE platform/atari)
 target_compile_options(c2p_frame_test PRIVATE -Wall -Wextra)
 target_link_directories(c2p_frame_test PRIVATE $<TARGET_PROPERTY:u7,LINK_DIRECTORIES>)
+# In TT-RAM as the game is, with the planes in ST RAM (the test allocates them there).
+add_custom_command(TARGET c2p_frame_test POST_BUILD
+    COMMAND sh -c "printf '\\000\\000\\000\\007' | dd of='$<TARGET_FILE:c2p_frame_test>' bs=1 seek=22 conv=notrunc status=none"
+    VERBATIM)

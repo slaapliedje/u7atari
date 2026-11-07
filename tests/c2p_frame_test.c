@@ -1,11 +1,13 @@
 /* Checks platform/atari/c2p.S against c2p16 (c2p.h), on the Atari (or Hatari): converts random
  * frames whole, then changes random groups, runs of groups and rows and converts again, with and
  * without the doubled lines, comparing the planes and the shadow with c2p16's every time. Then
- * times a whole frame and an unchanged one each way. */
+ * times a whole frame, an unchanged one, and one where every group changed, each way. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include <mint/osbind.h>
 
 #include "c2p.h"
 
@@ -44,15 +46,22 @@ static void reference(const uint8_t *in, uint8_t *out, int repeat)
 
 int main(void)
 {
-	static uint8_t frame[W * H], shadow[W * H], out[W * H * 2], want[W * H * 2];
+	static uint8_t frame[W * H], other[W * H], shadow[W * H], want[W * H * 2];
+	/* the screen is in ST RAM, as in the game */
+	uint8_t *out = (uint8_t *) Mxalloc(W * H * 2, 0);
 	long checks = 0, bad = 0;
+
+	if (out == NULL || (long) out < 0) {
+		printf("no ST RAM\n");
+		return 1;
+	}
 
 	for (int repeat = 1; repeat <= 2; repeat++) {
 		int32_t stride = repeat * W, second = repeat == 2 ? W : 0;
 
 		for (int i = 0; i < W * H; i++)
 			frame[i] = (uint8_t) random_below(256);
-		memset(out, 0, sizeof out);
+		memset(out, 0, W * H * 2);
 		c2p_frame(frame, shadow, out, H, stride, second, 1);
 		for (int round = 0; round < 60; round++, checks++) {
 			int changes = (int) random_below(40);
@@ -81,7 +90,9 @@ int main(void)
 	}
 	printf("%ld frames checked, %ld mismatched\n", checks, bad);
 
-	for (int way = 0; way < 4; way++) {
+	for (int i = 0; i < W * H; i++)
+		other[i] = (uint8_t) ~frame[i];
+	for (int way = 0; way < 6; way++) {
 		clock_t start = clock();
 
 		for (int n = 0; n < 50; n++)
@@ -97,9 +108,13 @@ int main(void)
 				break;
 			}
 			case 3: c2p_frame(frame, shadow, out, H, W, 0, 0); break;
+			/* walking: every group differs from the last frame */
+			case 4: c2p_frame(n & 1 ? other : frame, shadow, out, H, W, 0, 0); break;
+			case 5: c2p_frame(n & 1 ? other : frame, shadow, out, H, 2 * W, W, 0); break;
 			}
 		printf("%s: %ld ticks of 1/%d s for 50 frames\n",
-			(const char *[]) { "C whole", "asm whole", "C compare unchanged", "asm unchanged" }[way],
+			(const char *[]) { "C whole", "asm whole", "C compare unchanged", "asm unchanged",
+				"asm all changed", "asm all changed, lines doubled" }[way],
 			(long) (clock() - start), (int) CLOCKS_PER_SEC);
 	}
 	return bad != 0;
