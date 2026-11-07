@@ -150,7 +150,9 @@ This is a test release. Most testing so far has been under the Hatari
 emulator. On real machines, only a Falcon030 (68030 at 50 MHz) and
 the MiSTer's Falcon core with a 68060 have run it so far.
 
-- Speed on real hardware has not been measured.
+- Speed: a Falcon030 with a 50 MHz 68030 shows about 5-6 frames a
+  second walking around (measured with --fps). Other machines have
+  not been measured.
 - The ATW800/2 card has not been tried on a real TT.
 - Speech, --line-in, and --gm on a real General MIDI synth are untested
   on real hardware.
