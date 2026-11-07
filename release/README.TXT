@@ -159,9 +159,6 @@ the MiSTer's Falcon core with a 68060 have run it so far.
 - Serpent Isle has not been played far: combat, and speech that events
   trigger, are untested. Serpent Isle saves from DOS have not been
   tried.
-- On a real Falcon030, the screen has been seen to stay black after
-  quitting. This version changes how the game quits, but that has not
-  been tried there yet.
 - Version 0.1.0 crashed at once on a 68060; this version runs there.
 - There is no AdLib or Sound Blaster music.
 
