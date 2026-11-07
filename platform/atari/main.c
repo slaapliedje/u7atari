@@ -200,13 +200,19 @@ static long read_boot_drive(void)
 static bool run_maprom(void)
 {
 	char path[160];
-	_DTA *dta = Fgetdta();
+	_DTA dta, *old_dta = Fgetdta();
 	int drive = (int) Supexec(read_boot_drive);
+	long found;
 
+	/* A DTA of our own: the default one is the command line in the basepage, which
+	 * check_memory() passes on, and the search would fill it with "MAPROM??PRG" (? = --version). */
+	Fsetdta(&dta);
 	snprintf(path, sizeof path, "%c:\\AUTO\\MAPROM*.PRG", 'A' + drive);
-	if (Fsfirst(path, 0) != 0)
+	found = Fsfirst(path, 0);
+	Fsetdta(old_dta);
+	if (found != 0)
 		return false;
-	snprintf(path, sizeof path, "%c:\\AUTO\\%s", 'A' + drive, dta->dta_name);
+	snprintf(path, sizeof path, "%c:\\AUTO\\%s", 'A' + drive, dta.dta_name);
 	console_text("u7: no fast RAM; running ");
 	console_text(path);
 	console_text("\n");
