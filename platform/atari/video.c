@@ -9,7 +9,9 @@
  *
  * Two screens: a frame is converted into the hidden one, which is then shown from the next
  * vertical blank. Each screen remembers the frame it holds, so only the 16-pixel groups that
- * changed since are converted again (c2p.S, which takes rows of 320 pixels).
+ * changed since are converted again (c2p.S, which takes rows of 320 pixels). On the Falcon, the
+ * game's copy of its finished frame to the screen buffer (plat_video_copy_frame) converts it as
+ * it copies, so the present that follows only shows it.
  *
  * Palette writes go to the hardware at once, as the VGA DAC took them; fades rely on that.
  *
@@ -62,6 +64,9 @@ static int16_t top_line;        /* the first line the game's frame occupies */
 static int16_t line_repeat;     /* 2 on the TT, which shows each game line twice */
 
 static const uint8_t *last_pixels;
+/* The screen plat_video_copy_frame converted the frame at prepared_pixels into, or NULL. */
+static screen *prepared;
+static const uint8_t *prepared_pixels;
 static uint8_t palette[768];               /* the game's, 6-bit VGA */
 static bool refresh_wanted;
 /* Rows of the last frame to show again, where the game's pointer moved; none while bottom < 0. */
@@ -200,6 +205,7 @@ void video_reset(void)
 	static const uint8_t black[256 * 3];
 
 	last_pixels = NULL;
+	prepared = NULL;
 	text_shown = false;
 	if (active)
 		plat_video_set_palette(0, 256, black);
@@ -252,12 +258,14 @@ void plat_video_set_palette(int16_t first, int16_t count, const uint8_t *rgb)
 		write_palette(first, count, rgb);
 }
 
-/* c2p.S: converts the groups of 16 pixels that differ from the shadow, or all of them. */
+/* c2p.S: converts the groups of 16 pixels that differ from the shadow, or all of them, copying
+ * the frame to copy as it reads it when copy is not NULL. */
 void c2p_frame(const uint8_t *in, uint8_t *shadow, uint8_t *out, int32_t rows, int32_t outStride,
-	int32_t secondLine, int32_t full);
+	int32_t secondLine, int32_t full, uint8_t *copy);
 
-/* Converts the pixels that differ from what screen s shows. */
-static void convert(screen *s, const uint8_t *pixels)
+/* Converts the pixels that differ from what screen s shows, copying the frame to copy as it
+ * goes when that is not NULL (the Falcon only). */
+static void convert(screen *s, const uint8_t *pixels, uint8_t *copy)
 {
 	bool full = s->shadow == NULL;
 
@@ -268,15 +276,14 @@ static void convert(screen *s, const uint8_t *pixels)
 		return;
 	}
 	c2p_frame(pixels, s->shadow, s->base + top_line * LINE_BYTES, HEIGHT, line_repeat * LINE_BYTES,
-		line_repeat == 2 ? LINE_BYTES : 0, full);
+		line_repeat == 2 ? LINE_BYTES : 0, full, copy);
 }
 
-static void show_frame(const uint8_t *pixels)
+/* The screen the next frame goes into, once it may be written. */
+static screen *hidden_screen(void)
 {
 	screen *s;
 
-	if (!active)
-		return;
 	/* The screen handed over last time is showing once a blank has passed; until then the
 	 * hidden one may still be on display. */
 	while (vbl_count() == shown_at_vbl)
@@ -292,6 +299,16 @@ static void show_frame(const uint8_t *pixels)
 			vbl_count() - shown_at_vbl < 2)
 			;
 	}
+	return s;
+}
+
+static void show_frame(const uint8_t *pixels)
+{
+	screen *s;
+
+	if (!active)
+		return;
+	s = hidden_screen();
 #ifdef U7_DEBUG_LOG
 	{
 		static uint32_t presents;
@@ -314,7 +331,9 @@ static void show_frame(const uint8_t *pixels)
 		}
 	}
 #endif
-	convert(s, pixels);
+	if (s != prepared || pixels != prepared_pixels)
+		convert(s, pixels, NULL);
+	prepared = NULL;
 	rows_bottom = -1;
 	if (!card)
 		show(s->base);
@@ -376,6 +395,18 @@ void plat_video_present(const uint8_t *pixels)
 #endif
 	if (!text_shown)
 		show_frame(pixels);
+}
+
+void plat_video_copy_frame(uint8_t *dst, const uint8_t *src)
+{
+	/* The TT's doubled lines and the card convert as the frame is shown. */
+	if (!active || card || text_shown || line_repeat != 1) {
+		memmove(dst, src, WIDTH * HEIGHT);
+		return;
+	}
+	prepared = hidden_screen();
+	convert(prepared, src, dst);
+	prepared_pixels = dst;
 }
 
 void plat_video_wait_retrace(void)
@@ -464,7 +495,7 @@ static void show_rows(void)
 	}
 	c2p_frame(last_pixels + top * WIDTH, s->shadow + top * WIDTH,
 		s->base + (top_line + top * line_repeat) * LINE_BYTES, rows, line_repeat * LINE_BYTES,
-		line_repeat == 2 ? LINE_BYTES : 0, 0);
+		line_repeat == 2 ? LINE_BYTES : 0, 0, NULL);
 }
 
 void video_pump(void)

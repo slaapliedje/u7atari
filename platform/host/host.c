@@ -67,6 +67,7 @@ void plat_video_present(const uint8_t *pixels)
 	lockstep_frame(pixels, 'P');
 }
 
+void plat_video_copy_frame(uint8_t *dst, const uint8_t *src) { memmove(dst, src, 320 * 200); }
 void plat_video_wait_retrace(void) { lockstep_wait_retrace(); }
 void video_refresh(void) {}
 void video_refresh_wanted(void) {}
