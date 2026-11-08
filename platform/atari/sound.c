@@ -7,7 +7,10 @@
  *
  * MIDI goes straight to the MIDI ACIA: the sound tick sends from an interrupt, where a BIOS
  * call could land inside one the game is making. With --gm it goes through gm.c first, for a
- * General MIDI synth instead of an MT-32.
+ * General MIDI synth instead of an MT-32. The bytes wait in a queue, which the ACIA's transmit
+ * interrupt empties (midi_system_vector in ikbd.S, in the MIDI system vector that TOS's ACIA
+ * interrupt calls): at 31250 baud a byte takes 320 us to go out, which the game would otherwise
+ * spend waiting.
  *
  * Speech: the game hands over unsigned 8-bit mono at Sound Blaster rates (about 11 to 22 kHz).
  * DMA sound plays signed 8-bit mono from a ring buffer in ST RAM, looping over it from start-up
@@ -25,6 +28,7 @@
 
 #include <mint/osbind.h>
 #include <mint/falcon.h>
+#include <mint/sysvars.h>
 
 #include "plat.h"
 #include "backend.h"
@@ -33,7 +37,23 @@
 
 #define MIDI_ACIA_STATUS ((volatile uint8_t *) 0xfffffc04)
 #define MIDI_ACIA_DATA ((volatile uint8_t *) 0xfffffc06)
+#define MIDI_ACIA_CONTROL MIDI_ACIA_STATUS      /* written */
 #define ACIA_TDRE 0x02          /* transmit data register empty */
+/* Receive interrupt on, RTS low, clock / 16, 8 bits, no parity, 1 stop bit, as TOS sets it; and
+ * with the transmit interrupt on. */
+#define ACIA_TRANSMIT_IDLE 0x95
+#define ACIA_TRANSMIT_INTERRUPT 0xb5
+
+/* Shared with midi_system_vector (ikbd.S). Each index has a single writer: in this code, out
+ * the interrupt. */
+#define MIDI_QUEUE_SIZE 1024    /* a power of two; ikbd.S has it too */
+uint8_t midi_queue[MIDI_QUEUE_SIZE];
+volatile uint16_t midi_queue_in, midi_queue_out;
+volatile uint8_t midi_sending;  /* the transmit interrupt is on */
+long (*midi_old_system_vector)(void);
+long midi_system_vector(void);
+static _KBDVECS *kbd_vectors;
+static bool midi_queued;        /* the vector is in place */
 
 #ifdef U7_DEBUG_LOG
 uint32_t sound_midi_bytes;
@@ -72,6 +92,49 @@ static bool sound_locked;
 
 static void midi_out(const uint8_t *message, int16_t length);
 
+static void midi_queue_start(void)
+{
+	midi_queue_in = midi_queue_out = 0;
+	midi_sending = 0;
+	kbd_vectors = Kbdvbase();
+	midi_old_system_vector = kbd_vectors->midisys;
+	/* One long write, so the interrupt sees the old vector or the new. */
+	kbd_vectors->midisys = midi_system_vector;
+	midi_queued = true;
+}
+
+/* Lets what is queued go out, at most a second, and puts the vector back. */
+static void midi_queue_stop(void)
+{
+	uint32_t until = *_hz_200 + 200;
+
+	if (!midi_queued)
+		return;
+	while (midi_queue_out != midi_queue_in && (int32_t) (until - *_hz_200) > 0)
+		;
+	*MIDI_ACIA_CONTROL = ACIA_TRANSMIT_IDLE;
+	midi_sending = 0;
+	kbd_vectors->midisys = midi_old_system_vector;
+	midi_queued = false;
+	while (!(*MIDI_ACIA_STATUS & ACIA_TDRE) && (int32_t) (until - *_hz_200) > 0)
+		;
+}
+
+/* The queue is full: waits for the interrupt to send a byte, or sends one itself when the
+ * interrupt cannot come in. */
+static void midi_wait_for_room(uint16_t next)
+{
+	while (next == midi_queue_out) {
+		uint16_t sr;
+
+		__asm__ volatile ("move.w %%sr,%0" : "=d" (sr));
+		if ((sr & 0x0700) >= 0x0600 && (*MIDI_ACIA_STATUS & ACIA_TDRE)) {
+			*MIDI_ACIA_DATA = midi_queue[midi_queue_out];
+			midi_queue_out = (uint16_t) ((midi_queue_out + 1) & (MIDI_QUEUE_SIZE - 1));
+		}
+	}
+}
+
 /* Silences every channel: sustain off, all notes off, reset controllers. A real MT-32 keeps
  * sounding whatever it was told last, so this runs at start-up (after a crash or a reset in a
  * previous run), between programs, and on every way out. */
@@ -94,6 +157,7 @@ static void pcm_shutdown(void);
 
 void sound_init(void)
 {
+	midi_queue_start();
 	midi_all_off();
 	if (sound_gm)
 		gm_reset(midi_out);
@@ -104,6 +168,7 @@ void sound_shutdown(void)
 {
 	plat_sound_tick_set(NULL);
 	midi_all_off();
+	midi_queue_stop();
 	pcm_shutdown();
 }
 
@@ -124,9 +189,21 @@ static void midi_out(const uint8_t *message, int16_t length)
 {
 	plat_sound_lock();
 	for (int16_t i = 0; i < length; i++) {
-		while (!(*MIDI_ACIA_STATUS & ACIA_TDRE))
-			;
-		*MIDI_ACIA_DATA = message[i];
+		uint16_t next = (uint16_t) ((midi_queue_in + 1) & (MIDI_QUEUE_SIZE - 1));
+
+		if (!midi_queued) {
+			while (!(*MIDI_ACIA_STATUS & ACIA_TDRE))
+				;
+			*MIDI_ACIA_DATA = message[i];
+			continue;
+		}
+		midi_wait_for_room(next);
+		midi_queue[midi_queue_in] = message[i];
+		midi_queue_in = next;
+		if (!midi_sending) {
+			midi_sending = 1;
+			*MIDI_ACIA_CONTROL = ACIA_TRANSMIT_INTERRUPT;
+		}
 	}
 #ifdef U7_DEBUG_LOG
 	sound_midi_bytes += (uint32_t) length;
