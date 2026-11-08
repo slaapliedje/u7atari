@@ -52,6 +52,13 @@ enum { LAST_NONE, LAST_READ, LAST_WRITE };
  * The game opens most files to read and write, as DOS programs did, and writes to few: a
  * handle leaves its windows at its first write. */
 #define WINDOW_SIZE 8192
+/* A big file may be open up to READERS times, each at its own place in it: a seek forward
+ * walks the clusters from where the system's file stands, and one back walks them from the
+ * start, so the reader standing nearest before a read is moved to it. The shapes, read
+ * mostly in order with now and then one from far on, keep their place this way (SHAPES.VGA
+ * is 3600 clusters long). */
+#define READERS 4
+#define READERS_FROM (256 * INT32_C(1024))     /* a read this far in may open another */
 
 typedef struct {
 	int32_t start, length;
@@ -72,8 +79,12 @@ typedef struct {
 	uint8_t *window_data;       /* both windows' bytes */
 	window windows[2];
 	uint32_t window_clock;
-	long raw;                   /* the system's handle */
+	long raw;                   /* the system's handle (written files) */
 	int32_t raw_pos;            /* where it stands; -1 when not known */
+	long readers[READERS];      /* the system's handles (windows) */
+	int32_t reader_pos[READERS];    /* where each stands; -1 when not known */
+	uint32_t reader_used[READERS];
+	int reader_count;
 	int32_t pos;                /* where the next read starts */
 	int32_t size;               /* -1 until needed */
 	bool writable;              /* opened to write too */
@@ -334,7 +345,8 @@ static void release(handle *h)
 	if (h->file != NULL)
 		fclose(h->file);
 	if (h->window_data != NULL) {
-		raw_close(h->raw);
+		for (int i = 0; i < h->reader_count; i++)
+			raw_close(h->readers[i]);
 		free(h->window_data);
 	}
 	if (h->write_data != NULL) {
@@ -482,7 +494,8 @@ static int16_t open_windowed(const char *path, bool writable)
 		raw_close(raw);
 		return -2;
 	}
-	h->raw = raw;
+	h->readers[0] = raw;
+	h->reader_count = 1;
 	h->size = -1;
 	h->writable = writable;
 	snprintf(h->path, sizeof h->path, "%s", path);
@@ -497,7 +510,9 @@ static bool leave_windows(handle *h)
 {
 	FILE *file;
 
-	raw_close(h->raw);
+	for (int i = 0; i < h->reader_count; i++)
+		raw_close(h->readers[i]);
+	h->reader_count = 0;
 #ifdef __MINT__
 	if (__mint == 0) {
 		char dos[PATH_SIZE];
@@ -532,15 +547,56 @@ static bool leave_windows(handle *h)
 	return true;
 }
 
-/* Moves the system's file to at, unless it is there. */
-static bool raw_move(handle *h, int32_t at)
+/* A reader moved to at: the one standing nearest before it, else a new one when at is far
+ * enough in, else the one used least recently. Its index, or -1. */
+static int reader_at(handle *h, int32_t at)
 {
-	if (h->raw_pos != at && raw_seek(h->raw, at, SEEK_SET) != at) {
-		h->raw_pos = -1;
-		return false;
+	int best = -1;
+
+	for (int i = 0; i < h->reader_count; i++) {
+		if (h->reader_pos[i] >= 0 && h->reader_pos[i] <= at
+			&& (best < 0 || h->reader_pos[i] > h->reader_pos[best]))
+			best = i;
 	}
-	h->raw_pos = at;
-	return true;
+	if (best < 0 && at >= READERS_FROM && h->reader_count < READERS) {
+		long raw = raw_open(h->path);
+
+		if (raw >= 0) {
+			best = h->reader_count++;
+			h->readers[best] = raw;
+			h->reader_pos[best] = 0;
+		}
+	}
+	if (best < 0) {
+		best = 0;
+		for (int i = 1; i < h->reader_count; i++) {
+			if (h->reader_used[i] < h->reader_used[best])
+				best = i;
+		}
+	}
+	h->reader_used[best] = ++h->window_clock;
+	if (h->reader_pos[best] != at && raw_seek(h->readers[best], at, SEEK_SET) != at) {
+		h->reader_pos[best] = -1;
+		return -1;
+	}
+	h->reader_pos[best] = at;
+	return best;
+}
+
+/* Reads count bytes from at into buffer: how many, or -1. */
+static int32_t reader_read(handle *h, int32_t at, void *buffer, int32_t count)
+{
+	int r = reader_at(h, at);
+	int32_t n;
+
+	if (r < 0)
+		return -1;
+	if ((n = raw_read(h->readers[r], buffer, count)) < 0) {
+		h->reader_pos[r] = -1;
+		return -1;
+	}
+	h->reader_pos[r] += n;
+	return n;
 }
 
 static uint8_t *window_bytes(handle *h, const window *w)
@@ -564,11 +620,8 @@ static int32_t window_read(handle *h, uint8_t *out, int32_t count)
 		}
 		if (w == NULL && count - done >= WINDOW_SIZE) {
 			/* too big for a window: straight from the file */
-			if (!raw_move(h, h->pos) || (n = raw_read(h->raw, out + done, count - done)) < 0) {
-				h->raw_pos = -1;
+			if ((n = reader_read(h, h->pos, out + done, count - done)) < 0)
 				return done > 0 ? done : -1;
-			}
-			h->raw_pos += n;
 			h->pos += n;
 			return done + n;
 		}
@@ -578,11 +631,8 @@ static int32_t window_read(handle *h, uint8_t *out, int32_t count)
 
 			w = h->windows[0].used <= h->windows[1].used ? &h->windows[0] : &h->windows[1];
 			w->length = 0;
-			if (!raw_move(h, start) || (n = raw_read(h->raw, window_bytes(h, w), WINDOW_SIZE)) < 0) {
-				h->raw_pos = -1;
+			if ((n = reader_read(h, start, window_bytes(h, w), WINDOW_SIZE)) < 0)
 				return done > 0 ? done : -1;
-			}
-			h->raw_pos += n;
 			w->start = start;
 			w->length = n;
 			if (h->pos >= start + n)
@@ -603,8 +653,8 @@ static int32_t window_read(handle *h, uint8_t *out, int32_t count)
 static int32_t window_file_size(handle *h)
 {
 	if (h->size < 0) {
-		h->size = raw_seek(h->raw, 0, SEEK_END);
-		h->raw_pos = h->size;
+		h->size = raw_seek(h->readers[0], 0, SEEK_END);
+		h->reader_pos[0] = h->size;
 	}
 	return h->size;
 }

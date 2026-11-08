@@ -125,6 +125,10 @@ const char *files_root(void);
 /* False with a message for the player when the folder is not a usable installation. */
 bool files_check_data(char *message, size_t size);
 void files_reset(void);
+
+/* diskcache.c: more GEMDOS sector buffers while the game runs (plain TOS) */
+void disk_cache_init(void);
+void disk_cache_shutdown(void);
 void console_reset(void);
 
 #endif

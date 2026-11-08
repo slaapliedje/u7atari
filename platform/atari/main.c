@@ -52,6 +52,10 @@ static void shutdown_all(void)
 	if (!machine_taken)
 		return;
 	machine_taken = false;
+	/* what is still open is written out (TOS writes go through a buffer of files.c's own),
+	 * and then the extra sector buffers */
+	files_reset();
+	disk_cache_shutdown();
 	sound_shutdown();
 	input_shutdown();
 	video_shutdown();
@@ -377,6 +381,7 @@ int main(int argc, char **argv)
 	/* The game owns the machine: video, IKBD, MFP timers and the sound DMA. */
 	Super(0L);
 	machine_taken = true;
+	disk_cache_init();
 	timer_init();
 	video_init();
 	input_init();
