@@ -22,7 +22,7 @@ _input_no_dump:
 | The MIDI system vector (sound.c): TOS's ACIA interrupt calls it, then its own one for what came
 | in, for as long as either ACIA asks for service. While the transmit interrupt is on, sends the
 | next queued byte once the transmitter is empty, and turns the interrupt off when the queue is.
-	.equ	MIDI_QUEUE_SIZE, 1024		| sound.c has it too
+	.equ	MIDI_QUEUE_SIZE, 16384		| sound.c has it too
 	.globl	_midi_system_vector
 _midi_system_vector:
 	tst.b	_midi_sending

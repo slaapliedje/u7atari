@@ -45,8 +45,9 @@
 #define ACIA_TRANSMIT_INTERRUPT 0xb5
 
 /* Shared with midi_system_vector (ikbd.S). Each index has a single writer: in this code, out
- * the interrupt. */
-#define MIDI_QUEUE_SIZE 1024    /* a power of two; ikbd.S has it too */
+ * the interrupt. The queue holds the MT-32 timbre bank the game uploads at start-up (about
+ * 8 KB, 2.7 s of MIDI), so it goes out while the game loads instead of holding it up. */
+#define MIDI_QUEUE_SIZE 16384   /* a power of two; ikbd.S has it too */
 uint8_t midi_queue[MIDI_QUEUE_SIZE];
 volatile uint16_t midi_queue_in, midi_queue_out;
 volatile uint8_t midi_sending;  /* the transmit interrupt is on */
@@ -103,10 +104,12 @@ static void midi_queue_start(void)
 	midi_queued = true;
 }
 
-/* Lets what is queued go out, at most a second, and puts the vector back. */
+/* Lets what is queued go out, and puts the vector back. Waits as long as the bytes take (about
+ * 16 a 200 Hz tick) and a second more, in case the ACIA has stopped. */
 static void midi_queue_stop(void)
 {
-	uint32_t until = *_hz_200 + 200;
+	uint16_t queued = (uint16_t) ((midi_queue_in - midi_queue_out) & (MIDI_QUEUE_SIZE - 1));
+	uint32_t until = *_hz_200 + 200 + queued / 15;
 
 	if (!midi_queued)
 		return;
