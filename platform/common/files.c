@@ -1,9 +1,12 @@
 /* The game's DOS files, found in the data directory whatever their letter case.
  *
  * Follows upstream's matoya backend (platform/matoya/files.c) on MiNTLib's POSIX layer, which
- * works under plain TOS and under MiNT. TOS FAT drives are 8.3 and case-insensitive already,
- * so most lookups succeed on the first stat; the directory scan only matters on a
- * case-sensitive MiNT file system.
+ * works under plain TOS and under MiNT. Names are matched against the directory only on a
+ * case-sensitive MiNT file system; TOS FAT drives are 8.3 and case-insensitive already.
+ *
+ * Under plain TOS, where loading a game is mostly waiting on GEMDOS, the hot paths call GEMDOS
+ * themselves: MiNTLib's stat, open and readdir each make several GEMDOS calls for one, and
+ * turn every file date into a time_t (over a millisecond on a 68030).
  *
  * The game's data and saves stay little-endian; the bytes pass through unchanged.
  *
@@ -17,10 +20,12 @@
 #include <string.h>
 #include <strings.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #ifdef __MINT__
+#include <mint/mintbind.h>
 #include <mint/osbind.h>
 #include <mint/ostruct.h>
 #else
@@ -39,13 +44,42 @@
 
 enum { LAST_NONE, LAST_READ, LAST_WRITE };
 
-/* A handle is an open file, or a read-only block of memory (the made-up U7.CFG). */
+/* A file is read through two windows of its own, each WINDOW_SIZE bytes from where a read
+ * first missed them, the one used least recently refilled: so a file's index and its data,
+ * read by turns, both stay at hand. A seek only moves the position; the system's file is moved
+ * only to fill a window, or for a read too big for one. On TOS a seek costs a walk along the
+ * file's clusters (from its start, when going back), and stdio's own buffer goes at each one.
+ * The game opens most files to read and write, as DOS programs did, and writes to few: a
+ * handle leaves its windows at its first write. */
+#define WINDOW_SIZE 8192
+
+typedef struct {
+	int32_t start, length;
+	uint32_t used;
+} window;
+
+/* A handle is an open file, read and written through stdio; or one not yet written, read
+ * through windows (window_data set); or under TOS one written, through GEMDOS itself with a
+ * buffer of its own (write_data set: MiNTLib's fopen makes a dozen GEMDOS calls, and
+ * looks up the file's date, where Fcreate is one); or a read-only block of memory (the
+ * made-up U7.CFG). */
 typedef struct {
 	FILE *file;
 	int last;
 	char *memory;
 	int32_t memory_size;
 	int32_t memory_pos;
+	uint8_t *window_data;       /* both windows' bytes */
+	window windows[2];
+	uint32_t window_clock;
+	long raw;                   /* the system's handle */
+	int32_t raw_pos;            /* where it stands; -1 when not known */
+	int32_t pos;                /* where the next read starts */
+	int32_t size;               /* -1 until needed */
+	bool writable;              /* opened to write too */
+	uint8_t *write_data;        /* bytes written, write_count of them, not yet given to GEMDOS */
+	int32_t write_count;
+	char path[PATH_SIZE];       /* to open it again for stdio */
 } handle;
 
 typedef struct {
@@ -83,25 +117,87 @@ static bool is_separator(char c)
 	return c == '/' || c == '\\';
 }
 
-static bool exists(const char *path)
+enum { KIND_NONE, KIND_FILE, KIND_DIR, KIND_OTHER };
+
+#ifdef __MINT__
+extern int __mint;          /* MiNTLib: the MiNT version, 0 under plain TOS */
+
+/* path for GEMDOS itself, with TOS's separators */
+static bool dos_path(const char *path, char dos[PATH_SIZE])
+{
+	size_t n = strlen(path);
+
+	if (n == 0 || n >= PATH_SIZE)
+		return false;
+	for (size_t i = 0; i <= n; i++)
+		dos[i] = path[i] == '/' ? '\\' : path[i];
+	return true;
+}
+
+/* path's kind from GEMDOS Fsfirst, under plain TOS; -1 when Fsfirst can't say (a drive's root,
+ * "." and "..", which have no entry of their own to find, or a wildcard). MiNTLib's stat does
+ * the same search and then turns the entry's DOS date into a time_t through mktime, which takes
+ * over a millisecond on a 68030: loading a game asks after a file several hundred times. */
+static int tos_path_kind(const char *path, uint32_t *size)
+{
+	char dos[PATH_SIZE];
+	const char *name = path;
+	_DTA dta, *old;
+	long found;
+
+	if (!dos_path(path, dos) || strpbrk(path, "*?") != NULL)
+		return -1;
+	for (const char *p = path; *p != '\0'; p++) {
+		if (is_separator(*p) || *p == ':')
+			name = p + 1;
+	}
+	if (*name == '\0' || strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+		return -1;
+	old = Fgetdta();
+	Fsetdta(&dta);
+	found = Fsfirst(dos, FA_RDONLY | FA_HIDDEN | FA_SYSTEM | FA_DIR);
+	Fsetdta(old);
+	if (found != 0)
+		return KIND_NONE;
+	if (size != NULL)
+		*size = (uint32_t) dta.dta_size;
+	return (dta.dta_attribute & FA_DIR) ? KIND_DIR : KIND_FILE;
+}
+#endif
+
+/* What path is, and a file's size in *size when size isn't NULL. */
+static int path_kind(const char *path, uint32_t *size)
 {
 	struct stat st;
 
-	return stat(path, &st) == 0;
+#ifdef __MINT__
+	if (__mint == 0) {
+		int kind = tos_path_kind(path, size);
+
+		if (kind >= 0)
+			return kind;
+	}
+#endif
+	if (stat(path, &st) != 0)
+		return KIND_NONE;
+	if (size != NULL)
+		*size = (uint32_t) st.st_size;
+	return S_ISREG(st.st_mode) ? KIND_FILE : S_ISDIR(st.st_mode) ? KIND_DIR : KIND_OTHER;
+}
+
+static bool exists(const char *path)
+{
+	return path_kind(path, NULL) != KIND_NONE;
 }
 
 static bool is_file(const char *path)
 {
-	struct stat st;
-
-	return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+	return path_kind(path, NULL) == KIND_FILE;
 }
 
 static bool is_dir(const char *path)
 {
-	struct stat st;
-
-	return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+	return path_kind(path, NULL) == KIND_DIR;
 }
 
 static bool join(char *path, size_t size, const char *dir, const char *name)
@@ -113,7 +209,29 @@ static bool join(char *path, size_t size, const char *dir, const char *name)
 	return written > 0 && (size_t) written < size;
 }
 
-/* Finds the name on disk of one entry of dir, ignoring case. */
+/* Whether names in dir must match in case. TOS file systems never do; under MiNT, ext2 and the
+ * like do (Dpathconf says). The last answer is kept, as most names are in one or two folders. */
+static bool case_sensitive(const char *dir)
+{
+#ifdef __MINT__
+	static char last_dir[PATH_SIZE];
+	static bool last_answer;
+
+	if (__mint == 0)
+		return false;
+	if (strcmp(dir, last_dir) != 0) {
+		snprintf(last_dir, sizeof last_dir, "%s", dir);
+		last_answer = Dpathconf(dir, 6 /* DP_CASE */) == 0 /* DP_CASESENS */;
+	}
+	return last_answer;
+#else
+	(void) dir;
+	return true;
+#endif
+}
+
+/* Finds the name on disk of one entry of dir, ignoring case, on a file system where case
+ * matters. */
 static bool real_name(const char *dir, const char *name, char *real)
 {
 	char path[PATH_SIZE];
@@ -139,7 +257,9 @@ static bool real_name(const char *dir, const char *name, char *real)
 }
 
 /* Turns a DOS name into a host path. With create set, a missing last part is allowed and
- * spelt in upper case. */
+ * spelt in upper case. Where case doesn't matter (every TOS drive) the name is the path as it
+ * stands, whether or not it exists: what uses the path finds that out, and each look on the
+ * way costs a search of the folder, a slow one on a real disk. */
 static bool resolve(const char *dos, bool create, char *path)
 {
 	const char *p = dos;
@@ -179,7 +299,10 @@ static bool resolve(const char *dos, bool create, char *path)
 			if (n == 0)
 				continue;
 		}
-		if (!real_name(path, part, real)) {
+		if (!case_sensitive(path)) {
+			for (size_t i = 0; i <= n; i++)
+				real[i] = create && last ? (char) toupper((unsigned char) part[i]) : part[i];
+		} else if (!real_name(path, part, real)) {
 			if (!create || !last)
 				return false;
 			for (size_t i = 0; i <= n; i++)
@@ -198,10 +321,27 @@ static bool resolve(const char *dos, bool create, char *path)
 
 /* ---- Handles ---- */
 
+static void raw_close(long raw);
+static bool write_out(handle *h);
+
+static bool in_use(const handle *h)
+{
+	return h->file != NULL || h->memory != NULL || h->window_data != NULL || h->write_data != NULL;
+}
+
 static void release(handle *h)
 {
 	if (h->file != NULL)
 		fclose(h->file);
+	if (h->window_data != NULL) {
+		raw_close(h->raw);
+		free(h->window_data);
+	}
+	if (h->write_data != NULL) {
+		write_out(h);
+		raw_close(h->raw);
+		free(h->write_data);
+	}
 	free(h->memory);
 	memset(h, 0, sizeof *h);
 }
@@ -216,7 +356,7 @@ void files_reset(void)
 static int16_t free_handle(void)
 {
 	for (int16_t i = 1; i <= MAX_HANDLES; i++) {
-		if (handles[i].file == NULL && handles[i].memory == NULL)
+		if (!in_use(&handles[i]))
 			return i;
 	}
 	return -1;
@@ -256,7 +396,7 @@ static handle *get_handle(int16_t file)
 {
 	if (file < 1 || file > MAX_HANDLES)
 		return NULL;
-	if (handles[file].file == NULL && handles[file].memory == NULL)
+	if (!in_use(&handles[file]))
 		return NULL;
 	return &handles[file];
 }
@@ -268,6 +408,335 @@ static FILE *use_stream(handle *h, int op)
 		fseek(h->file, 0, SEEK_CUR);
 	h->last = op;
 	return h->file;
+}
+
+/* ---- Files only read: through windows ---- */
+
+/* The system's own calls: GEMDOS's under TOS, where MiNTLib's open and fstat would look up the
+ * file's date (a mktime each); POSIX's elsewhere. */
+static long raw_open(const char *path)
+{
+#ifdef __MINT__
+	if (__mint == 0) {
+		char dos[PATH_SIZE];
+
+		return dos_path(path, dos) ? Fopen(dos, 0) : -1;
+	}
+#endif
+	return open(path, O_RDONLY);
+}
+
+static int32_t raw_read(long raw, void *buffer, int32_t count)
+{
+#ifdef __MINT__
+	if (__mint == 0)
+		return (int32_t) Fread((int16_t) raw, count, buffer);
+#endif
+	return (int32_t) read((int) raw, buffer, (size_t) count);
+}
+
+static int32_t raw_seek(long raw, int32_t offset, int whence)
+{
+#ifdef __MINT__
+	if (__mint == 0)
+		return (int32_t) Fseek(offset, (int16_t) raw, (int16_t) whence);
+#endif
+	return (int32_t) lseek((int) raw, offset, whence);
+}
+
+static int32_t raw_write(long raw, const void *buffer, int32_t count)
+{
+#ifdef __MINT__
+	if (__mint == 0)
+		return (int32_t) Fwrite((int16_t) raw, count, buffer);
+#endif
+	return (int32_t) write((int) raw, buffer, (size_t) count);
+}
+
+static void raw_close(long raw)
+{
+#ifdef __MINT__
+	if (__mint == 0) {
+		Fclose((int16_t) raw);
+		return;
+	}
+#endif
+	close((int) raw);
+}
+
+/* Opens path to read through windows: the handle; -1 when there is no such file; -2 when
+ * there is no room for the windows, to open it as any other. */
+static int16_t open_windowed(const char *path, bool writable)
+{
+	int16_t i = free_handle();
+	handle *h;
+	long raw;
+
+	if (i < 0)
+		return -2;
+	if ((raw = raw_open(path)) < 0)
+		return -1;
+	h = &handles[i];
+	memset(h, 0, sizeof *h);
+	if ((h->window_data = malloc(2 * WINDOW_SIZE)) == NULL) {
+		raw_close(raw);
+		return -2;
+	}
+	h->raw = raw;
+	h->size = -1;
+	h->writable = writable;
+	snprintf(h->path, sizeof h->path, "%s", path);
+	return i;
+}
+
+static int32_t tos_seek(handle *h, int32_t offset, int whence);
+
+/* Turns a handle read through windows into one to write, where it stands: through GEMDOS
+ * under TOS, else stdio. False if the file won't open again. */
+static bool leave_windows(handle *h)
+{
+	FILE *file;
+
+	raw_close(h->raw);
+#ifdef __MINT__
+	if (__mint == 0) {
+		char dos[PATH_SIZE];
+
+		/* the windows' memory becomes the write buffer */
+		h->write_data = h->window_data;
+		h->window_data = NULL;
+		h->write_count = 0;
+		h->raw = -1;
+		if (dos_path(h->path, dos) && (h->raw = Fopen(dos, 2)) >= 0) {
+			h->raw_pos = 0;
+			if (tos_seek(h, h->pos, SEEK_SET) == h->pos)
+				return true;
+			Fclose((int16_t) h->raw);
+		}
+		/* stdio, then */
+		h->window_data = h->write_data;
+		h->write_data = NULL;
+	}
+#endif
+	free(h->window_data);
+	h->window_data = NULL;
+	if ((file = fopen(h->path, "r+b")) == NULL || fseek(file, h->pos, SEEK_SET) != 0) {
+		if (file != NULL)
+			fclose(file);
+		memset(h, 0, sizeof *h);
+		return false;
+	}
+	setvbuf(file, NULL, _IOFBF, STREAM_BUFFER);
+	h->file = file;
+	h->last = LAST_NONE;
+	return true;
+}
+
+/* Moves the system's file to at, unless it is there. */
+static bool raw_move(handle *h, int32_t at)
+{
+	if (h->raw_pos != at && raw_seek(h->raw, at, SEEK_SET) != at) {
+		h->raw_pos = -1;
+		return false;
+	}
+	h->raw_pos = at;
+	return true;
+}
+
+static uint8_t *window_bytes(handle *h, const window *w)
+{
+	return h->window_data + (w - h->windows) * WINDOW_SIZE;
+}
+
+static int32_t window_read(handle *h, uint8_t *out, int32_t count)
+{
+	int32_t done = 0;
+
+	while (done < count) {
+		window *w = NULL;
+		int32_t n;
+
+		for (int k = 0; k < 2; k++) {
+			window *c = &h->windows[k];
+
+			if (h->pos >= c->start && h->pos < c->start + c->length)
+				w = c;
+		}
+		if (w == NULL && count - done >= WINDOW_SIZE) {
+			/* too big for a window: straight from the file */
+			if (!raw_move(h, h->pos) || (n = raw_read(h->raw, out + done, count - done)) < 0) {
+				h->raw_pos = -1;
+				return done > 0 ? done : -1;
+			}
+			h->raw_pos += n;
+			h->pos += n;
+			return done + n;
+		}
+		if (w == NULL) {
+			/* refill the window used least recently, from the sector the read starts in */
+			int32_t start = h->pos & ~(int32_t) 511;
+
+			w = h->windows[0].used <= h->windows[1].used ? &h->windows[0] : &h->windows[1];
+			w->length = 0;
+			if (!raw_move(h, start) || (n = raw_read(h->raw, window_bytes(h, w), WINDOW_SIZE)) < 0) {
+				h->raw_pos = -1;
+				return done > 0 ? done : -1;
+			}
+			h->raw_pos += n;
+			w->start = start;
+			w->length = n;
+			if (h->pos >= start + n)
+				break;      /* past the end of the file */
+		}
+		w->used = ++h->window_clock;
+		n = w->start + w->length - h->pos;
+		if (n > count - done)
+			n = count - done;
+		memcpy(out + done, window_bytes(h, w) + (h->pos - w->start), (size_t) n);
+		h->pos += n;
+		done += n;
+	}
+	return done;
+}
+
+/* The file's size, found the first time it is asked for. */
+static int32_t window_file_size(handle *h)
+{
+	if (h->size < 0) {
+		h->size = raw_seek(h->raw, 0, SEEK_END);
+		h->raw_pos = h->size;
+	}
+	return h->size;
+}
+
+/* ---- Files written, under TOS ---- */
+
+#ifdef __MINT__
+/* Creates path under TOS: the handle; -1 when it can't be made; -2 when there is no room for a
+ * buffer, to make it with stdio. */
+static int16_t create_tos(const char *path)
+{
+	char dos[PATH_SIZE];
+	int16_t i = free_handle();
+	handle *h;
+	long raw;
+
+	if (i < 0)
+		return -2;
+	if (!dos_path(path, dos) || (raw = Fcreate(dos, 0)) < 0)
+		return -1;
+	h = &handles[i];
+	memset(h, 0, sizeof *h);
+	if ((h->write_data = malloc(STREAM_BUFFER)) == NULL) {
+		Fclose((int16_t) raw);
+		return -2;
+	}
+	h->raw = raw;
+	snprintf(h->path, sizeof h->path, "%s", path);
+	return i;
+}
+#endif
+
+/* Gives what is waiting to GEMDOS. */
+static bool write_out(handle *h)
+{
+#ifdef __MINT__
+	if (h->write_count > 0) {
+		long put = Fwrite((int16_t) h->raw, h->write_count, h->write_data);
+
+		if (put > 0)
+			h->raw_pos += (int32_t) put;
+		if (put != h->write_count) {
+			h->write_count = 0;
+			return false;
+		}
+		h->write_count = 0;
+	}
+#else
+	(void) h;
+#endif
+	return true;
+}
+
+static int32_t tos_write(handle *h, const void *buffer, int32_t count)
+{
+#ifdef __MINT__
+	if (count >= STREAM_BUFFER) {
+		long put;
+
+		if (!write_out(h))
+			return -1;
+		put = Fwrite((int16_t) h->raw, count, buffer);
+		if (put < 0)
+			return -1;
+		h->raw_pos += (int32_t) put;
+		return (int32_t) put;
+	}
+	if (h->write_count + count > STREAM_BUFFER && !write_out(h))
+		return -1;
+	memcpy(h->write_data + h->write_count, buffer, (size_t) count);
+	h->write_count += count;
+	return count;
+#else
+	(void) h, (void) buffer, (void) count;
+	return -1;
+#endif
+}
+
+static int32_t tos_read(handle *h, void *buffer, int32_t count)
+{
+	int32_t got;
+
+	if (!write_out(h) || (got = raw_read(h->raw, buffer, count)) < 0)
+		return -1;
+	h->raw_pos += got;
+	return got;
+}
+
+static int32_t tos_seek(handle *h, int32_t offset, int whence)
+{
+	int32_t at;
+
+	if (!write_out(h))
+		return -1;
+	if (whence == SEEK_CUR) {
+		offset += h->raw_pos;
+		whence = SEEK_SET;
+	}
+	if (whence == SEEK_SET && offset == h->raw_pos)
+		return offset;
+	if (whence == SEEK_SET && offset < 0)
+		return -1;
+	if ((at = raw_seek(h->raw, offset, whence)) >= 0) {
+		h->raw_pos = at;
+		return at;
+	}
+	/* GEMDOS won't go past the end, where stdio (and DOS) would: fill up to there with zeros */
+	if (whence == SEEK_SET && (at = raw_seek(h->raw, 0, SEEK_END)) >= 0 && at < offset) {
+		static const uint8_t zeros[512];
+
+		h->raw_pos = at;
+		while (h->raw_pos < offset) {
+			int32_t n = offset - h->raw_pos < (int32_t) sizeof zeros ? offset - h->raw_pos
+				: (int32_t) sizeof zeros;
+
+			if (raw_write(h->raw, zeros, n) != n)
+				return -1;
+			h->raw_pos += n;
+		}
+		return offset;
+	}
+	return -1;
+}
+
+static int32_t tos_length(handle *h)
+{
+	int32_t end;
+
+	if (!write_out(h) || (end = raw_seek(h->raw, 0, SEEK_END)) < 0)
+		return -1;
+	raw_seek(h->raw, h->raw_pos, SEEK_SET);
+	return end;
 }
 
 /* U7.CFG (SERPENT.CFG) is the sound setup the DOS installer wrote: line 1 the music card, line 2
@@ -313,10 +782,23 @@ static int16_t open_sound_config(const char *name)
 int16_t plat_file_open(const char *name, int16_t mode)
 {
 	char path[PATH_SIZE];
+	int16_t file;
 
 	if (is_sound_config(name))
 		return open_sound_config(name);
-	if (!resolve(name, false, path) || !is_file(path))
+	if (!resolve(name, false, path))
+		return -1;
+#ifdef __MINT__
+	/* GEMDOS's Fopen finds only files, so no look first */
+	if (__mint != 0 && !is_file(path))
+		return -1;
+#else
+	if (!is_file(path))
+		return -1;
+#endif
+	if ((file = open_windowed(path, (mode & PLAT_FILE_WRITE) != 0)) != -2)
+		return file;
+	if (!is_file(path))
 		return -1;
 	return add_file(fopen(path, (mode & PLAT_FILE_WRITE) ? "r+b" : "rb"));
 }
@@ -325,8 +807,17 @@ int16_t plat_file_create(const char *name)
 {
 	char path[PATH_SIZE];
 
-	if (!resolve(name, true, path) || is_dir(path))
+	/* fopen fails on a folder: no need to look first */
+	if (!resolve(name, true, path))
 		return -1;
+#ifdef __MINT__
+	if (__mint == 0) {
+		int16_t file = create_tos(path);
+
+		if (file != -2)
+			return file;
+	}
+#endif
 	return add_file(fopen(path, "w+b"));
 }
 
@@ -353,6 +844,10 @@ int32_t plat_file_read(int16_t file, void *buffer, int32_t count)
 		h->memory_pos += count;
 		return count;
 	}
+	if (h->window_data != NULL)
+		return window_read(h, buffer, count);
+	if (h->write_data != NULL)
+		return tos_read(h, buffer, count);
 	f = use_stream(h, LAST_READ);
 	n = fread(buffer, 1, (size_t) count, f);
 	return n == 0 && ferror(f) ? -1 : (int32_t) n;
@@ -365,6 +860,10 @@ int32_t plat_file_write(int16_t file, const void *buffer, int32_t count)
 
 	if (h == NULL || h->memory != NULL || count < 0)
 		return -1;
+	if (h->window_data != NULL && (!h->writable || !leave_windows(h)))
+		return -1;
+	if (h->write_data != NULL)
+		return tos_write(h, buffer, count);
 	n = fwrite(buffer, 1, (size_t) count, use_stream(h, LAST_WRITE));
 	return n == 0 && count > 0 ? -1 : (int32_t) n;
 }
@@ -385,6 +884,16 @@ int32_t plat_file_seek(int16_t file, int32_t offset, int16_t origin)
 		h->memory_pos = base + offset;
 		return h->memory_pos;
 	}
+	if (h->window_data != NULL) {
+		int32_t base = whence == SEEK_CUR ? h->pos : whence == SEEK_END ? window_file_size(h) : 0;
+
+		if (base < 0 || base + offset < 0)
+			return -1;
+		h->pos = base + offset;
+		return h->pos;
+	}
+	if (h->write_data != NULL)
+		return tos_seek(h, offset, whence);
 	f = use_stream(h, LAST_NONE);
 	if (fseek(f, offset, whence) != 0)
 		return -1;
@@ -401,6 +910,10 @@ int32_t plat_file_length(int16_t file)
 		return -1;
 	if (h->memory != NULL)
 		return h->memory_size;
+	if (h->window_data != NULL)
+		return window_file_size(h);
+	if (h->write_data != NULL)
+		return tos_length(h);
 	f = use_stream(h, LAST_NONE);
 	position = ftell(f);
 	fseek(f, 0, SEEK_END);
@@ -419,6 +932,10 @@ int16_t plat_file_truncate(int16_t file)
 
 	if (h == NULL || h->memory != NULL)
 		return 0;
+	if (h->window_data != NULL && (!h->writable || !leave_windows(h)))
+		return 0;
+	if (h->write_data != NULL)
+		return 0;   /* GEMDOS can't */
 	f = use_stream(h, LAST_NONE);
 	if (fflush(f) != 0 || (position = ftell(f)) < 0)
 		return 0;
@@ -597,16 +1114,33 @@ static find_list *list_matches(const char *dos_pattern)
 		return NULL;
 
 	list = calloc(1, sizeof *list);
+#ifdef __MINT__
+	if (__mint == 0) {
+		/* GEMDOS's own search gives each file's size, where readdir would need a stat (a
+		 * search of the folder) for each */
+		char pattern[PATH_SIZE], dos[PATH_SIZE];
+		_DTA dta, *old = Fgetdta();
+
+		Fsetdta(&dta);
+		if (join(pattern, sizeof pattern, dir, "*.*") && dos_path(pattern, dos)) {
+			for (long r = Fsfirst(dos, FA_RDONLY | FA_HIDDEN | FA_SYSTEM); r == 0; r = Fsnext()) {
+				if (dos_fields(dta.dta_name, false, have) && fields_match(want, have))
+					add_found(list, have, (uint32_t) dta.dta_size);
+			}
+		}
+		Fsetdta(old);
+		d = NULL;
+	} else
+#endif
 	d = opendir(dir);
 	while (d != NULL && (entry = readdir(d)) != NULL) {
 		char path[PATH_SIZE];
-		struct stat st;
+		uint32_t size;
 
 		if (!dos_fields(entry->d_name, false, have) || !fields_match(want, have))
 			continue;
-		if (join(path, sizeof path, dir, entry->d_name) && stat(path, &st) == 0
-			&& S_ISREG(st.st_mode))
-			add_found(list, have, (uint32_t) st.st_size);
+		if (join(path, sizeof path, dir, entry->d_name) && path_kind(path, &size) == KIND_FILE)
+			add_found(list, have, size);
 	}
 	if (d != NULL)
 		closedir(d);
