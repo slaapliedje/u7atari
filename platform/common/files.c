@@ -65,17 +65,47 @@ typedef struct {
 	uint32_t used;
 } window;
 
+/* Saving a game reads back every file in GAMEDAT, and loading one writes them all: each open
+ * or create is a search of that folder of nearly 200 entries, a slow one under GEMDOS on a real
+ * disk. So files up to KEPT_LARGEST bytes are kept in memory once read or written whole, up to
+ * KEPT_MEMORY in all, the one used least recently going first, and while KEPT_SPARE bytes of the
+ * system's memory stay free; GAMEDAT takes about 400 KB. A file is opened from memory when kept;
+ * a write to it forgets it, as do removing it and making it again. */
+#define KEPT_LARGEST (64 * INT32_C(1024))
+#define KEPT_MEMORY (1024 * INT32_C(1024))
+#define KEPT_SPARE (512 * INT32_C(1024))
+/* A file created is built in memory, up to BUILT_LARGEST bytes, and written whole when it is
+ * closed: the game writes a saved game a piece at a time, going back to its index between
+ * them, and each seek back has GEMDOS walk the file's clusters from its start. */
+#define BUILT_LARGEST (1024 * INT32_C(1024))
+
+typedef struct kept_file {
+	struct kept_file *next;
+	uint32_t used;
+	uint32_t hash;
+	int32_t size;
+	char *path;
+	uint8_t data[];             /* the file, then its path */
+} kept_file;
+
+static kept_file *kept;
+static int32_t kept_memory;
+static uint32_t kept_clock;
+
 /* A handle is an open file, read and written through stdio; or one not yet written, read
  * through windows (window_data set); or under TOS one written, through GEMDOS itself with a
  * buffer of its own (write_data set: MiNTLib's fopen makes a dozen GEMDOS calls, and
- * looks up the file's date, where Fcreate is one); or a read-only block of memory (the
- * made-up U7.CFG). */
+ * looks up the file's date, where Fcreate is one); or a block of memory: a kept file's copy,
+ * which goes to the file itself at the first write, or the made-up U7.CFG, only read. A file
+ * created is also built in memory (built set) until it is closed or grows too big. */
 typedef struct {
 	FILE *file;
 	int last;
 	char *memory;
 	int32_t memory_size;
 	int32_t memory_pos;
+	uint8_t *built;
+	int32_t built_size, built_room, built_pos;
 	uint8_t *window_data;       /* both windows' bytes */
 	window windows[2];
 	uint32_t window_clock;
@@ -340,20 +370,39 @@ static bool in_use(const handle *h)
 	return h->file != NULL || h->memory != NULL || h->window_data != NULL || h->write_data != NULL;
 }
 
+static void keep(const char *path, const void *data, int32_t size);
+static void forget(const char *path);
+static int32_t write_through(handle *h, const void *buffer, int32_t count);
+
 static void release(handle *h)
 {
-	if (h->file != NULL)
-		fclose(h->file);
+	uint8_t *built = h->built;
+	int32_t built_size = h->built_size;
+	bool written = true;
+
+	if (built != NULL) {
+		h->built = NULL;
+		written = write_through(h, built, built_size) == built_size;
+	}
+	if (h->file != NULL && fclose(h->file) != 0)
+		written = false;
 	if (h->window_data != NULL) {
 		for (int i = 0; i < h->reader_count; i++)
 			raw_close(h->readers[i]);
 		free(h->window_data);
 	}
 	if (h->write_data != NULL) {
-		write_out(h);
+		written = write_out(h) && written;
 		raw_close(h->raw);
 		free(h->write_data);
 	}
+	/* a file written: kept as it now is, else not at all (it may have been read and kept
+	 * while it was being written) */
+	if (built != NULL && written)
+		keep(h->path, built, built_size);
+	else if (h->file != NULL || h->write_data != NULL)
+		forget(h->path);
+	free(built);
 	free(h->memory);
 	memset(h, 0, sizeof *h);
 }
@@ -411,6 +460,157 @@ static handle *get_handle(int16_t file)
 	if (!in_use(&handles[file]))
 		return NULL;
 	return &handles[file];
+}
+
+/* ---- Files kept in memory ---- */
+
+/* Paths compared without regard to case, as DOS does; MiNTLib's toupper is slow. */
+static char ascii_upper(char c)
+{
+	return c >= 'a' && c <= 'z' ? (char) (c - 'a' + 'A') : c;
+}
+
+static uint32_t path_hash(const char *path)
+{
+	uint32_t hash = UINT32_C(2166136261);
+
+	for (; *path != '\0'; path++)
+		hash = (hash ^ (uint8_t) ascii_upper(*path)) * UINT32_C(16777619);
+	return hash;
+}
+
+static bool same_path(const char *a, const char *b)
+{
+	while (*a != '\0' && ascii_upper(*a) == ascii_upper(*b))
+		a++, b++;
+	return ascii_upper(*a) == ascii_upper(*b);
+}
+
+static kept_file **kept_link(const char *path)
+{
+	uint32_t hash = path_hash(path);
+	kept_file **k = &kept;
+
+	while (*k != NULL && ((*k)->hash != hash || !same_path((*k)->path, path)))
+		k = &(*k)->next;
+	return k;
+}
+
+static void forget(const char *path)
+{
+	kept_file **k = kept_link(path), *f = *k;
+
+	if (f != NULL) {
+		*k = f->next;
+		kept_memory -= f->size;
+		free(f);
+	}
+}
+
+static void forget_all(void)
+{
+	while (kept != NULL)
+		forget(kept->path);
+}
+
+/* Whether size bytes more may be kept, once those used least recently have gone. */
+static bool room_to_keep(int32_t size)
+{
+	if (size < 0 || size > KEPT_LARGEST)
+		return false;
+	while (kept != NULL && kept_memory + size > KEPT_MEMORY) {
+		kept_file *oldest = kept;
+
+		for (kept_file *f = kept->next; f != NULL; f = f->next) {
+			if (f->used < oldest->used)
+				oldest = f;
+		}
+		forget(oldest->path);
+	}
+#ifdef __MINT__
+	if (Malloc(-1L) < KEPT_SPARE + size)
+		return false;
+#endif
+	return true;
+}
+
+static void keep(const char *path, const void *data, int32_t size)
+{
+	kept_file *f;
+
+	forget(path);
+	if (!room_to_keep(size) || (f = malloc(sizeof *f + (size_t) size + strlen(path) + 1)) == NULL)
+		return;
+	memcpy(f->data, data, (size_t) size);
+	f->path = (char *) f->data + size;
+	strcpy(f->path, path);
+	f->size = size;
+	f->hash = path_hash(path);
+	f->used = ++kept_clock;
+	f->next = kept;
+	kept = f;
+	kept_memory += size;
+}
+
+/* Opens a kept file's copy: the handle; -1 when there is no room for it; -2 when the file
+ * isn't kept. */
+static int16_t open_kept(const char *path, bool writable)
+{
+	kept_file *f = *kept_link(path);
+	char *copy;
+	int16_t i;
+
+	if (f == NULL || (copy = malloc(f->size > 0 ? (size_t) f->size : 1)) == NULL)
+		return -2;
+	memcpy(copy, f->data, (size_t) f->size);
+	f->used = ++kept_clock;
+	if ((i = add_memory(copy, f->size)) >= 0) {
+		handles[i].writable = writable;
+		snprintf(handles[i].path, sizeof handles[i].path, "%s", path);
+	}
+	return i;
+}
+
+/* ---- Files created: built in memory ---- */
+
+static int32_t build_write(handle *h, const void *data, int32_t count)
+{
+	int32_t end = h->built_pos + count;
+
+	if (end > BUILT_LARGEST)
+		return -1;
+	if (end > h->built_room) {
+		int32_t room = end > 2 * h->built_room ? end : 2 * h->built_room;
+		uint8_t *more = realloc(h->built, (size_t) room);
+
+		if (more == NULL)
+			return -1;
+		h->built = more;
+		h->built_room = room;
+	}
+	/* a seek past the end leaves a gap, filled with zeros as DOS does */
+	if (h->built_pos > h->built_size)
+		memset(h->built + h->built_size, 0, (size_t) (h->built_pos - h->built_size));
+	memcpy(h->built + h->built_pos, data, (size_t) count);
+	h->built_pos = end;
+	if (end > h->built_size)
+		h->built_size = end;
+	return count;
+}
+
+static int32_t seek_through(handle *h, int32_t at);
+
+/* Gives a file built so far to the file itself, to go on there. False if it can't be written. */
+static bool unbuild(handle *h)
+{
+	uint8_t *data = h->built;
+	bool ok;
+
+	h->built = NULL;
+	ok = write_through(h, data, h->built_size) == h->built_size
+		&& seek_through(h, h->built_pos) == h->built_pos;
+	free(data);
+	return ok;
 }
 
 /* The handle's stream, ready for a read or a write. C needs a seek between the two. */
@@ -510,6 +710,7 @@ static bool leave_windows(handle *h)
 {
 	FILE *file;
 
+	forget(h->path);
 	for (int i = 0; i < h->reader_count; i++)
 		raw_close(h->readers[i]);
 	h->reader_count = 0;
@@ -657,6 +858,47 @@ static int32_t window_file_size(handle *h)
 		h->reader_pos[0] = h->size;
 	}
 	return h->size;
+}
+
+/* A file just opened, small enough to keep: read whole and kept, and the handle turned into a
+ * copy in memory. */
+static void keep_whole(handle *h)
+{
+	int32_t size = window_file_size(h);
+	char *data;
+
+	if (!room_to_keep(size) || (data = malloc(size > 0 ? (size_t) size : 1)) == NULL)
+		return;
+	if (reader_read(h, 0, data, size) != size) {
+		free(data);
+		return;
+	}
+	keep(h->path, data, size);
+	for (int i = 0; i < h->reader_count; i++)
+		raw_close(h->readers[i]);
+	h->reader_count = 0;
+	free(h->window_data);
+	h->window_data = NULL;
+	h->memory = data;
+	h->memory_size = size;
+	h->memory_pos = 0;
+}
+
+/* Turns a kept file's copy into the file itself, where it stands, to write. False if the file
+ * won't open. */
+static bool leave_memory(handle *h)
+{
+	int32_t pos = h->memory_pos;
+
+	free(h->memory);
+	h->memory = NULL;
+	if ((h->window_data = malloc(2 * WINDOW_SIZE)) == NULL) {
+		forget(h->path);
+		memset(h, 0, sizeof *h);
+		return false;
+	}
+	h->pos = pos;
+	return leave_windows(h);
 }
 
 /* ---- Files written, under TOS ---- */
@@ -838,6 +1080,8 @@ int16_t plat_file_open(const char *name, int16_t mode)
 		return open_sound_config(name);
 	if (!resolve(name, false, path))
 		return -1;
+	if ((file = open_kept(path, (mode & PLAT_FILE_WRITE) != 0)) != -2)
+		return file;
 #ifdef __MINT__
 	/* GEMDOS's Fopen finds only files, so no look first */
 	if (__mint != 0 && !is_file(path))
@@ -846,8 +1090,11 @@ int16_t plat_file_open(const char *name, int16_t mode)
 	if (!is_file(path))
 		return -1;
 #endif
-	if ((file = open_windowed(path, (mode & PLAT_FILE_WRITE) != 0)) != -2)
+	if ((file = open_windowed(path, (mode & PLAT_FILE_WRITE) != 0)) != -2) {
+		if (file >= 0)
+			keep_whole(&handles[file]);
 		return file;
+	}
 	if (!is_file(path))
 		return -1;
 	return add_file(fopen(path, (mode & PLAT_FILE_WRITE) ? "r+b" : "rb"));
@@ -856,19 +1103,26 @@ int16_t plat_file_open(const char *name, int16_t mode)
 int16_t plat_file_create(const char *name)
 {
 	char path[PATH_SIZE];
+	int16_t file = -2;
 
 	/* fopen fails on a folder: no need to look first */
 	if (!resolve(name, true, path))
 		return -1;
+	forget(path);
 #ifdef __MINT__
-	if (__mint == 0) {
-		int16_t file = create_tos(path);
-
-		if (file != -2)
-			return file;
-	}
+	if (__mint == 0)
+		file = create_tos(path);
 #endif
-	return add_file(fopen(path, "w+b"));
+	if (file == -2)
+		file = add_file(fopen(path, "w+b"));
+	if (file >= 0) {
+		handle *h = &handles[file];
+
+		snprintf(h->path, sizeof h->path, "%s", path);
+		h->built_room = 4096;
+		h->built = malloc((size_t) h->built_room);
+	}
+	return file;
 }
 
 void plat_file_close(int16_t file)
@@ -879,6 +1133,52 @@ void plat_file_close(int16_t file)
 		release(h);
 }
 
+/* A write or a seek on the file itself, of a handle written to. */
+static int32_t write_through(handle *h, const void *buffer, int32_t count)
+{
+	size_t n;
+
+	if (h->write_data != NULL)
+		return tos_write(h, buffer, count);
+	n = fwrite(buffer, 1, (size_t) count, use_stream(h, LAST_WRITE));
+	return n == 0 && count > 0 ? -1 : (int32_t) n;
+}
+
+static int32_t seek_through(handle *h, int32_t at)
+{
+	FILE *f;
+
+	if (h->write_data != NULL)
+		return tos_seek(h, at, SEEK_SET);
+	f = use_stream(h, LAST_NONE);
+	if (fseek(f, at, SEEK_SET) != 0)
+		return -1;
+	return (int32_t) ftell(f);
+}
+
+/* Reads from memory: a kept file's copy, or a file being built. */
+static int32_t memory_read(const uint8_t *memory, int32_t size, int32_t *pos, void *buffer,
+	int32_t count)
+{
+	if (*pos >= size)
+		return 0;
+	if (count > size - *pos)
+		count = size - *pos;
+	memcpy(buffer, memory + *pos, (size_t) count);
+	*pos += count;
+	return count;
+}
+
+static int32_t memory_seek(int32_t size, int32_t *pos, int32_t offset, int whence)
+{
+	int32_t base = whence == SEEK_CUR ? *pos : whence == SEEK_END ? size : 0;
+
+	if (base + offset < 0)
+		return -1;
+	*pos = base + offset;
+	return *pos;
+}
+
 int32_t plat_file_read(int16_t file, void *buffer, int32_t count)
 {
 	handle *h = get_handle(file);
@@ -887,13 +1187,10 @@ int32_t plat_file_read(int16_t file, void *buffer, int32_t count)
 
 	if (h == NULL || count < 0)
 		return -1;
-	if (h->memory != NULL) {
-		if (count > h->memory_size - h->memory_pos)
-			count = h->memory_size - h->memory_pos;
-		memcpy(buffer, h->memory + h->memory_pos, (size_t) count);
-		h->memory_pos += count;
-		return count;
-	}
+	if (h->memory != NULL)
+		return memory_read((uint8_t *) h->memory, h->memory_size, &h->memory_pos, buffer, count);
+	if (h->built != NULL)
+		return memory_read(h->built, h->built_size, &h->built_pos, buffer, count);
 	if (h->window_data != NULL)
 		return window_read(h, buffer, count);
 	if (h->write_data != NULL)
@@ -906,16 +1203,20 @@ int32_t plat_file_read(int16_t file, void *buffer, int32_t count)
 int32_t plat_file_write(int16_t file, const void *buffer, int32_t count)
 {
 	handle *h = get_handle(file);
-	size_t n;
 
-	if (h == NULL || h->memory != NULL || count < 0)
+	if (h == NULL || count < 0)
 		return -1;
+	if (h->memory != NULL && (!h->writable || !leave_memory(h)))
+		return -1;
+	if (h->built != NULL) {
+		if (build_write(h, buffer, count) == count)
+			return count;
+		if (!unbuild(h))
+			return -1;
+	}
 	if (h->window_data != NULL && (!h->writable || !leave_windows(h)))
 		return -1;
-	if (h->write_data != NULL)
-		return tos_write(h, buffer, count);
-	n = fwrite(buffer, 1, (size_t) count, use_stream(h, LAST_WRITE));
-	return n == 0 && count > 0 ? -1 : (int32_t) n;
+	return write_through(h, buffer, count);
 }
 
 int32_t plat_file_seek(int16_t file, int32_t offset, int16_t origin)
@@ -926,14 +1227,10 @@ int32_t plat_file_seek(int16_t file, int32_t offset, int16_t origin)
 
 	if (h == NULL)
 		return -1;
-	if (h->memory != NULL) {
-		int32_t base = whence == SEEK_CUR ? h->memory_pos : whence == SEEK_END ? h->memory_size : 0;
-
-		if (base + offset < 0)
-			return -1;
-		h->memory_pos = base + offset;
-		return h->memory_pos;
-	}
+	if (h->memory != NULL)
+		return memory_seek(h->memory_size, &h->memory_pos, offset, whence);
+	if (h->built != NULL)
+		return memory_seek(h->built_size, &h->built_pos, offset, whence);
 	if (h->window_data != NULL) {
 		int32_t base = whence == SEEK_CUR ? h->pos : whence == SEEK_END ? window_file_size(h) : 0;
 
@@ -960,6 +1257,8 @@ int32_t plat_file_length(int16_t file)
 		return -1;
 	if (h->memory != NULL)
 		return h->memory_size;
+	if (h->built != NULL)
+		return h->built_size;
 	if (h->window_data != NULL)
 		return window_file_size(h);
 	if (h->write_data != NULL)
@@ -980,7 +1279,11 @@ int16_t plat_file_truncate(int16_t file)
 	FILE *f;
 	long position;
 
-	if (h == NULL || h->memory != NULL)
+	if (h == NULL)
+		return 0;
+	if (h->memory != NULL && (!h->writable || !leave_memory(h)))
+		return 0;
+	if (h->built != NULL && !unbuild(h))
 		return 0;
 	if (h->window_data != NULL && (!h->writable || !leave_windows(h)))
 		return 0;
@@ -1021,6 +1324,7 @@ int16_t plat_dir_remove(const char *name)
 {
 	char path[PATH_SIZE];
 
+	forget_all();
 	return resolve(name, false, path) && is_dir(path) && rmdir(path) == 0;
 }
 
@@ -1028,18 +1332,37 @@ int16_t plat_file_remove(const char *name)
 {
 	char path[PATH_SIZE];
 
-	return resolve(name, false, path) && is_file(path) && remove(path) == 0;
+	if (!resolve(name, false, path))
+		return 0;
+	forget(path);
+	return is_file(path) && remove(path) == 0;
 }
 
 int16_t plat_file_rename(const char *from, const char *to)
 {
 	char from_path[PATH_SIZE];
 	char to_path[PATH_SIZE];
+	kept_file *f;
 
 	/* DOS refused to rename over an existing file. */
 	if (!resolve(from, false, from_path) || !resolve(to, true, to_path) || exists(to_path))
 		return 0;
-	return rename(from_path, to_path) == 0;
+	if (rename(from_path, to_path) != 0)
+		return 0;
+	/* kept under the new name (keep may let the old go first) */
+	if ((f = *kept_link(from_path)) != NULL) {
+		int32_t size = f->size;
+		void *data = malloc(size > 0 ? (size_t) size : 1);
+
+		if (data != NULL)
+			memcpy(data, f->data, (size_t) size);
+		forget(from_path);
+		if (data != NULL) {
+			keep(to_path, data, size);
+			free(data);
+		}
+	}
+	return 1;
 }
 
 /* Free bytes on the data directory's drive, from GEMDOS Dfree; a fixed 32 MB in lockstep, the
