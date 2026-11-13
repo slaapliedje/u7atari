@@ -106,6 +106,8 @@ typedef struct {
 	int32_t memory_pos;
 	uint8_t *built;
 	int32_t built_size, built_room, built_pos;
+	bool deferred;              /* built over a file not yet made again */
+	long old;                   /* that file, opened to compare; -1 when it is kept */
 	uint8_t *window_data;       /* both windows' bytes */
 	window windows[2];
 	uint32_t window_clock;
@@ -367,12 +369,16 @@ static bool write_out(handle *h);
 
 static bool in_use(const handle *h)
 {
-	return h->file != NULL || h->memory != NULL || h->window_data != NULL || h->write_data != NULL;
+	return h->file != NULL || h->memory != NULL || h->window_data != NULL || h->write_data != NULL
+		|| h->deferred;
 }
 
 static void keep(const char *path, const void *data, int32_t size);
 static void forget(const char *path);
 static int32_t write_through(handle *h, const void *buffer, int32_t count);
+static bool same_as_before(handle *h);
+static bool make_again(handle *h);
+static void settle(const char *path);
 
 static void release(handle *h)
 {
@@ -380,6 +386,18 @@ static void release(handle *h)
 	int32_t built_size = h->built_size;
 	bool written = true;
 
+	if (h->deferred && same_as_before(h)) {
+		keep(h->path, built, built_size);
+		free(built);
+		memset(h, 0, sizeof *h);
+		return;
+	}
+	if (h->deferred && !make_again(h)) {
+		forget(h->path);
+		free(built);
+		memset(h, 0, sizeof *h);
+		return;
+	}
 	if (built != NULL) {
 		h->built = NULL;
 		written = write_through(h, built, built_size) == built_size;
@@ -606,6 +624,11 @@ static bool unbuild(handle *h)
 	uint8_t *data = h->built;
 	bool ok;
 
+	if (h->deferred && !make_again(h)) {
+		free(data);
+		memset(h, 0, sizeof *h);
+		return false;
+	}
 	h->built = NULL;
 	ok = write_through(h, data, h->built_size) == h->built_size
 		&& seek_through(h, h->built_pos) == h->built_pos;
@@ -903,32 +926,6 @@ static bool leave_memory(handle *h)
 
 /* ---- Files written, under TOS ---- */
 
-#ifdef __MINT__
-/* Creates path under TOS: the handle; -1 when it can't be made; -2 when there is no room for a
- * buffer, to make it with stdio. */
-static int16_t create_tos(const char *path)
-{
-	char dos[PATH_SIZE];
-	int16_t i = free_handle();
-	handle *h;
-	long raw;
-
-	if (i < 0)
-		return -2;
-	if (!dos_path(path, dos) || (raw = Fcreate(dos, 0)) < 0)
-		return -1;
-	h = &handles[i];
-	memset(h, 0, sizeof *h);
-	if ((h->write_data = malloc(STREAM_BUFFER)) == NULL) {
-		Fclose((int16_t) raw);
-		return -2;
-	}
-	h->raw = raw;
-	snprintf(h->path, sizeof h->path, "%s", path);
-	return i;
-}
-#endif
-
 /* Gives what is waiting to GEMDOS. */
 static bool write_out(handle *h)
 {
@@ -1080,6 +1077,7 @@ int16_t plat_file_open(const char *name, int16_t mode)
 		return open_sound_config(name);
 	if (!resolve(name, false, path))
 		return -1;
+	settle(path);
 	if ((file = open_kept(path, (mode & PLAT_FILE_WRITE) != 0)) != -2)
 		return file;
 #ifdef __MINT__
@@ -1100,27 +1098,137 @@ int16_t plat_file_open(const char *name, int16_t mode)
 	return add_file(fopen(path, (mode & PLAT_FILE_WRITE) ? "r+b" : "rb"));
 }
 
+/* Loading a game makes every file in GAMEDAT again, and most come out as they were. So a file
+ * made again over one that is kept or that opens is left alone until it is closed, and only
+ * made if what was built differs: GEMDOS's Fcreate frees the old clusters and every Fwrite
+ * hunts the FAT for new ones. A file that doesn't exist yet is made at once, so that a create
+ * that fails says so. */
+
+/* Whether a deferred file came out as it was, kept or on disk. Either way the old file is let go. */
+static bool same_as_before(handle *h)
+{
+	kept_file *f = *kept_link(h->path);
+	bool same = false;
+
+	if (h->old < 0)
+		same = f != NULL && f->size == h->built_size
+			&& memcmp(f->data, h->built, (size_t) h->built_size) == 0;
+	else if (raw_seek(h->old, 0, SEEK_END) == h->built_size && raw_seek(h->old, 0, SEEK_SET) == 0) {
+		uint8_t *chunk = malloc(WINDOW_SIZE);
+		int32_t at = 0;
+
+		while (chunk != NULL && at < h->built_size) {
+			int32_t n = h->built_size - at < WINDOW_SIZE ? h->built_size - at : WINDOW_SIZE;
+
+			if (raw_read(h->old, chunk, n) != n || memcmp(chunk, h->built + at, (size_t) n) != 0)
+				break;
+			at += n;
+		}
+		same = chunk != NULL && at == h->built_size;
+		free(chunk);
+	}
+	if (h->old >= 0)
+		raw_close(h->old);
+	h->old = -1;
+	return same;
+}
+
+/* The file a create would replace, opened to compare: the system's handle, or -1. POSIX's open
+ * opens a folder too; GEMDOS's Fopen only files. */
+static long open_old(const char *path)
+{
+#ifdef __MINT__
+	if (__mint == 0)
+		return raw_open(path);
+#endif
+	return is_file(path) ? raw_open(path) : -1;
+}
+
+static int16_t open_created(handle *h);
+
+/* Makes a deferred file at last, to write what was built to it. False if it can't be made. */
+static bool make_again(handle *h)
+{
+	if (h->old >= 0)
+		raw_close(h->old);
+	h->old = -1;
+	h->deferred = false;
+	forget(h->path);
+	return open_created(h) >= 0;
+}
+
+/* Makes deferred files at last: those of path, or all when path is NULL. */
+static void settle(const char *path)
+{
+	for (int i = 1; i <= MAX_HANDLES; i++) {
+		handle *h = &handles[i];
+
+		if (h->deferred && (path == NULL || same_path(h->path, path)))
+			unbuild(h);
+	}
+}
+
+/* Gives a handle with its path set the new file itself: GEMDOS's under plain TOS, else stdio's.
+ * The handle's index, or -1. */
+static int16_t open_created(handle *h)
+{
+	int16_t i = (int16_t) (h - handles);
+	FILE *file;
+
+#ifdef __MINT__
+	if (__mint == 0) {
+		char dos[PATH_SIZE];
+		long raw;
+
+		if (!dos_path(h->path, dos) || (raw = Fcreate(dos, 0)) < 0)
+			return -1;
+		if ((h->write_data = malloc(STREAM_BUFFER)) != NULL) {
+			h->raw = raw;
+			h->raw_pos = 0;
+			h->write_count = 0;
+			return i;
+		}
+		Fclose((int16_t) raw);
+	}
+#endif
+	if ((file = fopen(h->path, "w+b")) == NULL)
+		return -1;
+	setvbuf(file, NULL, _IOFBF, STREAM_BUFFER);
+	h->file = file;
+	h->last = LAST_NONE;
+	return i;
+}
+
 int16_t plat_file_create(const char *name)
 {
 	char path[PATH_SIZE];
-	int16_t file = -2;
+	int16_t file;
+	handle *h;
+	uint8_t *built;
 
 	/* fopen fails on a folder: no need to look first */
 	if (!resolve(name, true, path))
 		return -1;
-	forget(path);
-#ifdef __MINT__
-	if (__mint == 0)
-		file = create_tos(path);
-#endif
-	if (file == -2)
-		file = add_file(fopen(path, "w+b"));
-	if (file >= 0) {
-		handle *h = &handles[file];
-
-		snprintf(h->path, sizeof h->path, "%s", path);
+	settle(path);
+	if ((file = free_handle()) < 0)
+		return -1;
+	h = &handles[file];
+	memset(h, 0, sizeof *h);
+	snprintf(h->path, sizeof h->path, "%s", path);
+	h->old = -1;
+	if ((built = malloc(4096)) != NULL) {
+		h->built = built;
 		h->built_room = 4096;
-		h->built = malloc((size_t) h->built_room);
+	}
+	if (built != NULL && (*kept_link(path) != NULL || (h->old = open_old(path)) >= 0)) {
+		h->deferred = true;
+		return file;
+	}
+	forget(path);
+	if (open_created(h) < 0) {
+		free(built);
+		memset(h, 0, sizeof *h);
+		return -1;
 	}
 	return file;
 }
@@ -1324,6 +1432,7 @@ int16_t plat_dir_remove(const char *name)
 {
 	char path[PATH_SIZE];
 
+	settle(NULL);
 	forget_all();
 	return resolve(name, false, path) && is_dir(path) && rmdir(path) == 0;
 }
@@ -1334,6 +1443,7 @@ int16_t plat_file_remove(const char *name)
 
 	if (!resolve(name, false, path))
 		return 0;
+	settle(path);
 	forget(path);
 	return is_file(path) && remove(path) == 0;
 }
@@ -1345,7 +1455,11 @@ int16_t plat_file_rename(const char *from, const char *to)
 	kept_file *f;
 
 	/* DOS refused to rename over an existing file. */
-	if (!resolve(from, false, from_path) || !resolve(to, true, to_path) || exists(to_path))
+	if (!resolve(from, false, from_path) || !resolve(to, true, to_path))
+		return 0;
+	settle(from_path);
+	settle(to_path);
+	if (exists(to_path))
 		return 0;
 	if (rename(from_path, to_path) != 0)
 		return 0;
@@ -1369,6 +1483,7 @@ int16_t plat_file_rename(const char *from, const char *to)
  * same on every host. */
 uint32_t plat_disk_free(void)
 {
+	settle(NULL);
 #ifdef U7_DEBUG_LOG
 	if (lockstep)
 		return UINT32_C(32) << 20;
@@ -1554,6 +1669,7 @@ int16_t plat_find_next(plat_find *find)
 
 int16_t plat_find_first(const char *pattern, plat_find *find)
 {
+	settle(NULL);
 	find->state = list_matches(pattern);
 	return plat_find_next(find);
 }
