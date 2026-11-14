@@ -1,0 +1,45 @@
+# The Black Gate played with a Jaguar pad (platform/common/pad.c): walking with the pad, the
+# pointer moved with A held and in Option's mode, C and B as the mouse buttons, and the keypad's
+# hotkeys (1 inventory, * Esc).
+# Start: the save bg-newgame.scr ends with. Arguments: --program u7 p ABCD<0xFF>
+#@start bg-start
+#@args --program u7 p ABCD\0377
+13000 shot PAD0.PPM
+13500 pad up
+15500 pad none
+16000 pad right+down
+18000 pad none
+18500 shot PAD1.PPM
+# the pointer: a tap, then held
+19000 pad a
+19100 pad a+left
+19200 pad a
+19500 pad a+left+up
+20500 pad a
+20700 pad none
+21000 shot PAD2.PPM
+# Option: the pad moves the pointer, and A held walks
+21500 pad option
+21700 pad none
+22000 pad down
+22600 pad none
+23000 pad a+left
+24000 pad none
+24500 shot PAD3.PPM
+# C looks at what is under the pointer; keypad 1 opens the inventory and * closes it
+25000 pad c
+25150 pad none
+26000 pad 1
+26200 pad none
+27500 shot PAD4.PPM
+28000 pad star
+28200 pad none
+# back to walking; B held walks toward the pointer
+28500 pad option
+28700 pad none
+29000 pad right
+29100 pad none
+29500 pad b
+31000 pad none
+31500 shot PAD5.PPM
+32000 quit

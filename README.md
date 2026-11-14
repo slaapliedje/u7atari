@@ -36,7 +36,8 @@ platform/atari/      the backend: implements upstream's platform/plat.h
   main.c             main(), program runner (setjmp/longjmp in place of threads), exit
   timer.c            60 Hz ticks from _hz_200, game timers, sound tick (MFP Timer B) and lock
   video.c            chunky-to-planar present, palette, retrace, the text-mode screen
-  input.c            keys from the BIOS buffer as PC key words, mouse from the IKBD mousevec
+  input.c            keys from the BIOS buffer as PC key words, mouse from the IKBD mousevec,
+                     the Falcon's Jaguar pads
   ikbd.S             the mousevec wrapper and the Alt-Help screen-dump stub
   timerint.S         the Timer B interrupt that runs the sound tick on its own stack
   c2p.S              chunky-to-planar for the frame, converting only the 16-pixel groups that changed
@@ -48,6 +49,7 @@ platform/common/     shared by the Atari backend and the PC reference
   files.c            file access for the game's DOS names
   console.c          the game's printf and conio text: 8x8 in graphics mode, 80x25 text mode
   inputq.c           the key queue and the mouse as the game sees them
+  pad.c              a Jaguar pad as the game's mouse and keys
   gm.c               --gm: the game's MT-32 MIDI translated for a General MIDI synth (tests/gm_test.c)
   script.c           --script: scripted keys and mouse (debug builds)
   lockstep.c         --lockstep: the virtual clock and checksums (debug builds)
@@ -181,6 +183,14 @@ as a PC keypad with Num Lock off (7 Home, 9 Page Up, 1 End, 3 Page Down, arrows 
 gives digits with Shift. Undo is Esc and Help is F1 (the game has no help screen; with cheats on, F1
 lists the cheat keys). The keypad brackets do nothing. Alt-Help's screen dump is
 switched off while the game runs.
+
+**Jaguar pad (Falcon).** A Jagpad in either of the Falcon's enhanced joystick ports plays the game
+(`platform/common/pad.c`); the TT has no such ports. The pad walks, as the number keys do; with A
+held it moves the pointer instead, slowly at first, and Option swaps the two. C and B are the left
+and right mouse buttons. The keypad is hotkeys: 1 inventory, 2 stats, 3 combat, 4 save and load,
+5 sound on and off, * Esc, # Enter; in Serpent Isle also 6 map, 7 spellbook, 8 keyring, 9 feed and
+0 target. Under Hatari, `--joy2 keys` puts pad A on the keyboard (bindings in hatari.cfg's
+`[Joystick2]`), and test scripts hold pad buttons with `pad up+a` and the like.
 
 **Audio.** The music is written for the MT-32: the game uploads its own instruments to it and picks
 them by number, so a General MIDI device plays it with the wrong instruments. With `--gm` (in

@@ -137,6 +137,23 @@ The mouse works as on the PC. The Atari keyboard differs from a PC's:
   Keypad          as a PC keypad: 7 Home, 9 Page Up, 1 End,
                   3 Page Down, and 8 4 6 2 as arrows; Shift gives digits
 
+JAGUAR PAD (Falcon only)
+
+A Jaguar pad in either of the Falcon's enhanced joystick ports works
+alongside the mouse and keyboard. The TT has no such ports.
+
+  Pad             walk
+  A + pad         move the pointer (hold longer to go faster)
+  Option          swap: the pad moves the pointer, A + pad walks
+  C               left mouse button (look; twice quickly to use)
+  B               right mouse button (twice quickly to walk there)
+  1  inventory    2  stats        3  combat on/off
+  4  save/load    5  sound on/off
+  *  Esc          #  Enter
+  Serpent Isle also: 6 map, 7 spellbook, 8 keyring, 9 feed, 0 target
+
+Names (saved games, the Avatar) are still typed on the keyboard.
+
 In conversations, and after you press Space, the game lets you move
 the pointer with the arrow keys and click with Control. Moving the
 mouse switches back. If a mouse click seems to be ignored, move the

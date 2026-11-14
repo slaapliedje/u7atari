@@ -22,6 +22,7 @@ static uint16_t modifiers;
 static plat_mouse_fn mouse_handler;
 static int16_t mouse_x, mouse_y;
 static uint16_t mouse_buttons;
+static uint16_t device_buttons, pad_buttons;    /* the mouse's own and the pad's, together above */
 /* Rows the game's pointer drew in while the mouse handler ran (plat_cursor_rows_drawn). */
 static bool in_handler;
 static int16_t drawn_top, drawn_bottom;
@@ -35,6 +36,9 @@ void inputq_reset(void)
 	mouse_x = 0;
 	mouse_y = 0;
 	mouse_buttons = 0;
+	device_buttons = 0;
+	pad_buttons = 0;
+	pad_reset();
 }
 
 /* ---- Keys ---- */
@@ -51,6 +55,12 @@ void inputq_key(uint16_t bios)
 void inputq_modifiers(uint16_t state)
 {
 	modifiers = state;
+}
+
+/* Keys waiting, without looking for more. */
+int16_t inputq_key_count(void)
+{
+	return (int16_t) (key_count + (pending_scan >= 0));
 }
 
 int16_t plat_key_available(void)
@@ -120,9 +130,10 @@ void inputq_mouse_position(int16_t *x, int16_t *y)
 	*y = mouse_y;
 }
 
+/* The mouse's own buttons, without the pad's. */
 uint16_t inputq_mouse_buttons(void)
 {
-	return mouse_buttons;
+	return device_buttons;
 }
 
 /* Moves the mouse there (clamped), telling the game when it moved. */
@@ -137,8 +148,8 @@ void inputq_mouse_to(int16_t x, int16_t y)
 	}
 }
 
-/* Sets the buttons (1 left, 2 right), telling the game of each change. */
-void inputq_mouse_set_buttons(uint16_t buttons)
+/* Sets the buttons held (1 left, 2 right), telling the game of each change. */
+static void set_buttons(uint16_t buttons)
 {
 	uint16_t changed = buttons ^ mouse_buttons;
 
@@ -147,6 +158,19 @@ void inputq_mouse_set_buttons(uint16_t buttons)
 		deliver(buttons & 1 ? PLAT_MOUSE_LEFT_DOWN : PLAT_MOUSE_LEFT_UP);
 	if (changed & 2)
 		deliver(buttons & 2 ? PLAT_MOUSE_RIGHT_DOWN : PLAT_MOUSE_RIGHT_UP);
+}
+
+/* The mouse's buttons, and the pad's that stand for them: a button is down while either holds it. */
+void inputq_mouse_set_buttons(uint16_t buttons)
+{
+	device_buttons = buttons;
+	set_buttons(device_buttons | pad_buttons);
+}
+
+void inputq_pad_buttons(uint16_t buttons)
+{
+	pad_buttons = buttons;
+	set_buttons(device_buttons | pad_buttons);
 }
 
 void plat_mouse_state(int16_t *x, int16_t *y, uint16_t *buttons)
@@ -215,6 +239,6 @@ void input_inject_mouse(int16_t x, int16_t y, uint16_t buttons)
 
 uint16_t input_mouse_buttons(void)
 {
-	return mouse_buttons;
+	return device_buttons;
 }
 #endif

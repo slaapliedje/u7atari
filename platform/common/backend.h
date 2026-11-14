@@ -64,6 +64,7 @@ void script_pump(void);
 void input_inject_key(uint16_t bios);
 void input_inject_mouse(int16_t x, int16_t y, uint16_t buttons);
 uint16_t input_mouse_buttons(void);
+uint32_t script_pad(void);
 void video_shot(const char *name);
 #endif
 /* The keys and mouse as the game sees them (inputq.c): backends hand over PC BIOS key words,
@@ -75,6 +76,25 @@ void inputq_mouse_position(int16_t *x, int16_t *y);
 uint16_t inputq_mouse_buttons(void);
 void inputq_mouse_to(int16_t x, int16_t y);
 void inputq_mouse_set_buttons(uint16_t buttons);
+void inputq_pad_buttons(uint16_t buttons);
+int16_t inputq_key_count(void);
+
+/* A Jaguar pad (pad.c): the backend hands over the buttons held, as these bits. */
+#define PAD_UP 0x0001
+#define PAD_DOWN 0x0002
+#define PAD_LEFT 0x0004
+#define PAD_RIGHT 0x0008
+#define PAD_A 0x0010
+#define PAD_B 0x0020
+#define PAD_C 0x0040
+#define PAD_OPTION 0x0080
+#define PAD_PAUSE 0x0100
+#define PAD_STAR 0x0200
+#define PAD_HASH 0x0400
+#define PAD_KEY(n) (UINT32_C(0x0800) << (n))     /* the keypad's 0 to 9 */
+#define PAD_KEYS (PAD_KEY(10) - PAD_KEY(0))
+void pad_pump(uint32_t bits);
+void pad_reset(void);
 #ifdef U7_DEBUG_LOG
 /* --lockstep (lockstep.c): a virtual clock and checksums, to compare hosts. */
 extern bool lockstep;

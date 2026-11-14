@@ -106,7 +106,7 @@ void video_shot(const char *name)
 void input_init(void) {}
 void input_shutdown(void) {}
 void input_reset(void) { inputq_reset(); }
-void input_pump(void) { script_pump(); }
+void input_pump(void) { script_pump(); pad_pump(0); }
 
 /* ---- Sound: MIDI and speech are only checksummed ---- */
 

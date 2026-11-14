@@ -15,6 +15,9 @@
  * them from the VDI, so the desktop pointer stays still. The vector queues the packets; plat_pump
  * applies them, as the DOS mouse driver's position in 0..639 x 0..199, and calls the game's
  * handler. The game draws its own pointer into the frame.
+ *
+ * On a Falcon, a Jaguar pad in either enhanced joystick port is read at each pump (pad.c says
+ * what it does). The TT has no such ports.
  */
 #include <stdbool.h>
 #include <stddef.h>
@@ -45,6 +48,12 @@
 /* Alt-Help's screen dump: the VBL calls the scr_dump vector once _dumpflg reaches 0. */
 #define SCR_DUMP ((void (*volatile *)(void)) 0x502)
 #define DUMPFLG ((volatile int16_t *) 0x4EE)
+
+/* The enhanced joystick ports' matrix: a write to JOY_MATRIX drives a column low (bits 0-3 port
+ * A, 4-7 port B); the pad then pulls low the rows pressed in it, in JOY_MATRIX bits 8-11 (port
+ * A) and 12-15 (port B), and in JOY_BUTTONS bits 0-1 (A) and 2-3 (B). */
+#define JOY_BUTTONS ((volatile uint16_t *) 0xFFFF9200)
+#define JOY_MATRIX ((volatile uint16_t *) 0xFFFF9202)
 
 /* PC key: set 1 scan code, with EXTENDED for the E0-prefixed keys. */
 #define EXTENDED 0x100
@@ -331,6 +340,48 @@ static void read_mouse(void)
 	inputq_mouse_to(x, y);
 }
 
+/* ---- Jaguar pad ---- */
+
+/* The rows each column gives, in JOY_MATRIX's four bits and JOY_BUTTONS' upper bit of the port's
+ * two; column 0 also has Pause in the lower bit. */
+static const uint32_t pad_rows[4][5] = {
+	{ PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT, PAD_A },
+	{ PAD_STAR, PAD_KEY(7), PAD_KEY(4), PAD_KEY(1), PAD_B },
+	{ PAD_KEY(0), PAD_KEY(8), PAD_KEY(5), PAD_KEY(2), PAD_C },
+	{ PAD_HASH, PAD_KEY(9), PAD_KEY(6), PAD_KEY(3), PAD_OPTION },
+};
+
+/* The buttons held on the pads in both ports, together; 0 on a machine without the ports. A
+ * port with nothing in it reads as nothing pressed. */
+static uint32_t read_pads(void)
+{
+	uint32_t bits = 0;
+
+	if (atari_machine != MACHINE_FALCON)
+		return 0;
+	for (int column = 0; column < 4; column++) {
+		uint16_t rows, buttons;
+
+		*JOY_MATRIX = (uint16_t) ~(0x11 << column);
+		rows = (uint16_t) ~*JOY_MATRIX;
+		buttons = (uint16_t) ~*JOY_BUTTONS;
+		for (int port = 0; port < 2; port++) {
+			uint16_t these = (uint16_t) (rows >> (8 + port * 4));
+
+			for (int row = 0; row < 4; row++) {
+				if (these & (1 << row))
+					bits |= pad_rows[column][row];
+			}
+			if (buttons & (2 << (port * 2)))
+				bits |= pad_rows[column][4];
+			if (column == 0 && (buttons & (1 << (port * 2))))
+				bits |= PAD_PAUSE;
+		}
+	}
+	*JOY_MATRIX = 0xFFFF;
+	return bits;
+}
+
 void input_pump(void)
 {
 	if (!installed)
@@ -340,4 +391,5 @@ void input_pump(void)
 #ifdef U7_DEBUG_LOG
 	script_pump();
 #endif
+	pad_pump(read_pads());
 }

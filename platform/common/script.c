@@ -13,6 +13,8 @@
  *   4000 shot inv.ppm   the frame on screen, as a 320x200 PPM in the game folder
  *   4100 log text       a line on the console
  *   4200 speech 3       starts speech track 3 as the game's usecode does (tests/speech_hook.cpp)
+ *   4300 pad up+a       the Jaguar pad's buttons held from now on, joined by +: up, down, left,
+ *                       right, a, b, c, option, pause, star, hash, 0 to 9; none for none
  *   9000 quit           restores the machine and exits
  * Lines starting with # are comments. Steps go in through the same paths as real keys and IKBD
  * mouse packets, after them.
@@ -30,7 +32,7 @@
 
 void debug_play_speech(int16_t track);      /* tests/speech_hook.cpp */
 
-enum action { KEY, MOVE, BUTTONS, SHOT, LOG, SPEECH, QUIT };
+enum action { KEY, MOVE, BUTTONS, PAD, SHOT, LOG, SPEECH, QUIT };
 
 typedef struct {
 	uint32_t at;
@@ -38,12 +40,33 @@ typedef struct {
 	uint16_t word;              /* KEY: the PC BIOS word */
 	int16_t x, y;               /* MOVE */
 	uint16_t buttons;           /* BUTTONS: the new state */
+	uint32_t pad;               /* PAD: the new state */
 	char text[64];              /* SHOT, LOG */
 } step;
 
 static step steps[MAX_STEPS];
 static int step_count, next_step;
 static uint16_t buttons;
+static uint32_t pad_held;
+
+/* The pad's buttons for names joined by +; 0 for none. */
+static uint32_t pad_bits(char *names)
+{
+	static const char *const named[] = {
+		"up", "down", "left", "right", "a", "b", "c", "option", "pause", "star", "hash"
+	};
+	uint32_t bits = 0;
+
+	for (char *name = strtok(names, "+"); name != NULL; name = strtok(NULL, "+")) {
+		if (name[0] >= '0' && name[0] <= '9' && name[1] == '\0')
+			bits |= PAD_KEY(name[0] - '0');
+		for (int i = 0; i < (int) (sizeof named / sizeof named[0]); i++) {
+			if (strcmp(name, named[i]) == 0)
+				bits |= UINT32_C(1) << i;
+		}
+	}
+	return bits;
+}
 
 /* The BIOS word for a key name; 0 for none. */
 static uint16_t key_word(const char *name)
@@ -148,6 +171,8 @@ static void parse_line(char *line)
 		add(at, BUTTONS)->buttons = buttons |= 2;
 	} else if (strcmp(action, "rup") == 0) {
 		add(at, BUTTONS)->buttons = buttons &= ~2;
+	} else if (strcmp(action, "pad") == 0 && n >= 3) {
+		add(at, PAD)->pad = pad_bits(word[2]);
 	} else if (strcmp(action, "shot") == 0 && n >= 3) {
 		snprintf(add(at, SHOT)->text, sizeof steps[0].text, "%s", word[2]);
 	} else if (strcmp(action, "log") == 0) {
@@ -161,6 +186,12 @@ static void parse_line(char *line)
 	} else if (strcmp(action, "quit") == 0) {
 		add(at, QUIT);
 	}
+}
+
+/* The pad's buttons the script holds, for pad.c. */
+uint32_t script_pad(void)
+{
+	return pad_held;
 }
 
 void script_load(const char *path)
@@ -199,6 +230,9 @@ void script_pump(void)
 			break;
 		case BUTTONS:
 			input_inject_mouse(-1, -1, s->buttons);
+			break;
+		case PAD:
+			pad_held = s->pad;
 			break;
 		case SHOT:
 			video_shot(s->text);
