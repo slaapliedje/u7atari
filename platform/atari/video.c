@@ -15,7 +15,11 @@
  *
  * Palette writes go to the hardware at once, as the VGA DAC took them; fades rely on that.
  *
- * With an ATW800/2 graphics card on a TT (atw800.c), the frames and colours go there instead.
+ * The mouse pointer is drawn onto the screen on display at each vertical blank (pointer.c), so it
+ * moves at the display's rate whatever the game's.
+ *
+ * With an ATW800/2 graphics card on a TT (atw800.c), the frames and colours go there instead, and
+ * the game draws the pointer into its frames.
  *
  * Serpent Isle's debug screens switch to 80x25 colour text (console.c); it is drawn into a frame
  * of its own, 4x8 pixels a cell, in the 16 text colours, with the game's palette put back after.
@@ -109,6 +113,8 @@ static uint32_t scan_address(void)
 
 static void show(uint8_t *base)
 {
+	/* the pointer goes there from the blank the hardware takes it at */
+	pointer_screen(text_shown ? NULL : base);
 	VsetScreen(-1L, base, -1, -1);
 }
 
@@ -179,6 +185,12 @@ void video_init(void)
 	hidden = 1;
 	shown_at_vbl = vbl_count();
 	active = true;
+#ifdef U7_DEBUG_LOG
+	if (lockstep)
+		return;     /* the PC's frames have the game's pointer in them */
+#endif
+	if (pointer_start(top_line, line_repeat))
+		pointer_screen(screens[0].base);
 }
 
 void video_shutdown(void)
@@ -186,6 +198,7 @@ void video_shutdown(void)
 	if (!active)
 		return;
 	active = false;
+	pointer_stop();
 	if (card) {
 		atw800_stop();
 	} else if (atari_machine == MACHINE_TT) {
@@ -207,6 +220,7 @@ void video_reset(void)
 	last_pixels = NULL;
 	prepared = NULL;
 	text_shown = false;
+	pointer_reset();
 	if (active)
 		plat_video_set_palette(0, 256, black);
 }
@@ -325,8 +339,9 @@ static void show_frame(const uint8_t *pixels)
 			for (int i = 1; i < 256; i++)
 				if (counts[i] > counts[top])
 					top = i;
-			snprintf(text, sizeof text, "present %lu: top colour %d x%u, tick %lu\r\n",
-				(unsigned long) presents, top, counts[top], (unsigned long) plat_ticks());
+			snprintf(text, sizeof text, "present %lu: top colour %d x%u, tick %lu, pointer %lu\r\n",
+				(unsigned long) presents, top, counts[top], (unsigned long) plat_ticks(),
+				(unsigned long) pointer_draws);
 			plat_log(text);
 		}
 	}
@@ -431,11 +446,54 @@ void video_shot(const char *name)
 	static uint8_t row[WIDTH * 3];
 	FILE *f;
 
+	static uint8_t with_pointer[WIDTH * HEIGHT];
 	const uint8_t *pixels = text_shown ? text_frame : last_pixels;
 	const uint8_t *colours = text_shown ? text_palette : palette;
 
 	if (pixels == NULL || (f = fopen(name, "wb")) == NULL)
 		return;
+	if (!text_shown && pointer_running()) {
+		uint16_t sr;
+		long wrong = 0;
+		int x0 = WIDTH, y0 = HEIGHT, x1 = -1, y1 = -1;
+		const uint8_t *on = screens[hidden ^ 1].base;
+
+		/* Checks the screen on display against the frame with the pointer, once the blank has
+		 * put the pointer on it, then with the blank held off, so the pointer stays put. */
+		while (vbl_count() == shown_at_vbl)
+			;
+		__asm__ volatile ("move.w %%sr,%0; move.w #0x2700,%%sr" : "=d" (sr) :: "memory");
+		memcpy(with_pointer, pixels, sizeof with_pointer);
+		pointer_into(with_pointer);
+		for (int y = 0; y < HEIGHT; y++) {
+			const uint16_t *planes = (const uint16_t *) (on + (top_line + y * line_repeat) * LINE_BYTES);
+
+			for (int x = 0; x < WIDTH; x++) {
+				uint8_t colour = 0;
+
+				for (int p = 0; p < 8; p++)
+					colour |= (uint8_t) ((planes[x / 16 * 8 + p] >> (15 - x % 16) & 1) << p);
+				if (colour != with_pointer[y * WIDTH + x]) {
+					wrong++;
+					if (x < x0) x0 = x;
+					if (x > x1) x1 = x;
+					if (y < y0) y0 = y;
+					if (y > y1) y1 = y;
+				}
+			}
+		}
+		__asm__ volatile ("move.w %0,%%sr" :: "d" (sr) : "memory");
+		{
+			char text[128];
+			int16_t px, py;
+
+			inputq_mouse_position(&px, &py);
+			snprintf(text, sizeof text, "shot %s: %ld pixels differ on screen, in %d,%d-%d,%d; mouse %d,%d; drawn %lu\r\n",
+				name, wrong, x0, y0, x1, y1, px / 2, py, (unsigned long) pointer_draws);
+			plat_log(text);
+		}
+		pixels = with_pointer;
+	}
 	fprintf(f, "P6\n%d %d\n255\n", WIDTH, HEIGHT);
 	for (int y = 0; y < HEIGHT; y++) {
 		for (int x = 0; x < WIDTH; x++)
@@ -451,6 +509,22 @@ void video_shot(const char *name)
 		atw800_check(pixels, colours);
 }
 #endif
+
+int16_t video_pointer(void)
+{
+	return pointer_running();
+}
+
+void video_pointer_shape(const uint8_t *pixels, int16_t width, int16_t height, int16_t hot_x,
+	int16_t hot_y)
+{
+	pointer_shape(pixels, width, height, hot_x, hot_y);
+}
+
+void video_pointer_show(int16_t visible)
+{
+	pointer_show(visible != 0);
+}
 
 /* Shows the last frame again: the game may have drawn into it since. */
 void video_refresh(void)

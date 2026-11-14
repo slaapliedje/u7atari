@@ -27,3 +27,14 @@ _timer_sound_vector:
 	.even
 	.skip	8192
 sound_stack_top:
+
+| The pointer (pointer.c), from TOS's VBL queue. TOS keeps every register around the queue's
+| routines already; this keeps the ones C may clobber all the same, as the queue's callers
+| are not all TOS's own.
+	.text
+	.globl	_pointer_vbl_entry
+_pointer_vbl_entry:
+	movem.l	d0-d1/a0-a1,-(sp)
+	jsr	_pointer_vbl
+	movem.l	(sp)+,d0-d1/a0-a1
+	rts

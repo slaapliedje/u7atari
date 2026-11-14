@@ -73,6 +73,11 @@ void video_refresh(void) {}
 void video_refresh_wanted(void) {}
 void video_rows_wanted(int16_t top, int16_t bottom) { (void) top; (void) bottom; }
 void video_pump(void) {}
+/* The game draws its own pointer, as on the PC. */
+int16_t video_pointer(void) { return 0; }
+void video_pointer_shape(const uint8_t *pixels, int16_t width, int16_t height, int16_t hot_x,
+	int16_t hot_y) { (void) pixels; (void) width; (void) height; (void) hot_x; (void) hot_y; }
+void video_pointer_show(int16_t visible) { (void) visible; }
 uint8_t *video_frame(void) { return (uint8_t *) last_pixels; }
 /* Serpent Isle's debug screens: not compared. */
 void video_show_text(const uint16_t *cells, int16_t cursor_x, int16_t cursor_y)

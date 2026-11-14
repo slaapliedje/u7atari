@@ -3,7 +3,8 @@
  * them and calls the game's mouse handler.
  *
  * Keys are the words the PC BIOS gave getch(): the PC scan code and the character. The mouse is
- * the DOS mouse driver's position in 0..639 x 0..199. The game draws its own pointer.
+ * the DOS mouse driver's position in 0..639 x 0..199. The game draws its own pointer, unless the
+ * backend has one (video_pointer).
  */
 #include <stdio.h>
 
@@ -194,17 +195,17 @@ void plat_mouse_move_to(int16_t x, int16_t y)
 	mouse_y = clamp16(y, 0, MOUSE_HEIGHT - 1);
 }
 
-/* ---- Pointer: the game draws its own ---- */
+/* ---- Pointer: the backend's, or the game draws its own ---- */
 
 int16_t plat_cursor_is_hardware(void)
 {
-	return 0;
+	return video_pointer();
 }
 
 void plat_cursor_set_shape(const uint8_t *pixels, int16_t width, int16_t height,
 	int16_t hot_x, int16_t hot_y)
 {
-	(void) pixels; (void) width; (void) height; (void) hot_x; (void) hot_y;
+	video_pointer_shape(pixels, width, height, hot_x, hot_y);
 }
 
 void plat_cursor_rows_drawn(int16_t top, int16_t bottom)
@@ -219,7 +220,7 @@ void plat_cursor_rows_drawn(int16_t top, int16_t bottom)
 
 void plat_cursor_show(int16_t visible)
 {
-	(void) visible;
+	video_pointer_show(visible);
 }
 
 #ifdef U7_DEBUG_LOG

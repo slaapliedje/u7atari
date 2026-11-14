@@ -186,6 +186,12 @@ and synth.
 CHANGES
 -------
 
+Since 0.2.0
+- The mouse pointer moves smoothly: it is drawn at every vertical
+  blank, not only when the game draws a frame.
+- A Jaguar pad on the Falcon's enhanced joystick ports.
+- Saving and loading are faster from a hard disk.
+
 0.2.0
 - Runs on a 68060 (0.1.0 stopped with a black screen).
 - About 15-25% more frames a second on a Falcon030: faster screen

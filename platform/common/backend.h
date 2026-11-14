@@ -44,6 +44,26 @@ uint8_t *video_frame(void);
  * frames until video_show_game. */
 void video_show_text(const uint16_t *cells, int16_t cursor_x, int16_t cursor_y);
 void video_show_game(void);
+/* A pointer the backend draws itself, in place of the game's (plat_cursor_*): video_pointer
+ * is nonzero when there is one, from video_init on. */
+int16_t video_pointer(void);
+void video_pointer_shape(const uint8_t *pixels, int16_t width, int16_t height, int16_t hot_x,
+	int16_t hot_y);
+void video_pointer_show(int16_t visible);
+/* The Atari's (pointer.c): drawn from the vertical blank on the screen on display. */
+bool pointer_start(int16_t first_line, int16_t repeat);
+void pointer_stop(void);
+bool pointer_running(void);
+void pointer_screen(uint8_t *base);
+void pointer_reset(void);
+void pointer_shape(const uint8_t *pixels, int16_t width, int16_t height, int16_t hot_x,
+	int16_t hot_y);
+void pointer_show(bool show);
+void pointer_vbl(void);
+#ifdef U7_DEBUG_LOG
+void pointer_into(uint8_t *pixels);
+extern uint32_t pointer_draws;
+#endif
 /* The ATW800/2 graphics card (atw800.c). Start finds it and takes it over, in supervisor mode;
  * false when there is none. */
 bool atw800_start(void);
@@ -57,6 +77,9 @@ void input_init(void);
 void input_shutdown(void);
 void input_reset(void);
 void input_pump(void);
+/* From an interrupt: the mouse as it is now, in the game's 0..639 x 0..199, with the moves the
+ * pump has not applied yet; false while the pump is changing it. */
+bool input_pointer_at(int16_t *x, int16_t *y);
 #ifdef U7_DEBUG_LOG
 /* --script: scripted keys and mouse for tests (script.c) */
 void script_load(const char *path);
@@ -95,6 +118,7 @@ int16_t inputq_key_count(void);
 #define PAD_KEYS (PAD_KEY(10) - PAD_KEY(0))
 void pad_pump(uint32_t bits);
 void pad_reset(void);
+void pad_ahead(uint32_t bits, int16_t *x, int16_t *y);
 #ifdef U7_DEBUG_LOG
 /* --lockstep (lockstep.c): a virtual clock and checksums, to compare hosts. */
 extern bool lockstep;

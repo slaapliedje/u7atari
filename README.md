@@ -184,6 +184,19 @@ gives digits with Shift. Undo is Esc and Help is F1 (the game has no help screen
 lists the cheat keys). The keypad brackets do nothing. Alt-Help's screen dump is
 switched off while the game runs.
 
+**Mouse pointer.** The game reads the mouse between frames and drew its pointer into each one, so
+at 5 or 6 frames a second the pointer moved in jumps, several times a second. The backend draws it
+instead (`platform/atari/pointer.c`), through the game's host-pointer hooks (`plat_cursor_*`): the
+game hands over each pointer frame and leaves it out of its own frames, and at each vertical blank
+the pointer goes onto the screen on display, where the mouse is then, with what was under it kept
+and put back when it moves. The position comes from the IKBD packets not yet pumped and, with a
+Jagpad, from the pad's pace since the last pump. The frame the game picks (the arrow's direction)
+still changes when the game reads the mouse. The pointer only ever sits on the screen being shown,
+and comes off the other at the blank the screens change at, before a frame is converted into it,
+so each screen's planes still match its shadow copy. With the ATW800/2 card, and in lockstep tests,
+the game draws its own pointer as before. In a debug build, `shot` checks the screen on display
+against the frame plus the pointer and logs how many pixels differ.
+
 **Jaguar pad (Falcon).** A Jagpad in either of the Falcon's enhanced joystick ports plays the game
 (`platform/common/pad.c`); the TT has no such ports. The pad walks, as the number keys do; with A
 held it moves the pointer instead, slowly at first, and Option swaps the two. C and B are the left

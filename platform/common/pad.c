@@ -9,7 +9,8 @@
  *   C, B         the left and right mouse buttons, held while held (B with the pointer away
  *                from the Avatar walks that way, as with the mouse)
  *   keypad       hotkeys (pad_keys below); * is Esc and # is Enter
- * The pointer goes where it was put: walking doesn't move it.
+ * The pointer goes where it was put: walking doesn't move it. Between pumps, a pointer drawn at
+ * the vertical blank (pad_ahead) goes on at the same pace, and the pump catches up.
  */
 #include <stdbool.h>
 #include <stdio.h>
@@ -70,6 +71,9 @@ static uint32_t held;
 static bool pointer_mode;           /* Option: the pad moves the pointer */
 static uint32_t pointing_since, last_time, walk_sent;
 static int32_t carry_x, carry_y;    /* game pixels x 1000 not yet moved */
+/* pad_ahead's last answer, in mouse units: taken up by the pump when the pad stops moving the
+ * pointer, so it stays where the blank last showed it. */
+static volatile int16_t ahead_x, ahead_y;
 
 static uint32_t clock_ms(void)
 {
@@ -87,11 +91,26 @@ static int axis(uint32_t bits, uint32_t less, uint32_t more)
 	return ((bits & more) != 0) - ((bits & less) != 0);
 }
 
+static bool pointing_with(uint32_t bits)
+{
+	return (bits & DIRECTIONS) != 0 && pointer_mode != ((bits & PAD_A) != 0);
+}
+
+/* How far the pointer moves from last_time to now, held this long, in game pixels x 1000. */
+static int32_t pointer_step(uint32_t now)
+{
+	int32_t speed = POINTER_SLOW + (int32_t) (now - pointing_since) * POINTER_GAIN / 1000;
+
+	if (speed > POINTER_FAST)
+		speed = POINTER_FAST;
+	return speed * (int32_t) (now - last_time);
+}
+
 static void move_pointer(uint32_t bits, uint32_t now, bool starting)
 {
 	int dx = axis(bits, PAD_LEFT, PAD_RIGHT), dy = axis(bits, PAD_UP, PAD_DOWN);
 	int16_t x, y;
-	int32_t speed, step;
+	int32_t step;
 
 	inputq_mouse_position(&x, &y);
 	if (starting) {
@@ -101,10 +120,7 @@ static void move_pointer(uint32_t bits, uint32_t now, bool starting)
 		inputq_mouse_to((int16_t) (x + dx * 2), (int16_t) (y + dy));
 		return;
 	}
-	speed = POINTER_SLOW + (int32_t) (now - pointing_since) * POINTER_GAIN / 1000;
-	if (speed > POINTER_FAST)
-		speed = POINTER_FAST;
-	step = speed * (int32_t) (now - last_time);
+	step = pointer_step(now);
 	carry_x += dx * step;
 	carry_y += dy * step;
 	/* the mouse's x counts half pixels */
@@ -151,11 +167,22 @@ void pad_pump(uint32_t bits)
 
 	directions = bits & DIRECTIONS;
 	pointing = pointer_mode != ((bits & PAD_A) != 0);
-	if (directions != 0 && pointing) {
-		bool was = (held & DIRECTIONS) != 0 && pointer_mode != ((held & PAD_A) != 0);
+	if (directions != 0 && pointing && (bits & DIRECTIONS) == (held & DIRECTIONS) &&
+		pointing_with(held))
+		move_pointer(directions, now, false);
+	else {
+		/* stopped or turned: first to where the blank showed it */
+		if (ahead_x != 0 || ahead_y != 0) {
+			int16_t x, y;
 
-		move_pointer(directions, now, !was);
-	} else if (directions != 0 && walk_number[directions] != 0 && inputq_key_count() == 0
+			inputq_mouse_position(&x, &y);
+			inputq_mouse_to((int16_t) (x + ahead_x), (int16_t) (y + ahead_y));
+		}
+		if (directions != 0 && pointing)
+			move_pointer(directions, now, !pointing_with(held));
+	}
+	ahead_x = ahead_y = 0;
+	if (directions != 0 && !pointing && walk_number[directions] != 0 && inputq_key_count() == 0
 		&& now - walk_sent >= WALK_GAP) {
 		/* one at a time: the game takes the next as the last steps run out */
 		inputq_key(number_keys[walk_number[directions]]);
@@ -169,4 +196,20 @@ void pad_reset(void)
 {
 	held = 0;
 	pointer_mode = false;
+	ahead_x = ahead_y = 0;
+}
+
+/* From the vertical blank, between pumps, with the buttons held now: how far the pointer has
+ * gone since the pump, in mouse units, as the next pump will move it. Once the pad stops or turns,
+ * where it had got to. */
+void pad_ahead(uint32_t bits, int16_t *x, int16_t *y)
+{
+	if (pointing_with(held) && (bits & (DIRECTIONS | PAD_A)) == (held & (DIRECTIONS | PAD_A))) {
+		int32_t step = pointer_step(plat_milliseconds());
+
+		ahead_x = (int16_t) ((carry_x + axis(held, PAD_LEFT, PAD_RIGHT) * step) / 1000 * 2);
+		ahead_y = (int16_t) ((carry_y + axis(held, PAD_UP, PAD_DOWN) * step) / 1000);
+	}
+	*x = ahead_x;
+	*y = ahead_y;
 }

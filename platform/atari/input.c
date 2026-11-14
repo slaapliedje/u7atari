@@ -14,7 +14,8 @@
  * The mouse comes from the IKBD's relative packets through the mousevec vector, which also keeps
  * them from the VDI, so the desktop pointer stays still. The vector queues the packets; plat_pump
  * applies them, as the DOS mouse driver's position in 0..639 x 0..199, and calls the game's
- * handler. The game draws its own pointer into the frame.
+ * handler. The pointer is drawn from the vertical blank (pointer.c), where input_pointer_at says the
+ * mouse is now.
  *
  * On a Falcon, a Jaguar pad in either enhanced joystick port is read at each pump (pad.c says
  * what it does). The TT has no such ports.
@@ -72,6 +73,8 @@ static _KEYTAB *layout;
 /* Filled by the IKBD interrupt, emptied by plat_pump. */
 static volatile uint8_t mouse_queue[MOUSE_QUEUE_SIZE][3];
 static volatile uint16_t mouse_in, mouse_out;
+/* The pump is moving the mouse: what the queue and inputq say may not agree. */
+static volatile bool pumping;
 
 static void flush_keys(void)
 {
@@ -387,9 +390,38 @@ void input_pump(void)
 	if (!installed)
 		return;
 	read_keys();
+	pumping = true;
 	read_mouse();
 #ifdef U7_DEBUG_LOG
 	script_pump();
 #endif
 	pad_pump(read_pads());
+	pumping = false;
+}
+
+/* From the vertical blank: where the mouse is, the packets not yet pumped applied as read_mouse
+ * will apply them, and the pad's move since the pump (it reads the pads, which the pump must not
+ * be doing). */
+bool input_pointer_at(int16_t *x, int16_t *y)
+{
+	int16_t at_x, at_y;
+	uint16_t out = mouse_out, in = mouse_in;
+
+	if (pumping || !installed)
+		return false;
+	inputq_mouse_position(&at_x, &at_y);
+	for (; out != in; out = (uint16_t) ((out + 1) % MOUSE_QUEUE_SIZE)) {
+		at_x = clamp16(at_x + (int8_t) mouse_queue[out][1] * MOUSE_X_SCALE, 0, 639);
+		at_y = clamp16(at_y + (int8_t) mouse_queue[out][2] * MOUSE_Y_SCALE, 0, 199);
+	}
+	{
+		int16_t pad_x, pad_y;
+
+		pad_ahead(read_pads(), &pad_x, &pad_y);
+		at_x = clamp16(at_x + pad_x, 0, 639);
+		at_y = clamp16(at_y + pad_y, 0, 199);
+	}
+	*x = at_x;
+	*y = at_y;
+	return true;
 }
