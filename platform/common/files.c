@@ -177,6 +177,160 @@ static bool dos_path(const char *path, char dos[PATH_SIZE])
 	return true;
 }
 
+/* Folders listed whole, under plain TOS: each file's kind and size from one Fsfirst and Fsnext
+ * pass, where looking a file up costs GEMDOS a search of the folder and its size a walk of
+ * every cluster (Fseek to the end: SHAPES.VGA is thousands of clusters). A folder the game
+ * changes (makes, writes, deletes or renames something in) is never listed again while it
+ * runs, so a listing can't go stale: STATIC is listed, GAMEDAT soon isn't. */
+#define LISTINGS 4
+#define CHANGED_FOLDERS 8
+
+typedef struct {
+	char name[14];              /* as the DTA has it */
+	bool dir;
+	uint32_t size;
+} listed_file;
+
+typedef struct {
+	char dir[PATH_SIZE];        /* "" when unused */
+	listed_file *files;
+	uint32_t count;
+} listing;
+
+static listing listings[LISTINGS];
+static char changed_folders[CHANGED_FOLDERS][PATH_SIZE];
+static int changed_count;       /* more than CHANGED_FOLDERS: nothing is listed any more */
+
+static bool same_folder(const char *a, size_t a_length, const char *b)
+{
+	size_t i;
+
+	for (i = 0; i < a_length; i++) {
+		char x = a[i] == '/' ? '\\' : (char) toupper((unsigned char) a[i]);
+		char y = b[i] == '/' ? '\\' : (char) toupper((unsigned char) b[i]);
+
+		if (y == '\0' || x != y)
+			return false;
+	}
+	return b[i] == '\0';
+}
+
+/* Where path's last name starts. */
+static const char *last_name(const char *path)
+{
+	const char *name = path;
+
+	for (const char *p = path; *p != '\0'; p++) {
+		if (*p == '/' || *p == '\\' || *p == ':')
+			name = p + 1;
+	}
+	return name;
+}
+
+static void drop_listing(listing *l)
+{
+	free(l->files);
+	memset(l, 0, sizeof *l);
+}
+
+/* Something in path's folder is about to change: forget its listing, and list it no more. */
+static void folder_changes(const char *path)
+{
+	size_t length = (size_t) (last_name(path) - path);
+
+	if (__mint != 0 || length == 0)
+		return;
+	for (int i = 0; i < LISTINGS; i++) {
+		if (listings[i].dir[0] != '\0' && same_folder(path, length, listings[i].dir))
+			drop_listing(&listings[i]);
+	}
+	for (int i = 0; i < changed_count && i < CHANGED_FOLDERS; i++) {
+		if (same_folder(path, length, changed_folders[i]))
+			return;
+	}
+	if (changed_count < CHANGED_FOLDERS)
+		snprintf(changed_folders[changed_count], PATH_SIZE, "%.*s", (int) length, path);
+	changed_count++;
+}
+
+/* The listing of the folder dir (its first length characters), made if need be; NULL when it
+ * isn't to be listed or can't be. */
+static listing *folder_listing(const char *dir, size_t length)
+{
+	char pattern[PATH_SIZE];
+	listing *l = NULL;
+	_DTA dta, *old;
+
+	if (length == 0 || length + 4 >= PATH_SIZE || changed_count > CHANGED_FOLDERS)
+		return NULL;
+	for (int i = 0; i < changed_count; i++) {
+		if (same_folder(dir, length, changed_folders[i]))
+			return NULL;
+	}
+	for (int i = 0; i < LISTINGS; i++) {
+		if (listings[i].dir[0] != '\0' && same_folder(dir, length, listings[i].dir))
+			return &listings[i];
+		if (l == NULL && listings[i].dir[0] == '\0')
+			l = &listings[i];
+	}
+	if (l == NULL)
+		drop_listing(l = &listings[0]);
+	snprintf(pattern, sizeof pattern, "%.*s*.*", (int) length, dir);
+	for (char *p = pattern; *p != '\0'; p++) {
+		if (*p == '/')
+			*p = '\\';
+	}
+	old = Fgetdta();
+	Fsetdta(&dta);
+	for (long r = Fsfirst(pattern, FA_RDONLY | FA_HIDDEN | FA_SYSTEM | FA_DIR); r == 0; r = Fsnext()) {
+		listed_file *files = realloc(l->files, (l->count + 1) * sizeof *l->files);
+
+		if (files == NULL) {
+			Fsetdta(old);
+			drop_listing(l);
+			return NULL;
+		}
+		l->files = files;
+		snprintf(files[l->count].name, sizeof files[l->count].name, "%s", dta.dta_name);
+		files[l->count].dir = (dta.dta_attribute & FA_DIR) != 0;
+		files[l->count].size = (uint32_t) dta.dta_size;
+		l->count++;
+	}
+	Fsetdta(old);
+	/* an empty or missing folder: let GEMDOS say */
+	if (l->count == 0) {
+		drop_listing(l);
+		return NULL;
+	}
+	snprintf(l->dir, sizeof l->dir, "%.*s", (int) length, dir);
+	return l;
+}
+
+/* path's kind, and a file's size in *size, from its folder's listing; -1 when it isn't listed. */
+static int listed_kind(const char *path, uint32_t *size)
+{
+	const char *name = last_name(path);
+	listing *l;
+
+	const char *dot = strchr(name, '.');
+
+	/* only an 8.3 name: GEMDOS cuts a longer one down to find it */
+	if (__mint != 0 || *name == '\0' || strpbrk(name, "*?") != NULL
+		|| (dot == NULL ? strlen(name) > 8 : dot - name > 8 || strlen(dot + 1) > 3
+			|| strchr(dot + 1, '.') != NULL))
+		return -1;
+	if ((l = folder_listing(path, (size_t) (name - path))) == NULL)
+		return -1;
+	for (uint32_t i = 0; i < l->count; i++) {
+		if (strcasecmp(l->files[i].name, name) == 0) {
+			if (size != NULL)
+				*size = l->files[i].size;
+			return l->files[i].dir ? KIND_DIR : KIND_FILE;
+		}
+	}
+	return KIND_NONE;
+}
+
 /* path's kind from GEMDOS Fsfirst, under plain TOS; -1 when Fsfirst can't say (a drive's root,
  * "." and "..", which have no entry of their own to find, or a wildcard). MiNTLib's stat does
  * the same search and then turns the entry's DOS date into a time_t through mktime, which takes
@@ -196,6 +350,12 @@ static int tos_path_kind(const char *path, uint32_t *size)
 	}
 	if (*name == '\0' || strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
 		return -1;
+	{
+		int kind = listed_kind(path, size);
+
+		if (kind >= 0)
+			return kind;
+	}
 	old = Fgetdta();
 	Fsetdta(&dta);
 	found = Fsfirst(dos, FA_RDONLY | FA_HIDDEN | FA_SYSTEM | FA_DIR);
@@ -206,6 +366,8 @@ static int tos_path_kind(const char *path, uint32_t *size)
 		*size = (uint32_t) dta.dta_size;
 	return (dta.dta_attribute & FA_DIR) ? KIND_DIR : KIND_FILE;
 }
+#else
+static void folder_changes(const char *path) { (void) path; }
 #endif
 
 /* What path is, and a file's size in *size when size isn't NULL. */
@@ -877,6 +1039,15 @@ static int32_t window_read(handle *h, uint8_t *out, int32_t count)
 static int32_t window_file_size(handle *h)
 {
 	if (h->size < 0) {
+#ifdef __MINT__
+		uint32_t size;
+
+		/* from the folder's listing, without walking the file's clusters to its end */
+		if (listed_kind(h->path, &size) == KIND_FILE) {
+			h->size = (int32_t) size;
+			return h->size;
+		}
+#endif
 		h->size = raw_seek(h->readers[0], 0, SEEK_END);
 		h->reader_pos[0] = h->size;
 	}
@@ -1210,6 +1381,7 @@ int16_t plat_file_create(const char *name)
 	if (!resolve(name, true, path))
 		return -1;
 	settle(path);
+	folder_changes(path);
 	if ((file = free_handle()) < 0)
 		return -1;
 	h = &handles[file];
@@ -1314,6 +1486,8 @@ int32_t plat_file_write(int16_t file, const void *buffer, int32_t count)
 
 	if (h == NULL || count < 0)
 		return -1;
+	/* (the game opens many files to read and write that it only reads) */
+	folder_changes(h->path);
 	if (h->memory != NULL && (!h->writable || !leave_memory(h)))
 		return -1;
 	if (h->built != NULL) {
@@ -1425,6 +1599,7 @@ int16_t plat_dir_create(const char *name)
 
 	if (!resolve(name, true, path) || exists(path))
 		return 0;
+	folder_changes(path);
 	return mkdir(path, 0777) == 0;
 }
 
@@ -1434,7 +1609,10 @@ int16_t plat_dir_remove(const char *name)
 
 	settle(NULL);
 	forget_all();
-	return resolve(name, false, path) && is_dir(path) && rmdir(path) == 0;
+	if (!resolve(name, false, path) || !is_dir(path))
+		return 0;
+	folder_changes(path);
+	return rmdir(path) == 0;
 }
 
 int16_t plat_file_remove(const char *name)
@@ -1445,7 +1623,18 @@ int16_t plat_file_remove(const char *name)
 		return 0;
 	settle(path);
 	forget(path);
-	return is_file(path) && remove(path) == 0;
+	if (!is_file(path))
+		return 0;
+	folder_changes(path);
+#ifdef __MINT__
+	/* GEMDOS itself: MiNTLib's remove looks the file up twice more first */
+	if (__mint == 0) {
+		char dos[PATH_SIZE];
+
+		return dos_path(path, dos) && Fdelete(dos) == 0;
+	}
+#endif
+	return remove(path) == 0;
 }
 
 int16_t plat_file_rename(const char *from, const char *to)
@@ -1461,6 +1650,8 @@ int16_t plat_file_rename(const char *from, const char *to)
 	settle(to_path);
 	if (exists(to_path))
 		return 0;
+	folder_changes(from_path);
+	folder_changes(to_path);
 	if (rename(from_path, to_path) != 0)
 		return 0;
 	/* kept under the new name (keep may let the old go first) */
@@ -1723,20 +1914,17 @@ bool files_check_data(char *message, size_t size)
 		return false;
 	}
 	for (size_t i = 0; i < sizeof required_files / sizeof *required_files; i++) {
-		char name[64];
-		int16_t file;
-		int32_t length;
+		char name[64], path[PATH_SIZE];
+		uint32_t length;
 
+		/* looked up, not opened: under TOS that is one listing of STATIC for them all */
 		snprintf(name, sizeof name, "STATIC\\%s", required_files[i]);
-		file = plat_file_open(name, PLAT_FILE_READ);
-		if (file < 0) {
+		if (!resolve(name, false, path) || path_kind(path, &length) != KIND_FILE) {
 			append(missing, sizeof missing, missing_count++ ? ", " : "");
 			append(missing, sizeof missing, required_files[i]);
 			continue;
 		}
-		length = plat_file_length(file);
-		plat_file_close(file);
-		if (length <= 0) {
+		if (length == 0) {
 			append(empty, sizeof empty, empty_count++ ? ", " : "");
 			append(empty, sizeof empty, required_files[i]);
 		}
