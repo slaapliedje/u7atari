@@ -89,7 +89,15 @@ Or rename the program to ULTIMA7.TTP and type them when it starts.
                   instead of an MT-32. The game's music is written for
                   the MT-32, so this translates it: instruments are the
                   nearest General MIDI ones, and sound effects with no
-                  close match are left out.
+                  close match are left out. Turns on --mt32-short-waits
+                  as well.
+
+  --mt32-short-waits
+                  Skips the pauses after the game writes instruments
+                  into the MT-32. An MT-32 needs them (the first models
+                  most), so leave this off with one. In Serpent Isle
+                  they add about 7 seconds to starting a game and 4
+                  to the introduction.
 
   --line-in       Falcon only: mixes the Falcon's sound input into its
                   output. Plug the synth's audio into the input, and

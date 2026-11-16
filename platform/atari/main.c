@@ -259,7 +259,8 @@ static const char *script_path;
  *                       "endgame") instead of the launcher
  *   --line-in           Falcon: mixes the input jack into the sound output, for a MIDI synth
  *                       plugged in there
- *   --gm                music and effects for a General MIDI synth instead of an MT-32
+ *   --gm                music and effects for a General MIDI synth instead of an MT-32;
+ *                       passes the game --mt32-short-waits
  *   --no-card           the TT's own video even with an ATW800/2 graphics card in the machine
  *   --fps               counts the frames shown, and writes them to U7FPS.TXT in the current
  *                       folder on leaving
@@ -298,6 +299,11 @@ static const char *take_options(int *argc, char **argv)
 		else
 			argv[kept++] = argv[i];
 	}
+	/* The pauses after MT-32 memory writes give an MT-32 time to take them in; gm.c drops
+	 * those writes, so with --gm they are only waiting (about 7 s at the start of a Serpent
+	 * Isle game). Taking out --gm left a place for the game's own switch. */
+	if (sound_gm)
+		argv[kept++] = (char *) "--mt32-short-waits";
 	*argc = kept;
 	argv[kept] = NULL;
 	return dir != NULL && dir[0] != '\0' ? dir : ".";

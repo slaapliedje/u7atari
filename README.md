@@ -218,6 +218,12 @@ explosions, water, spells, bells and clocks); the rest are silent with `--gm` ra
 on the wrong instrument. The choices are in the two tables at the top of
 `gm.c`; none has been heard on a GM synth yet.
 
+After each write into the MT-32's memory the game pauses so the synth can take it in. Serpent
+Isle's music driver writes its instruments as the introduction and as each game starts, about 4 s
+and 7 s of pauses. Those pauses are timed as on DOS (70 Hz retraces), not counted in the display's own
+50 or 60 Hz retraces, which would make them longer. `--mt32-short-waits` (the port's switch) skips
+them, and `--gm` turns it on, since gm.c drops those writes anyway.
+
 Speech plays from a looping DMA ring in ST RAM, resampled with linear interpolation from the
 game's Sound Blaster rate (about 11 kHz). Each sound tick silences what the DMA has played, so the
 ring never replays old speech when the game stops feeding it.
