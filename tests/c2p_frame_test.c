@@ -1,6 +1,7 @@
 /* Checks platform/atari/c2p.S against c2p16 (c2p.h), on the Atari (or Hatari): converts random
  * frames whole, then changes random groups, runs of groups and rows and converts again, with and
- * without the doubled lines, and copying the frame as it goes, comparing the planes, the shadow
+ * without the doubled lines, copying the frame as it goes, and with a shadow of wider rows,
+ * comparing the planes, the shadow
  * and the copy with c2p16's and the frame every time. Then times a whole frame, an unchanged one,
  * and one where every group changed, each way. */
 #include <stdio.h>
@@ -16,7 +17,7 @@
 #define H 200
 
 void c2p_frame(const uint8_t *in, uint8_t *shadow, uint8_t *out, int32_t rows, int32_t outStride,
-	int32_t secondLine, int32_t full, uint8_t *copy);
+	int32_t secondLine, int32_t full, uint8_t *copy, int32_t shadowStride);
 
 static uint32_t seed = 12345;
 
@@ -48,6 +49,8 @@ static void reference(const uint8_t *in, uint8_t *out, int repeat)
 int main(void)
 {
 	static uint8_t frame[W * H], other[W * H], shadow[W * H], copy[W * H], want[W * H * 2];
+	/* a shadow with rows 2 * W apart, as the Falcon's scrolling screen has */
+	static uint8_t wide[2 * W * H], narrow[W * H];
 	/* the screen is in ST RAM, as in the game */
 	uint8_t *out = (uint8_t *) Mxalloc(W * H * 2, 0);
 	long checks = 0, bad = 0;
@@ -57,16 +60,18 @@ int main(void)
 		return 1;
 	}
 
-	for (int way = 0; way < 3; way++) {
-		/* lines once, lines twice, and copying */
+	for (int way = 0; way < 4; way++) {
+		/* lines once, lines twice, copying, and a wide shadow */
 		int repeat = way == 1 ? 2 : 1;
+		int32_t shadow_stride = way == 3 ? 2 * W : W;
+		uint8_t *sh = way == 3 ? wide : shadow;
 		int32_t stride = repeat * W, second = repeat == 2 ? W : 0;
 		uint8_t *to = way == 2 ? copy : NULL;
 
 		for (int i = 0; i < W * H; i++)
 			frame[i] = (uint8_t) random_below(256);
 		memset(out, 0, W * H * 2);
-		c2p_frame(frame, shadow, out, H, stride, second, 1, to);
+		c2p_frame(frame, sh, out, H, stride, second, 1, to, shadow_stride);
 		for (int round = 0; round < 60; round++, checks++) {
 			int changes = (int) random_below(40);
 
@@ -84,9 +89,11 @@ int main(void)
 						frame[i] = (uint8_t) random_below(256);
 				}
 			if (round > 0)
-				c2p_frame(frame, shadow, out, H, stride, second, 0, to);
+				c2p_frame(frame, sh, out, H, stride, second, 0, to, shadow_stride);
 			reference(frame, want, repeat);
-			if (memcmp(out, want, (size_t) (W * H * repeat)) != 0 || memcmp(shadow, frame, W * H) != 0 ||
+			for (int y = 0; y < H; y++)
+				memcpy(narrow + y * W, sh + y * shadow_stride, W);
+			if (memcmp(out, want, (size_t) (W * H * repeat)) != 0 || memcmp(narrow, frame, W * H) != 0 ||
 				(to != NULL && memcmp(copy, frame, W * H) != 0)) {
 				if (bad++ < 10)
 					printf("mismatch: way %d round %d\n", way, round);
@@ -106,15 +113,15 @@ int main(void)
 
 			switch (way) {
 			case 0: reference(frame, want, 1); break;
-			case 1: c2p_frame(frame, shadow, out, H, W, 0, 1, NULL); break;
-			case 2: c2p_frame(in, shadow, out, H, W, 0, 0, NULL); break;
+			case 1: c2p_frame(frame, shadow, out, H, W, 0, 1, NULL, W); break;
+			case 2: c2p_frame(in, shadow, out, H, W, 0, 0, NULL, W); break;
 			/* the game's copy of its frame, then the compare; or both in one */
-			case 3: memcpy(copy, in, W * H); c2p_frame(copy, shadow, out, H, W, 0, 0, NULL); break;
-			case 4: c2p_frame(in, shadow, out, H, W, 0, 0, copy); break;
-			case 5: c2p_frame(in, shadow, out, H, W, 0, 0, NULL); break;
-			case 6: memcpy(copy, in, W * H); c2p_frame(copy, shadow, out, H, W, 0, 0, NULL); break;
-			case 7: c2p_frame(in, shadow, out, H, W, 0, 0, copy); break;
-			case 8: c2p_frame(in, shadow, out, H, 2 * W, W, 0, NULL); break;
+			case 3: memcpy(copy, in, W * H); c2p_frame(copy, shadow, out, H, W, 0, 0, NULL, W); break;
+			case 4: c2p_frame(in, shadow, out, H, W, 0, 0, copy, W); break;
+			case 5: c2p_frame(in, shadow, out, H, W, 0, 0, NULL, W); break;
+			case 6: memcpy(copy, in, W * H); c2p_frame(copy, shadow, out, H, W, 0, 0, NULL, W); break;
+			case 7: c2p_frame(in, shadow, out, H, W, 0, 0, copy, W); break;
+			case 8: c2p_frame(in, shadow, out, H, 2 * W, W, 0, NULL, W); break;
 			}
 		}
 		printf("%s: %ld ticks of 1/%d s for 50 frames\n",

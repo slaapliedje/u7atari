@@ -24,7 +24,6 @@
 
 #define WIDTH PLAT_SCREEN_WIDTH
 #define HEIGHT PLAT_SCREEN_HEIGHT
-#define LINE_BYTES WIDTH                /* 8 planes of 320 pixels */
 #define GROUPS (WIDTH / 16)
 
 /* The largest pointer frame kept; the game's are at most about 30 pixels a side. */
@@ -50,6 +49,7 @@ typedef struct {
 static bool running;
 static void (*volatile *slot)(void);
 static int16_t top_line, line_repeat;
+static int32_t line_bytes;              /* from one screen line to the next */
 
 static shape shapes[2];
 static shape *volatile current;         /* NULL: none yet */
@@ -69,7 +69,7 @@ static uint16_t under[MAX_LINES][MAX_GROUPS * 8];
 uint32_t pointer_draws;                 /* for the debug log: the times it was drawn */
 #endif
 
-bool pointer_start(int16_t first_line, int16_t repeat)
+bool pointer_start(int16_t first_line, int16_t repeat, int32_t stride)
 {
 	void (*volatile *queue)(void) = VBLQUEUE;
 
@@ -80,6 +80,7 @@ bool pointer_start(int16_t first_line, int16_t repeat)
 	on_display = NULL;
 	top_line = first_line;
 	line_repeat = repeat;
+	line_bytes = stride;
 	if (queue == NULL)
 		return false;
 	for (int16_t i = 0; i < NVBLS; i++)
@@ -190,8 +191,8 @@ static void put_back(void)
 
 	if (drawn_on == NULL)
 		return;
-	line = drawn_on + drawn_line * LINE_BYTES + drawn_group * 16;
-	for (int16_t i = 0; i < drawn_lines; i++, line += LINE_BYTES)
+	line = drawn_on + drawn_line * line_bytes + drawn_group * 16;
+	for (int16_t i = 0; i < drawn_lines; i++, line += line_bytes)
 		memcpy(line, under[i], (size_t) drawn_groups * 16);
 	drawn_on = NULL;
 }
@@ -226,7 +227,7 @@ static void draw(uint8_t *base, const shape *s, int16_t x, int16_t y)
 		const uint16_t (*bits)[9] = s->bits[row - y];
 
 		for (int16_t repeat = 0; repeat < line_repeat; repeat++, i++) {
-			uint16_t *group = (uint16_t *) (base + (drawn_line + i) * LINE_BYTES) + from_group * 8;
+			uint16_t *group = (uint16_t *) (base + (drawn_line + i) * line_bytes) + from_group * 8;
 
 			memcpy(under[i], group, (size_t) drawn_groups * 16);
 			for (int16_t g = from_group; g <= to_group; g++, group += 8) {

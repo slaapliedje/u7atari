@@ -13,6 +13,13 @@
  * game's copy of its finished frame to the screen buffer (plat_video_copy_frame) converts it as
  * it copies, so the present that follows only shows it.
  *
+ * On the Falcon, each screen is a window onto a wider and taller area of screen memory (VIDEL's
+ * line offset skips the rest of each line), and its shadow covers the whole area, always matching
+ * what the planes there show. When the view scrolls, the frame is mostly the last one moved: the
+ * window moves to where the area already holds it, by changing the screen address, and only what
+ * really differs is converted. The window moves in whole 16-pixel groups and lines; when it
+ * nears an edge and a frame is mostly new anyway, it jumps to the far side.
+ *
  * Palette writes go to the hardware at once, as the VGA DAC took them; fades rely on that.
  *
  * The mouse pointer is drawn onto the screen on display at each vertical blank (pointer.c), so it
@@ -48,9 +55,19 @@ _Static_assert(WIDTH == 320, "c2p.S converts rows of 320 pixels");
 #define TT_LOW 0x0700
 
 typedef struct {
-	uint8_t *base;              /* 256-byte aligned, in ST RAM */
+	uint8_t *base;              /* the first line shown, in ST RAM */
 	uint8_t *shadow;            /* the chunky frame this screen shows; NULL until it has one */
+	uint8_t *area;              /* its screen memory, 256-byte aligned; base lies in it */
+	uint8_t *shadow_area;       /* scrolling: the whole area's pixels, as the planes show them */
+	int16_t x, y;               /* scrolling: where the frame lies in the area */
+	int16_t last_dx, last_dy;   /* scrolling: the window's last move, tried first next time */
 } screen;
+
+/* The Falcon's scrolling screens: the area each frame is a window of. */
+#define SCROLL_LINE_BYTES 640
+#define SCROLL_LINES 480
+#define SCROLL_REACH 48         /* the farthest a frame is looked for, in pixels and lines */
+#define SAMPLES (17 * 8)        /* longs of the frame compared to find it */
 
 bool video_no_card;
 bool video_fps;
@@ -66,6 +83,10 @@ static uint32_t shown_at_vbl;   /* when the other screen was handed to the hardw
 static int16_t screen_lines;    /* lines in the hardware mode */
 static int16_t top_line;        /* the first line the game's frame occupies */
 static int16_t line_repeat;     /* 2 on the TT, which shows each game line twice */
+static int32_t line_bytes = LINE_BYTES;    /* from one screen line to the next */
+static int32_t area_bytes;      /* each screen's memory */
+static bool scrolling;
+static void *shadow_memory;
 
 static const uint8_t *last_pixels;
 /* The screen plat_video_copy_frame converted the frame at prepared_pixels into, or NULL. */
@@ -111,11 +132,156 @@ static uint32_t scan_address(void)
 	return b;
 }
 
+/* The screen address, written straight to VIDEL (high, middle, then low byte, which must come
+ * last), as Setscreen does under EmuTOS: the window moves in 16-byte steps, finer than the
+ * 256 bytes older TOS calls promise. screenpt is cleared, so no TOS vertical blank puts an older
+ * address back. Taken by the hardware at the next blank. */
+static void set_base(uint8_t *base)
+{
+	volatile uint8_t *video = (volatile uint8_t *) 0xffff8201;
+	uint32_t a = (uint32_t) (uintptr_t) base;
+	uint16_t sr;
+
+	__asm__ volatile ("move.w %%sr,%0; ori.w #0x0700,%%sr" : "=d" (sr) :: "memory");
+	*(volatile uint32_t *) 0x45e = 0;    /* screenpt */
+	video[0] = (uint8_t) (a >> 16);
+	video[2] = (uint8_t) (a >> 8);
+	video[12] = (uint8_t) a;
+	__asm__ volatile ("move.w %0,%%sr" :: "d" (sr) : "memory");
+}
+
 static void show(uint8_t *base)
 {
 	/* the pointer goes there from the blank the hardware takes it at */
 	pointer_screen(text_shown ? NULL : base);
-	VsetScreen(-1L, base, -1, -1);
+	if (scrolling)
+		set_base(base);
+	else
+		VsetScreen(-1L, base, -1, -1);
+}
+
+/* The lines VGA shows above and below the frame stay black (colour 0, all planes clear). */
+static void clear_line(screen *s, int32_t line)
+{
+	uint32_t *shadow = (uint32_t *) (s->shadow_area + line * line_bytes + s->x);
+
+	for (int i = 0; i < WIDTH / 4; i++)
+		if (shadow[i] != 0) {
+			memset(shadow, 0, WIDTH);
+			memset(s->area + line * line_bytes + s->x, 0, WIDTH);
+			return;
+		}
+}
+
+/* Puts screen s's window with the frame at x, y in its area. */
+static void place(screen *s, int16_t x, int16_t y)
+{
+	int32_t frame = (int32_t) y * line_bytes + x;
+
+	s->x = x;
+	s->y = y;
+	s->base = s->area + frame - (int32_t) top_line * line_bytes;
+	s->shadow = s->shadow_area + frame;
+	for (int32_t line = y - top_line; line < y; line++)
+		clear_line(s, line);
+	for (int32_t line = y + HEIGHT; line < y - top_line + screen_lines; line++)
+		clear_line(s, line);
+}
+
+/* How many of the sampled longs of the frame the area holds with the frame at x, y. */
+static int16_t matches(const screen *s, const uint8_t *in, int16_t x, int16_t y)
+{
+	const uint8_t *area = s->shadow_area + (int32_t) y * line_bytes + x + 20;
+	int16_t n = 0;
+
+	in += 20;
+	for (int16_t row = 6; row < HEIGHT; row += 12) {
+		const uint32_t *a = (const uint32_t *) (in + row * WIDTH);
+		const uint32_t *b = (const uint32_t *) (area + row * line_bytes);
+
+		for (int16_t i = 0; i < WIDTH / 4 - 5; i += 10)
+			n += a[i] == b[i];
+	}
+	return n;
+}
+
+/* Moves screen s's window to where its area best holds the frame already. */
+static void follow_scroll(screen *s, const uint8_t *in)
+{
+	int16_t max_x = SCROLL_LINE_BYTES - WIDTH;
+	int16_t min_y = top_line, max_y = SCROLL_LINES - screen_lines + top_line;
+	int16_t here = matches(s, in, s->x, s->y), best = here, best_x = s->x, best_y = s->y;
+
+	if (here >= SAMPLES - SAMPLES / 8)
+		return;
+	/* the last move first: the view tends to keep going the way it went */
+	for (int16_t k = -1; k < 13 * 7 && best < SAMPLES - SAMPLES / 8; k++) {
+		int16_t dx = k < 0 ? s->last_dx : (int16_t) (k % 7 * 16 - SCROLL_REACH);
+		int16_t dy = k < 0 ? s->last_dy : (int16_t) (k / 7 * 8 - SCROLL_REACH);
+		int16_t x = (int16_t) (s->x + dx), y = (int16_t) (s->y + dy), n;
+
+		if ((dx == 0 && dy == 0) || x < 0 || x > max_x || y < min_y || y > max_y)
+			continue;
+		n = matches(s, in, x, y);
+		if (n > best) {
+			best = n;
+			best_x = x;
+			best_y = y;
+		}
+	}
+	if (best >= here + SAMPLES / 4) {
+		s->last_dx = (int16_t) (best_x - s->x);
+		s->last_dy = (int16_t) (best_y - s->y);
+		place(s, best_x, best_y);
+		return;
+	}
+	/* Nothing explains the frame, so it is mostly converted anyway: a window near an edge,
+	 * where the view may have run out of room, jumps to the far side for nothing. */
+	if (here < SAMPLES / 4) {
+		int16_t x = s->x, y = s->y;
+
+		if (x < SCROLL_REACH)
+			x = max_x;
+		else if (x > max_x - SCROLL_REACH)
+			x = 0;
+		if (y < min_y + SCROLL_REACH)
+			y = max_y;
+		else if (y > max_y - SCROLL_REACH)
+			y = min_y;
+		if (x != s->x || y != s->y)
+			place(s, x, y);
+	}
+}
+
+/* The Falcon's scrolling screens, when there is memory enough for them and the game still. */
+static bool start_scrolling(void)
+{
+	size_t bytes = (size_t) SCROLL_LINE_BYTES * SCROLL_LINES;
+
+	screen_memory = (void *) Mxalloc(2 * bytes + 256, 0);    /* ST RAM */
+	if (screen_memory == NULL || (long) screen_memory < 0)
+		return false;
+	shadow_memory = (void *) Mxalloc(2 * bytes, 3);
+	if (shadow_memory == NULL || (long) shadow_memory < 0 ||
+		(Mxalloc(-1L, 1) < (long) MEMORY_NEEDED && Mxalloc(-1L, 0) < (long) MEMORY_NEEDED)) {
+		if (shadow_memory != NULL && (long) shadow_memory > 0)
+			Mfree(shadow_memory);
+		Mfree(screen_memory);
+		return false;
+	}
+	line_bytes = SCROLL_LINE_BYTES;
+	area_bytes = (int32_t) bytes;
+	for (int i = 0; i < 2; i++) {
+		screen *s = &screens[i];
+
+		s->area = (uint8_t *) (((uintptr_t) screen_memory + 255) & ~(uintptr_t) 255) + i * bytes;
+		s->shadow_area = (uint8_t *) shadow_memory + i * bytes;
+		memset(s->area, 0, bytes);
+		memset(s->shadow_area, 0, bytes);
+		s->last_dx = s->last_dy = 0;
+		place(s, (SCROLL_LINE_BYTES - WIDTH) / 2 & ~15, (int16_t) ((SCROLL_LINES - HEIGHT) / 2));
+	}
+	return true;
 }
 
 static bool setup_tt(void)
@@ -164,13 +330,18 @@ void video_init(void)
 		plat_fatal(GAME_NAME " needs a colour or VGA monitor.");
 
 	bytes = (size_t) screen_lines * LINE_BYTES;
-	screen_memory = (void *) Mxalloc(2 * bytes + 256, 0);    /* ST RAM */
-	if (screen_memory == NULL || (long) screen_memory < 0)
-		plat_fatal("Not enough ST RAM for the screens.");
-	for (int i = 0; i < 2; i++) {
-		screens[i].base = (uint8_t *) (((uintptr_t) screen_memory + 255) & ~(uintptr_t) 255) + i * bytes;
-		memset(screens[i].base, 0, bytes);
-		screens[i].shadow = NULL;
+	scrolling = atari_machine != MACHINE_TT && start_scrolling();
+	if (!scrolling) {
+		screen_memory = (void *) Mxalloc(2 * bytes + 256, 0);    /* ST RAM */
+		if (screen_memory == NULL || (long) screen_memory < 0)
+			plat_fatal("Not enough ST RAM for the screens.");
+		area_bytes = (int32_t) bytes;
+		for (int i = 0; i < 2; i++) {
+			screens[i].area = (uint8_t *) (((uintptr_t) screen_memory + 255) & ~(uintptr_t) 255) + i * bytes;
+			screens[i].base = screens[i].area;
+			memset(screens[i].base, 0, bytes);
+			screens[i].shadow = NULL;
+		}
 	}
 	console_memory = (void *) Mxalloc(bytes, 3);
 	if (console_memory == NULL || (long) console_memory < 0)
@@ -181,6 +352,11 @@ void video_init(void)
 		VsetScreen(console_memory, screens[0].base, -1, -1);
 	} else {
 		VsetScreen(console_memory, screens[0].base, 3, falcon_mode);
+		if (scrolling) {
+			/* the words VIDEL skips at the end of each line, past the 320 bytes shown */
+			*(volatile uint16_t *) 0xffff820e = (uint16_t) ((SCROLL_LINE_BYTES - LINE_BYTES) / 2);
+			set_base(screens[0].base);
+		}
 	}
 	hidden = 1;
 	shown_at_vbl = vbl_count();
@@ -189,7 +365,7 @@ void video_init(void)
 	if (lockstep)
 		return;     /* the PC's frames have the game's pointer in them */
 #endif
-	if (pointer_start(top_line, line_repeat))
+	if (pointer_start(top_line, line_repeat, line_bytes))
 		pointer_screen(screens[0].base);
 }
 
@@ -206,6 +382,7 @@ void video_shutdown(void)
 		VsetScreen(old_logical, old_physical, -1, -1);
 		EsetPalette(0, 256, old_tt_palette);
 	} else {
+		*(volatile uint16_t *) 0xffff820e = 0;
 		VsetScreen(old_logical, old_physical, 3, old_mode);
 		VsetRGB(0, 256, old_falcon_palette);
 	}
@@ -275,7 +452,7 @@ void plat_video_set_palette(int16_t first, int16_t count, const uint8_t *rgb)
 /* c2p.S: converts the groups of 16 pixels that differ from the shadow, or all of them, copying
  * the frame to copy as it reads it when copy is not NULL. */
 void c2p_frame(const uint8_t *in, uint8_t *shadow, uint8_t *out, int32_t rows, int32_t outStride,
-	int32_t secondLine, int32_t full, uint8_t *copy);
+	int32_t secondLine, int32_t full, uint8_t *copy, int32_t shadowStride);
 
 /* Converts the pixels that differ from what screen s shows, copying the frame to copy as it
  * goes when that is not NULL (the Falcon only). */
@@ -289,8 +466,10 @@ static void convert(screen *s, const uint8_t *pixels, uint8_t *copy)
 		atw800_frame(pixels, s->shadow, full);
 		return;
 	}
-	c2p_frame(pixels, s->shadow, s->base + top_line * LINE_BYTES, HEIGHT, line_repeat * LINE_BYTES,
-		line_repeat == 2 ? LINE_BYTES : 0, full, copy);
+	if (scrolling)
+		follow_scroll(s, pixels);
+	c2p_frame(pixels, s->shadow, s->base + top_line * line_bytes, HEIGHT, line_repeat * line_bytes,
+		line_repeat == 2 ? line_bytes : 0, full, copy, scrolling ? line_bytes : WIDTH);
 }
 
 /* The screen the next frame goes into, once it may be written. */
@@ -307,10 +486,9 @@ static screen *hidden_screen(void)
 	 * this screen, a conversion starting at the top is overtaken by the beam, and its top rows
 	 * flicker. Wait for the next frame then, but not past a second blank. */
 	if (!card) {
-		uint32_t base = (uint32_t) (uintptr_t) s->base;
+		uint32_t area = (uint32_t) (uintptr_t) s->area;
 
-		while (scan_address() - base < (uint32_t) screen_lines * LINE_BYTES &&
-			vbl_count() - shown_at_vbl < 2)
+		while (scan_address() - area < (uint32_t) area_bytes && vbl_count() - shown_at_vbl < 2)
 			;
 	}
 	return s;
@@ -466,7 +644,7 @@ void video_shot(const char *name)
 		memcpy(with_pointer, pixels, sizeof with_pointer);
 		pointer_into(with_pointer);
 		for (int y = 0; y < HEIGHT; y++) {
-			const uint16_t *planes = (const uint16_t *) (on + (top_line + y * line_repeat) * LINE_BYTES);
+			const uint16_t *planes = (const uint16_t *) (on + (top_line + y * line_repeat) * line_bytes);
 
 			for (int x = 0; x < WIDTH; x++) {
 				uint8_t colour = 0;
@@ -567,9 +745,9 @@ static void show_rows(void)
 		refresh_wanted = true;
 		return;
 	}
-	c2p_frame(last_pixels + top * WIDTH, s->shadow + top * WIDTH,
-		s->base + (top_line + top * line_repeat) * LINE_BYTES, rows, line_repeat * LINE_BYTES,
-		line_repeat == 2 ? LINE_BYTES : 0, 0, NULL);
+	c2p_frame(last_pixels + top * WIDTH, s->shadow + top * (scrolling ? line_bytes : WIDTH),
+		s->base + (top_line + top * line_repeat) * line_bytes, rows, line_repeat * line_bytes,
+		line_repeat == 2 ? line_bytes : 0, 0, NULL, scrolling ? line_bytes : WIDTH);
 }
 
 void video_pump(void)

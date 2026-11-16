@@ -1,9 +1,10 @@
 | Chunky to planar for a whole frame, converting only what changed (video.c).
 |
 | void c2p_frame(const uint8_t *in, uint8_t *shadow, uint8_t *out, int32_t rows,
-|	int32_t outStride, int32_t secondLine, int32_t full, uint8_t *copy)
+|	int32_t outStride, int32_t secondLine, int32_t full, uint8_t *copy, int32_t shadowStride)
 |
-| in is the game's frame, 320 bytes a row, and shadow what out shows of it. Each row is compared
+| in is the game's frame, 320 bytes a row, and shadow what out shows of it, its rows
+| shadowStride bytes apart (320, or the Falcon's wider scrolling screen's). Each row is compared
 | with its shadow a long at a time, four to a group; a 16-pixel group that differs is copied to the shadow and
 | converted to 8 interleaved plane words at the same offset in out's row (which is 320 bytes too),
 | and again secondLine bytes on when that is not 0 (the TT shows each line twice). Rows of out
@@ -120,7 +121,7 @@
 	GROUP	\second, \copy
 	NEXT_GROUP \second, 2b
 7:	lea	320(a3),a3
-	lea	320(a4),a4
+	adda.l	80(sp),a4
 	adda.l	64(sp),a5
 	subq.l	#1,60(sp)
 	bne	1b
@@ -139,14 +140,17 @@ _c2p_frame:
 	beq.s	compare
 	move.l	a3,a0			| full: the shadow made the opposite of in
 	move.l	a4,a1
-	move.l	60(sp),d7
-	mulu.w	#80,d7
-	bra.s	2f
+	move.l	60(sp),d6
+	move.l	80(sp),d5		| from the end of a shadow row to the next
+	sub.l	#320,d5
+0:	moveq	#79,d7
 1:	move.l	(a0)+,d0
 	not.l	d0
 	move.l	d0,(a1)+
-2:	subq.l	#1,d7
-	bcc.s	1b
+	dbra	d7,1b
+	adda.l	d5,a1
+	subq.l	#1,d6
+	bne.s	0b
 
 compare:
 	move.l	#0x00ff00ff,d5

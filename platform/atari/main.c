@@ -183,8 +183,7 @@ static void detect_machine(void)
  * runs (the TF53x and DFB1X boards both use it; the DFB1X's package calls it MAPROM_C.PRG).
  * Booting with Control held skips the AUTO folder, so when fast RAM is missing the game runs
  * MAPROM from there itself (it stays resident, as after a normal boot), then runs a second copy
- * of the game, whose code TOS can now load into fast RAM. */
-#define MEMORY_NEEDED (LINEAR_MEMORY_SIZE + (UINT32_C(2) << 20))
+ * of the game, whose code TOS can now load into fast RAM. MEMORY_NEEDED is in backend.h. */
 
 static long free_fast_ram(void)
 {

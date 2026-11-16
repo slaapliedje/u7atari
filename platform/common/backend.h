@@ -50,8 +50,12 @@ int16_t video_pointer(void);
 void video_pointer_shape(const uint8_t *pixels, int16_t width, int16_t height, int16_t hot_x,
 	int16_t hot_y);
 void video_pointer_show(int16_t visible);
+/* The Atari's: what the game needs free when it starts, its arena (LINEAR_MEMORY_SIZE, set in
+ * CMakeLists.txt) and its other blocks (main.c). */
+#define MEMORY_NEEDED (LINEAR_MEMORY_SIZE + (UINT32_C(2) << 20))
+
 /* The Atari's (pointer.c): drawn from the vertical blank on the screen on display. */
-bool pointer_start(int16_t first_line, int16_t repeat);
+bool pointer_start(int16_t first_line, int16_t repeat, int32_t stride);
 void pointer_stop(void);
 bool pointer_running(void);
 void pointer_screen(uint8_t *base);
