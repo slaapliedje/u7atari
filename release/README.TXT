@@ -194,11 +194,19 @@ and synth.
 CHANGES
 -------
 
-Since 0.2.0
+0.3.0
+- More frames a second: about 35-40% more in Black Gate's towns and
+  15% more in Serpent Isle's, on both machines. The screen scrolls in
+  hardware as the view moves (sideways too on the Falcon), and much of
+  the work of finding and sorting what is in view is faster.
 - The mouse pointer moves smoothly: it is drawn at every vertical
   blank, not only when the game draws a frame.
 - A Jaguar pad on the Falcon's enhanced joystick ports.
-- Saving and loading are faster from a hard disk.
+- Starting, saving and loading are faster from a hard disk.
+- Serpent Isle: the pauses for the MT-32 are as long as on DOS, not
+  several seconds longer, and shorter still with --gm.
+- MIDI is sent from an interrupt, so uploading the MT-32's sounds no
+  longer holds the game up.
 
 0.2.0
 - Runs on a 68060 (0.1.0 stopped with a black screen).
