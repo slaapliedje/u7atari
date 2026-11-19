@@ -13,12 +13,14 @@
  * game's copy of its finished frame to the screen buffer (plat_video_copy_frame) converts it as
  * it copies, so the present that follows only shows it.
  *
- * On the Falcon, each screen is a window onto a wider and taller area of screen memory (VIDEL's
- * line offset skips the rest of each line), and its shadow covers the whole area, always matching
- * what the planes there show. When the view scrolls, the frame is mostly the last one moved: the
- * window moves to where the area already holds it, by changing the screen address, and only what
- * really differs is converted. The window moves in whole 16-pixel groups and lines; when it
- * nears an edge and a frame is mostly new anyway, it jumps to the far side.
+ * Each screen is a window onto a taller area of screen memory, on the Falcon a wider one too
+ * (VIDEL's line offset skips the rest of each line; the TT has none), and its shadow covers the
+ * whole area, always matching what the planes there show. When the view scrolls, the frame is
+ * mostly the last one moved: the window moves to where the area already holds it, by changing
+ * the screen address, and only what really differs is converted. The window moves in whole
+ * 16-pixel groups and game rows; when it nears an edge and a frame is mostly new anyway, it jumps
+ * to the far side. On the TT it moves only up and down, in steps of 8 rows: 5120 bytes, so the
+ * screen address keeps to the 256 bytes Setscreen takes.
  *
  * Palette writes go to the hardware at once, as the VGA DAC took them; fades rely on that.
  *
@@ -63,9 +65,10 @@ typedef struct {
 	int16_t last_dx, last_dy;   /* scrolling: the window's last move, tried first next time */
 } screen;
 
-/* The Falcon's scrolling screens: the area each frame is a window of. */
+/* The scrolling screens: the area each frame is a window of, in game rows, and on the Falcon
+ * its width. */
 #define SCROLL_LINE_BYTES 640
-#define SCROLL_LINES 480
+#define SCROLL_ROWS 480
 #define SCROLL_REACH 48         /* the farthest a frame is looked for, in pixels and lines */
 #define SAMPLES (17 * 8)        /* longs of the frame compared to find it */
 
@@ -84,6 +87,7 @@ static int16_t screen_lines;    /* lines in the hardware mode */
 static int16_t top_line;        /* the first line the game's frame occupies */
 static int16_t line_repeat;     /* 2 on the TT, which shows each game line twice */
 static int32_t line_bytes = LINE_BYTES;    /* from one screen line to the next */
+static int32_t shadow_stride = WIDTH;      /* from one row of a screen's shadow to the next */
 static int32_t area_bytes;      /* each screen's memory */
 static bool scrolling;
 static void *shadow_memory;
@@ -154,50 +158,51 @@ static void show(uint8_t *base)
 {
 	/* the pointer goes there from the blank the hardware takes it at */
 	pointer_screen(text_shown ? NULL : base);
-	if (scrolling)
+	if (scrolling && atari_machine != MACHINE_TT)
 		set_base(base);
 	else
 		VsetScreen(-1L, base, -1, -1);
 }
 
-/* The lines VGA shows above and below the frame stay black (colour 0, all planes clear). */
-static void clear_line(screen *s, int32_t line)
+/* The rows VGA shows above and below the frame stay black (colour 0, all planes clear). */
+static void clear_row(screen *s, int32_t row)
 {
-	uint32_t *shadow = (uint32_t *) (s->shadow_area + line * line_bytes + s->x);
+	uint32_t *shadow = (uint32_t *) (s->shadow_area + row * shadow_stride + s->x);
 
 	for (int i = 0; i < WIDTH / 4; i++)
 		if (shadow[i] != 0) {
 			memset(shadow, 0, WIDTH);
-			memset(s->area + line * line_bytes + s->x, 0, WIDTH);
+			for (int16_t k = 0; k < line_repeat; k++)
+				memset(s->area + (row * line_repeat + k) * line_bytes + s->x, 0, WIDTH);
 			return;
 		}
 }
 
-/* Puts screen s's window with the frame at x, y in its area. */
+/* Puts screen s's window with the frame at x, y (in rows) in its area. */
 static void place(screen *s, int16_t x, int16_t y)
 {
-	int32_t frame = (int32_t) y * line_bytes + x;
+	int16_t top_rows = top_line / line_repeat, rows = screen_lines / line_repeat;
 
 	s->x = x;
 	s->y = y;
-	s->base = s->area + frame - (int32_t) top_line * line_bytes;
-	s->shadow = s->shadow_area + frame;
-	for (int32_t line = y - top_line; line < y; line++)
-		clear_line(s, line);
-	for (int32_t line = y + HEIGHT; line < y - top_line + screen_lines; line++)
-		clear_line(s, line);
+	s->base = s->area + ((int32_t) y * line_repeat - top_line) * line_bytes + x;
+	s->shadow = s->shadow_area + (int32_t) y * shadow_stride + x;
+	for (int32_t row = y - top_rows; row < y; row++)
+		clear_row(s, row);
+	for (int32_t row = y + HEIGHT; row < y - top_rows + rows; row++)
+		clear_row(s, row);
 }
 
 /* How many of the sampled longs of the frame the area holds with the frame at x, y. */
 static int16_t matches(const screen *s, const uint8_t *in, int16_t x, int16_t y)
 {
-	const uint8_t *area = s->shadow_area + (int32_t) y * line_bytes + x + 20;
+	const uint8_t *area = s->shadow_area + (int32_t) y * shadow_stride + x + 20;
 	int16_t n = 0;
 
 	in += 20;
 	for (int16_t row = 6; row < HEIGHT; row += 12) {
 		const uint32_t *a = (const uint32_t *) (in + row * WIDTH);
-		const uint32_t *b = (const uint32_t *) (area + row * line_bytes);
+		const uint32_t *b = (const uint32_t *) (area + row * shadow_stride);
 
 		for (int16_t i = 0; i < WIDTH / 4 - 5; i += 10)
 			n += a[i] == b[i];
@@ -208,8 +213,9 @@ static int16_t matches(const screen *s, const uint8_t *in, int16_t x, int16_t y)
 /* Moves screen s's window to where its area best holds the frame already. */
 static void follow_scroll(screen *s, const uint8_t *in)
 {
-	int16_t max_x = SCROLL_LINE_BYTES - WIDTH;
-	int16_t min_y = top_line, max_y = SCROLL_LINES - screen_lines + top_line;
+	int16_t max_x = (int16_t) (shadow_stride - WIDTH);
+	int16_t min_y = top_line / line_repeat;
+	int16_t max_y = (int16_t) (SCROLL_ROWS - screen_lines / line_repeat + min_y);
 	int16_t here = matches(s, in, s->x, s->y), best = here, best_x = s->x, best_y = s->y;
 
 	if (here >= SAMPLES - SAMPLES / 8)
@@ -253,15 +259,17 @@ static void follow_scroll(screen *s, const uint8_t *in)
 	}
 }
 
-/* The Falcon's scrolling screens, when there is memory enough for them and the game still. */
+/* The scrolling screens, when there is memory enough for them and the game still. */
 static bool start_scrolling(void)
 {
-	size_t bytes = (size_t) SCROLL_LINE_BYTES * SCROLL_LINES;
+	int32_t width = atari_machine == MACHINE_TT ? WIDTH : SCROLL_LINE_BYTES;
+	size_t bytes = (size_t) width * line_repeat * SCROLL_ROWS;
+	size_t shadow_bytes = (size_t) width * SCROLL_ROWS;
 
 	screen_memory = (void *) Mxalloc(2 * bytes + 256, 0);    /* ST RAM */
 	if (screen_memory == NULL || (long) screen_memory < 0)
 		return false;
-	shadow_memory = (void *) Mxalloc(2 * bytes, 3);
+	shadow_memory = (void *) Mxalloc(2 * shadow_bytes, 3);
 	if (shadow_memory == NULL || (long) shadow_memory < 0 ||
 		(Mxalloc(-1L, 1) < (long) MEMORY_NEEDED && Mxalloc(-1L, 0) < (long) MEMORY_NEEDED)) {
 		if (shadow_memory != NULL && (long) shadow_memory > 0)
@@ -269,17 +277,19 @@ static bool start_scrolling(void)
 		Mfree(screen_memory);
 		return false;
 	}
-	line_bytes = SCROLL_LINE_BYTES;
+	line_bytes = width;
+	shadow_stride = width;
 	area_bytes = (int32_t) bytes;
 	for (int i = 0; i < 2; i++) {
 		screen *s = &screens[i];
 
 		s->area = (uint8_t *) (((uintptr_t) screen_memory + 255) & ~(uintptr_t) 255) + i * bytes;
-		s->shadow_area = (uint8_t *) shadow_memory + i * bytes;
+		s->shadow_area = (uint8_t *) shadow_memory + i * shadow_bytes;
 		memset(s->area, 0, bytes);
-		memset(s->shadow_area, 0, bytes);
+		memset(s->shadow_area, 0, shadow_bytes);
 		s->last_dx = s->last_dy = 0;
-		place(s, (SCROLL_LINE_BYTES - WIDTH) / 2 & ~15, (int16_t) ((SCROLL_LINES - HEIGHT) / 2));
+		/* an even row: on the TT, with steps of 8, the screen address stays 256-byte aligned */
+		place(s, (width - WIDTH) / 2 & ~15, (int16_t) ((SCROLL_ROWS - HEIGHT) / 2) & ~1);
 	}
 	return true;
 }
@@ -330,7 +340,7 @@ void video_init(void)
 		plat_fatal(GAME_NAME " needs a colour or VGA monitor.");
 
 	bytes = (size_t) screen_lines * LINE_BYTES;
-	scrolling = atari_machine != MACHINE_TT && start_scrolling();
+	scrolling = start_scrolling();
 	if (!scrolling) {
 		screen_memory = (void *) Mxalloc(2 * bytes + 256, 0);    /* ST RAM */
 		if (screen_memory == NULL || (long) screen_memory < 0)
@@ -469,7 +479,7 @@ static void convert(screen *s, const uint8_t *pixels, uint8_t *copy)
 	if (scrolling)
 		follow_scroll(s, pixels);
 	c2p_frame(pixels, s->shadow, s->base + top_line * line_bytes, HEIGHT, line_repeat * line_bytes,
-		line_repeat == 2 ? line_bytes : 0, full, copy, scrolling ? line_bytes : WIDTH);
+		line_repeat == 2 ? line_bytes : 0, full, copy, shadow_stride);
 }
 
 /* The screen the next frame goes into, once it may be written. */
@@ -745,9 +755,9 @@ static void show_rows(void)
 		refresh_wanted = true;
 		return;
 	}
-	c2p_frame(last_pixels + top * WIDTH, s->shadow + top * (scrolling ? line_bytes : WIDTH),
+	c2p_frame(last_pixels + top * WIDTH, s->shadow + top * shadow_stride,
 		s->base + (top_line + top * line_repeat) * line_bytes, rows, line_repeat * line_bytes,
-		line_repeat == 2 ? line_bytes : 0, 0, NULL, scrolling ? line_bytes : WIDTH);
+		line_repeat == 2 ? line_bytes : 0, 0, NULL, shadow_stride);
 }
 
 void video_pump(void)
