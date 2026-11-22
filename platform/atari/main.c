@@ -195,6 +195,14 @@ static long free_st_ram(void)
 	return (long) Mxalloc(-1L, 0);
 }
 
+/* What TOS has left: MiNTLib's malloc takes memory from it as its heap grows and gives none back,
+ * so a fall over a soak run is the heap growing. */
+void memory_report(char *text, size_t size)
+{
+	snprintf(text, size, "free fast RAM %ld K, ST RAM %ld K", free_fast_ram() >> 10,
+		free_st_ram() >> 10);
+}
+
 static long read_boot_drive(void)
 {
 	return *(volatile int16_t *) 0x446;   /* _bootdev */

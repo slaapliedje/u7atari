@@ -1,5 +1,6 @@
 /* The PC lockstep reference's time, video, input and sound: lockstep.c does the work, and these
  * mirror the Atari backend's video.c, input.c and sound.c wherever the game could tell. */
+#include <malloc.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -193,3 +194,11 @@ void plat_pcm_start(uint32_t rate)
 int32_t plat_pcm_queue(const uint8_t *samples, int32_t count) { return lockstep_pcm_queue(samples, count); }
 int32_t plat_pcm_pending(void) { return lockstep_pcm_pending(); }
 void plat_pcm_stop(void) { lockstep_pcm_stop(); }
+
+/* the heap in use and the heap's size, from glibc */
+void memory_report(char *text, size_t size)
+{
+	struct mallinfo2 m = mallinfo2();
+
+	snprintf(text, size, "heap %zu K in use of %zu K", m.uordblks >> 10, m.arena >> 10);
+}

@@ -15,6 +15,7 @@
  *   4200 speech 3       starts speech track 3 as the game's usecode does (tests/speech_hook.cpp)
  *   4300 pad up+a       the Jaguar pad's buttons held from now on, joined by +: up, down, left,
  *                       right, a, b, c, option, pause, star, hash, 0 to 9; none for none
+ *   4400 mem            the memory left, on the console (memory_report), for soak runs
  *   9000 quit           restores the machine and exits
  * Lines starting with # are comments. Steps go in through the same paths as real keys and IKBD
  * mouse packets, after them.
@@ -28,11 +29,9 @@
 #include "plat.h"
 #include "backend.h"
 
-#define MAX_STEPS 2048
-
 void debug_play_speech(int16_t track);      /* tests/speech_hook.cpp */
 
-enum action { KEY, MOVE, BUTTONS, PAD, SHOT, LOG, SPEECH, QUIT };
+enum action { KEY, MOVE, BUTTONS, PAD, SHOT, LOG, SPEECH, MEM, QUIT };
 
 typedef struct {
 	uint32_t at;
@@ -44,8 +43,9 @@ typedef struct {
 	char text[64];              /* SHOT, LOG */
 } step;
 
-static step steps[MAX_STEPS];
-static int step_count, next_step;
+/* allocated by script_load: five for each line, the most one adds (dclick) */
+static step *steps;
+static int step_count, step_room, next_step;
 static uint16_t buttons;
 static uint32_t pad_held;
 
@@ -135,7 +135,7 @@ static void parse_line(char *line)
 
 	snprintf(copy, sizeof copy, "%s", line);
 	n = split(copy, word);
-	if (line[0] == '#' || n < 2 || step_count > MAX_STEPS - 4)
+	if (line[0] == '#' || n < 2 || step_count > step_room - 5)
 		return;
 	at = strtoul(word[0], &end, 10);
 	if (*end != '\0')
@@ -183,6 +183,8 @@ static void parse_line(char *line)
 		snprintf(add(at, LOG)->text, sizeof steps[0].text, "%s", text);
 	} else if (strcmp(action, "speech") == 0 && n >= 3) {
 		add(at, SPEECH)->x = (int16_t) strtol(word[2], NULL, 10);
+	} else if (strcmp(action, "mem") == 0) {
+		add(at, MEM);
 	} else if (strcmp(action, "quit") == 0) {
 		add(at, QUIT);
 	}
@@ -197,12 +199,24 @@ uint32_t script_pad(void)
 void script_load(const char *path)
 {
 	char line[128];
+	int lines = 0;
 	FILE *f = fopen(path, "r");
 
 	if (f == NULL) {
 		plat_log("script: cannot open it\r\n");
 		return;
 	}
+	while (fgets(line, sizeof line, f) != NULL)
+		lines++;
+	step_room = 5 * lines + 5;
+	steps = (step *) malloc((size_t) step_room * sizeof *steps);
+	if (steps == NULL) {
+		plat_log("script: no memory for it\r\n");
+		step_room = 0;
+		fclose(f);
+		return;
+	}
+	rewind(f);
 	while (fgets(line, sizeof line, f) != NULL) {
 		line[strcspn(line, "\r\n")] = '\0';
 		parse_line(line);
@@ -247,6 +261,12 @@ void script_pump(void)
 			snprintf(text, sizeof text, "script: speech %d\r\n", s->x);
 			plat_log(text);
 			debug_play_speech(s->x);
+			break;
+		case MEM:
+			strcpy(text, "script: mem ");
+			memory_report(text + strlen(text), sizeof text - strlen(text) - 2);
+			strcat(text, "\r\n");
+			plat_log(text);
 			break;
 		case QUIT:
 			plat_log("script: quit\r\n");

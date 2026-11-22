@@ -93,6 +93,8 @@ void input_inject_mouse(int16_t x, int16_t y, uint16_t buttons);
 uint16_t input_mouse_buttons(void);
 uint32_t script_pad(void);
 void video_shot(const char *name);
+/* for the script's mem step: what memory is left, or in use, as text */
+void memory_report(char *text, size_t size);
 #endif
 /* The keys and mouse as the game sees them (inputq.c): backends hand over PC BIOS key words,
  * the shift state, and the mouse's position and buttons. */
