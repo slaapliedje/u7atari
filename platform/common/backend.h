@@ -22,6 +22,8 @@ void timer_init(void);
 void timer_shutdown(void);
 /* Lets go of every sound lock a program left by plat_exit was holding. */
 void timer_drop_sound_lock(void);
+/* Real time since timer_init, in milliseconds, even under --lockstep (for the script's mem step). */
+uint32_t timer_real_milliseconds(void);
 /* --no-card: the TT's own video even with an ATW800/2 in the machine. */
 extern bool video_no_card;
 /* --fps: counts the frames presented; video_fps_report() writes U7FPS.TXT. */

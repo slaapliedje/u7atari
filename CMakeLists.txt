@@ -23,7 +23,8 @@ endif()
 set(U7_BACKEND_MATOYA OFF CACHE BOOL "" FORCE)
 # The game's arena: upstream gives it 32 MB, of which the game uses about 2 MB (both games,
 # measured under Hatari). 4 MB leaves room to spare and lets a 14 MB Falcon run from ST RAM.
-add_compile_definitions("LINEAR_MEMORY_SIZE=(UINT32_C(4)<<20)")
+set(U7_ARENA_KB 4096 CACHE STRING "The game's arena, in K")
+add_compile_definitions("LINEAR_MEMORY_SIZE=(UINT32_C(${U7_ARENA_KB})<<10)")
 
 if(U7_HOST)
     add_subdirectory("${U7_UPSTREAM_DIR}" game)
@@ -45,22 +46,33 @@ if(U7_HOST)
     return()
 endif()
 
+# U7_68000=ON builds for a plain 68000 (with -m68000 in the C, C++, assembler and linker flags):
+# no 68020 assembly, and GCC's strict alignment kept.
+option(U7_68000 "Build for a plain 68000" OFF)
 # The 030 reads and writes words and longs at any address, so let GCC do so: with its m68k
-# default it copies and compares anything not known to be aligned a byte at a time.
-add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-mno-strict-align>)
+# default it copies and compares anything not known to be aligned a byte at a time. A 68000
+# cannot: a word or long at an odd address is an address error, and the game's structures are
+# packed, so their members can sit at odd addresses.
+if(NOT U7_68000)
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-mno-strict-align>)
+endif()
 # No FPU code, so a Falcon without a 68882 runs the game too: the game has no floating point,
 # but GCC saves the FPU registers around setjmp. main.c replaces MiNTLib's FPU check.
 add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-msoft-float>)
 # C++ type_info at even addresses despite upstream's #pragma pack(1): see the header.
 add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:--include=${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/rtti_align.h>")
 add_subdirectory("${U7_UPSTREAM_DIR}" game)
-# Copy-mode shape spans are drawn by platform/atari/shapes.S.
-target_compile_definitions(u7_game PRIVATE U7_SHAPE_SPANS_68K)
-
+# Copy-mode shape spans are drawn by platform/atari/shapes.S, which needs a 68020; for a plain
+# 68000 the game's C draws them.
 file(GLOB U7_ATARI_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/platform/common/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/*.S")
+if(NOT U7_68000)
+    target_compile_definitions(u7_game PRIVATE U7_SHAPE_SPANS_68K)
+else()
+    list(FILTER U7_ATARI_SOURCES EXCLUDE REGEX "/shapes\\.S$")
+endif()
 add_executable(u7 ${U7_ATARI_SOURCES})
 if(U7_GAME STREQUAL "Serpent Isle")
     set(U7_PRG_NAME SERPENT)

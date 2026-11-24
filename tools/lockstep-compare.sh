@@ -7,6 +7,7 @@
 # written. The game arguments go to both, after "--lockstep --script TEST.SCR"; for the main
 # game alone use: --program u7 p (Serpent Isle: --program si p).
 # U7_SI=1 compares Serpent Isle (build-host-si/u7host and build-si-dbg/SERPENT.PRG).
+# U7_PRG names another Atari program to run (a build for a plain 68000, say).
 # U7_VBLS caps the Atari run (default 3000000); it ends sooner when the script quits.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -18,6 +19,7 @@ if [ "${U7_SI:-0}" = 1 ]; then
 else
 	host=$here/build-host/u7host prg=$here/build-dbg/ULTIMA7.PRG arg=ULTIMA7.ARG
 fi
+prg=${U7_PRG:-$prg}
 rm -rf "${out:?}/pc" "${out:?}/atari"
 mkdir -p "$out/pc" "$out/atari/U7"
 for d in "$out/pc" "$out/atari/U7"; do
@@ -36,6 +38,12 @@ tr -d '\r' < "$out/atari.log" | grep -a '^LS ' > "$out/atari.ls" || true
 status=0
 if cmp -s "$out/pc.ls" "$out/atari.ls"; then
 	echo "checksums: $(wc -l < "$out/pc.ls") lines match ($(tail -1 "$out/pc.ls"))"
+elif n=$(wc -l < "$out/atari.ls") && [ "$n" -gt 0 ] &&
+	head -n "$n" "$out/pc.ls" | cmp -s - "$out/atari.ls"; then
+	# every Atari line matched, but the run stopped before the script's end: the VBL cap
+	status=1
+	echo "checksums: the Atari stopped early, its $n lines all match ($(tail -1 "$out/atari.ls")" \
+		"of $(wc -l < "$out/pc.ls")); raise U7_VBLS (now ${U7_VBLS:-3000000})"
 else
 	status=1
 	first=$(diff "$out/pc.ls" "$out/atari.ls" | head -1)

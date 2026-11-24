@@ -199,8 +199,9 @@ static long free_st_ram(void)
  * so a fall over a soak run is the heap growing. */
 void memory_report(char *text, size_t size)
 {
-	snprintf(text, size, "free fast RAM %ld K, ST RAM %ld K", free_fast_ram() >> 10,
-		free_st_ram() >> 10);
+	snprintf(text, size, "free fast RAM %ld K, ST RAM %ld K, %lu s since the program started",
+		free_fast_ram() >> 10, free_st_ram() >> 10,
+		(unsigned long) timer_real_milliseconds() / 1000);
 }
 
 static long read_boot_drive(void)

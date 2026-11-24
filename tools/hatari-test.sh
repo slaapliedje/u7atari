@@ -8,8 +8,9 @@
 # test would play into a real synth. U7_TEST_MIDI=1 turns it back on. U7_TIMEOUT=<seconds> stops
 # Hatari itself after that long (a timeout around this script would leave it running).
 # U7_HATARI names another Hatari and U7_HATARI_ARGS adds options for it, such as the
-# hatari-et4000 fork with --vme atw800 for the ATW800/2 graphics card. A Hatari without PortMidi
-# has no --midi option, so there MIDI is off through the configuration file.
+# hatari-et4000 fork with --vme atw800 for the ATW800/2 graphics card; they come last, so they
+# can override the machine's. A Hatari without PortMidi has no --midi option, so there MIDI is
+# off through the configuration file.
 set -eu
 machine=$1 hd=$2 vbls=${3:-1500}
 shift 2; [ $# -gt 0 ] && shift
@@ -37,5 +38,5 @@ SDL_VIDEODRIVER=${SDL_VIDEODRIVER:-dummy} SDL_AUDIODRIVER=dummy \
 ${U7_TIMEOUT:+timeout "$U7_TIMEOUT"} "$hatari" -c "$cfg" --tos /usr/share/hatari/etos512us.img --addr24 off --monitor vga \
 	--drive-a off --drive-b off -d "$hd" --auto "C:\\U7\\$name" --conout 2 \
 	--fast-forward on --sound off $midi \
-	--run-vbls "$vbls" --log-level fatal ${U7_HATARI_ARGS:-} "$@" 2>&1 \
+	--run-vbls "$vbls" --log-level fatal "$@" ${U7_HATARI_ARGS:-} 2>&1 \
 	| stdbuf -o0 tr -d '\033' | grep --line-buffered -v '^\s*$' || true

@@ -59,8 +59,8 @@ void timer_sound_vector(void);          /* timerint.S */
 
 void timer_init(void)
 {
-	LOCKSTEP((void) 0);
 	start_200 = *hz_200;
+	LOCKSTEP((void) 0);
 	timers_ran_to = 0;
 	sound_ticks_run = sound_ticks_due;
 	old_timer_b = Setexc(TIMER_B_VECTOR, -1L);
@@ -137,6 +137,11 @@ uint32_t plat_ticks(void)
 {
 	LOCKSTEP_VALUE(lockstep_plat_ticks());
 	return (uint32_t) (((uint64_t) (*hz_200 - start_200) * PLAT_TICKS_PER_SECOND) / 200);
+}
+
+uint32_t timer_real_milliseconds(void)
+{
+	return (*hz_200 - start_200) * 5;
 }
 
 uint32_t plat_milliseconds(void)
