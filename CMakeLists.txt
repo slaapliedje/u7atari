@@ -25,6 +25,10 @@ set(U7_BACKEND_MATOYA OFF CACHE BOOL "" FORCE)
 # measured under Hatari). 4 MB leaves room to spare and lets a 14 MB Falcon run from ST RAM.
 set(U7_ARENA_KB 4096 CACHE STRING "The game's arena, in K")
 add_compile_definitions("LINEAR_MEMORY_SIZE=(UINT32_C(${U7_ARENA_KB})<<10)")
+set(U7_FAR_HEAP_KB 1024 CACHE STRING "The far heap, part of the arena, in K")
+add_compile_definitions("FAR_HEAP_AREA_SIZE=(INT32_C(${U7_FAR_HEAP_KB})<<10)")
+set(U7_SHAPE_POOL_KB 570 CACHE STRING "The shape cache, in Voodoo memory, in K")
+add_compile_definitions("SHAPE_POOL_SIZE=(INT32_C(${U7_SHAPE_POOL_KB})<<10)")
 
 if(U7_HOST)
     add_subdirectory("${U7_UPSTREAM_DIR}" game)
