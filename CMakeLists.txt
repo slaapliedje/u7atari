@@ -50,6 +50,69 @@ if(U7_HOST)
     return()
 endif()
 
+# The Atari Jaguar (cmake/m68k-jaguar.cmake): the game runs from cartridge ROM with
+# platform/jaguar under it; see platform/jaguar/README.md.
+if(U7_JAGUAR)
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-msoft-float>)
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:--include=${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/rtti_align.h>")
+    add_subdirectory("${U7_UPSTREAM_DIR}" game)
+    # RetroHQ's GameDrive BIOS bindings and the cartridge boot header are not in this repository
+    # (no licence; an Atari-signed stub): name copies of them.
+    set(U7_GDBIOS_DIR "$ENV{HOME}/dev/etjag/third_party/JagGD" CACHE PATH
+        "Folder with RetroHQ's gdbios_bindings.s")
+    set(U7_JAG_HEADER "$ENV{HOME}/dev/etjag/originals/jag_boot_header.bin" CACHE FILEPATH
+        "The 8 KB universal homebrew boot header")
+    set(U7_RMAC "$ENV{HOME}/dev/toolchains/jaguar-sdk/tools/bin/rmac" CACHE FILEPATH "rmac")
+    add_custom_command(OUTPUT gdbios.o
+        COMMAND "${U7_RMAC}" -fe -o gdbios.o "${U7_GDBIOS_DIR}/gdbios_bindings.s"
+        DEPENDS "${U7_GDBIOS_DIR}/gdbios_bindings.s" VERBATIM)
+    if(U7_GAME STREQUAL "Serpent Isle")
+        set(U7_PRG_NAME SERPENT)
+    else()
+        set(U7_PRG_NAME ULTIMA7)
+    endif()
+    # For now the lockstep build: the virtual clock and a test script drive the game.
+    add_executable(u7 platform/jaguar/startup.S platform/jaguar/main.c platform/jaguar/jaguar.c
+        platform/jaguar/files.c platform/jaguar/syscalls.c
+        platform/common/console.c platform/common/inputq.c platform/common/lockstep.c
+        platform/common/pad.c platform/common/script.c platform/common/gm.c
+        tests/save_test.cpp tests/speech_hook.cpp "${CMAKE_CURRENT_BINARY_DIR}/gdbios.o")
+    set_source_files_properties(tests/save_test.cpp tests/speech_hook.cpp PROPERTIES
+        INCLUDE_DIRECTORIES "$<TARGET_PROPERTY:u7_game,INCLUDE_DIRECTORIES>"
+        COMPILE_OPTIONS "$<TARGET_PROPERTY:u7_game,COMPILE_OPTIONS>;-w")
+    set_target_properties(u7 PROPERTIES OUTPUT_NAME ${U7_PRG_NAME} SUFFIX ".elf")
+    target_compile_definitions(u7 PRIVATE U7_DEBUG_LOG)
+    if(U7_GAME STREQUAL "Serpent Isle")
+        target_compile_definitions(u7 PRIVATE U7_SERPENT_ISLE)
+    endif()
+    target_include_directories(u7 PRIVATE platform/common platform/jaguar
+        "${U7_UPSTREAM_DIR}/platform" "${U7_UPSTREAM_DIR}/platform/matoya")
+    target_compile_options(u7 PRIVATE -Wall -Wextra)
+    target_link_options(u7 PRIVATE -nostartfiles
+        "-T${CMAKE_CURRENT_SOURCE_DIR}/platform/jaguar/jaguar.ld"
+        "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/${U7_PRG_NAME}.map" -Wl,--gc-sections)
+    set_target_properties(u7 PROPERTIES LINK_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/platform/jaguar/jaguar.ld")
+    target_link_libraries(u7 PRIVATE u7_game)
+    add_custom_command(TARGET u7 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E env "OBJCOPY=${CMAKE_OBJCOPY}"
+            python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/jag-rom.py" "$<TARGET_FILE:u7>"
+            "${U7_JAG_HEADER}" "${CMAKE_CURRENT_BINARY_DIR}/${U7_PRG_NAME}.rom"
+        VERBATIM)
+    # tests: platform/jaguar/gdtest.c, the GameDrive's file calls on their own
+    add_executable(jaguar_gdtest EXCLUDE_FROM_ALL platform/jaguar/startup.S
+        platform/jaguar/gdtest.c "${CMAKE_CURRENT_BINARY_DIR}/gdbios.o")
+    target_include_directories(jaguar_gdtest PRIVATE platform/jaguar)
+    target_link_options(jaguar_gdtest PRIVATE -nostartfiles
+        "-T${CMAKE_CURRENT_SOURCE_DIR}/platform/jaguar/jaguar.ld")
+    add_custom_command(TARGET jaguar_gdtest POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E env "OBJCOPY=${CMAKE_OBJCOPY}"
+            python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/jag-rom.py" "$<TARGET_FILE:jaguar_gdtest>"
+            "${U7_JAG_HEADER}" "${CMAKE_CURRENT_BINARY_DIR}/gdtest.rom"
+        VERBATIM)
+    return()
+endif()
+
 # U7_68000=ON builds for a plain 68000 (with -m68000 in the C, C++, assembler and linker flags):
 # no 68020 assembly, and GCC's strict alignment kept.
 option(U7_68000 "Build for a plain 68000" OFF)
