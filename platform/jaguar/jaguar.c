@@ -1,7 +1,6 @@
-/* The Jaguar's time, video, input and sound, for now as the PC lockstep reference's
- * (platform/host/host.c): the virtual clock and the script drive the game, so a run can be
- * compared with the PC's line for line (tools/lockstep-compare.sh). What is the Jaguar's own is
- * the screen: the game's 320x200 frame in an 8-bit bitmap object, its palette in the CLUT.
+/* The Jaguar's video and sound. The screen is the game's 320x200 frame in an 8-bit bitmap
+ * object, its palette in the CLUT. Sound is not played yet: MIDI goes nowhere (with --lockstep
+ * it is checksummed, as the PC reference's), and the game is told there is no synth.
  *
  * The object list (as jagwrestle's startup.s): two branches past the bitmap when the beam is
  * above or below the display, the bitmap, and a stop. The Object Processor changes the
@@ -42,22 +41,11 @@ extern uint32_t jag_vbl_phrase[2];
 uint32_t jag_heap_used(void);         /* syscalls.c */
 uint32_t jag_heap_size(void);
 
-/* ---- Time: always the virtual clock ---- */
-
-void timer_init(void) {}
-void timer_shutdown(void) {}
-void timer_drop_sound_lock(void) { lockstep_drop_sound_lock(); }
-uint32_t timer_real_milliseconds(void) { return jag_ticks * 1000 / 60; }
-uint32_t plat_ticks(void) { return lockstep_plat_ticks(); }
-uint32_t plat_milliseconds(void) { return lockstep_plat_milliseconds(); }
-void plat_sleep(uint32_t milliseconds) { lockstep_plat_sleep(milliseconds); }
-void plat_pump(void) { lockstep_plat_pump(); }
-void plat_yield(void) { lockstep_plat_yield(); }
-void plat_game_timer_add(plat_timer_fn fn) { lockstep_timer_add(fn); }
-void plat_game_timer_remove(plat_timer_fn fn) { lockstep_timer_remove(fn); }
-void plat_sound_tick_set(plat_timer_fn fn) { lockstep_sound_tick_set(fn); }
-void plat_sound_lock(void) { lockstep_sound_lock(); }
-void plat_sound_unlock(void) { lockstep_sound_unlock(); }
+#ifdef U7_DEBUG_LOG
+#define IF_LOCKSTEP(call) do { if (lockstep) call; } while (0)
+#else
+#define IF_LOCKSTEP(call) do { } while (0)
+#endif
 
 /* ---- Video ---- */
 
@@ -153,18 +141,52 @@ void plat_video_set_palette(int16_t first, int16_t count, const uint8_t *rgb)
 
 		clut[first + i] = (uint16_t) ((c[0] & 0x3e) << 10 | (c[2] & 0x3e) << 5 | (c[1] & 0x3f));
 	}
-	lockstep_palette(first, count, rgb);
+	IF_LOCKSTEP(lockstep_palette(first, count, rgb));
 }
+
+#ifdef U7_DEBUG_LOG
+/* frames presented, and the blank counted at the last report */
+static uint32_t presents, report_presents, report_at;
+#endif
 
 void plat_video_present(const uint8_t *pixels)
 {
 	last_pixels = pixels;
 	memcpy(screen, pixels, sizeof screen);
-	lockstep_frame(pixels, 'P');
+	IF_LOCKSTEP(lockstep_frame(pixels, 'P'));
+#ifdef U7_DEBUG_LOG
+	/* every 10 s of real time: the frame rate, to the log */
+	presents++;
+	if (!lockstep && timer_real_milliseconds() - report_at >= 10000) {
+		char text[64];
+		uint32_t now = timer_real_milliseconds();
+		uint32_t tenths = (presents - report_presents) * 10000 / (now - report_at);
+
+		snprintf(text, sizeof text, "fps %lu.%lu (%lu frames at %lu s)\r\n",
+			(unsigned long) tenths / 10, (unsigned long) tenths % 10, (unsigned long) presents,
+			(unsigned long) now / 1000);
+		plat_log(text);
+		report_presents = presents;
+		report_at = now;
+	}
+#endif
 }
 
 void plat_video_copy_frame(uint8_t *dst, const uint8_t *src) { memmove(dst, src, WIDTH * HEIGHT); }
-void plat_video_wait_retrace(void) { lockstep_wait_retrace(); }
+void plat_video_wait_retrace(void)
+{
+	uint32_t ticks;
+
+#ifdef U7_DEBUG_LOG
+	if (lockstep) {
+		lockstep_wait_retrace();
+		return;
+	}
+#endif
+	ticks = jag_ticks;
+	while (jag_ticks == ticks)
+		;
+}
 void video_refresh(void) {}
 void video_refresh_wanted(void) {}
 void video_rows_wanted(int16_t top, int16_t bottom) { (void) top; (void) bottom; }
@@ -212,14 +234,7 @@ void video_shot(const char *name)
 	fclose(f);
 }
 
-/* ---- Input: only the script's, for now ---- */
-
-void input_init(void) {}
-void input_shutdown(void) {}
-void input_reset(void) { inputq_reset(); }
-void input_pump(void) { script_pump(); pad_pump(0); }
-
-/* ---- Sound: as the PC's, only checksummed for now ---- */
+/* ---- Sound: not played yet; checksummed under --lockstep, as the PC reference's ---- */
 
 bool sound_line_in;
 bool sound_gm;
@@ -230,7 +245,7 @@ static void midi_out(const uint8_t *message, int16_t length)
 {
 	plat_sound_lock();
 	sound_midi_bytes += (uint32_t) length;
-	lockstep_midi(message, length);
+	IF_LOCKSTEP(lockstep_midi(message, length));
 	plat_sound_unlock();
 }
 
@@ -269,7 +284,15 @@ void sound_reset(void)
 }
 
 void sound_service(void) {}
-int16_t plat_midi_available(void) { return 1; }
+/* As the PC reference under --lockstep; else no synth, until the DSP plays the music. */
+int16_t plat_midi_available(void)
+{
+#ifdef U7_DEBUG_LOG
+	return lockstep;
+#else
+	return 0;
+#endif
+}
 
 void plat_midi_send(const uint8_t *message, int16_t length)
 {
@@ -292,12 +315,30 @@ void plat_pcm_start(uint32_t rate)
 
 	snprintf(text, sizeof text, "pcm start %lu Hz\r\n", (unsigned long) rate);
 	plat_log(text);
-	lockstep_pcm_start(rate);
+	IF_LOCKSTEP(lockstep_pcm_start(rate));
 }
 
-int32_t plat_pcm_queue(const uint8_t *samples, int32_t count) { return lockstep_pcm_queue(samples, count); }
-int32_t plat_pcm_pending(void) { return lockstep_pcm_pending(); }
-void plat_pcm_stop(void) { lockstep_pcm_stop(); }
+/* Speech: taken and dropped at once, when not checksummed. */
+int32_t plat_pcm_queue(const uint8_t *samples, int32_t count)
+{
+#ifdef U7_DEBUG_LOG
+	if (lockstep)
+		return lockstep_pcm_queue(samples, count);
+#endif
+	(void) samples;
+	return count;
+}
+
+int32_t plat_pcm_pending(void)
+{
+#ifdef U7_DEBUG_LOG
+	if (lockstep)
+		return lockstep_pcm_pending();
+#endif
+	return 0;
+}
+
+void plat_pcm_stop(void) { IF_LOCKSTEP(lockstep_pcm_stop()); }
 
 void memory_report(char *text, size_t size)
 {

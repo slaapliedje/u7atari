@@ -4,7 +4,8 @@
  * The card holds the game in U7 (SI for Serpent Isle): STATIC, an empty GAMEDAT, and
  * ULTIMA7.ARG (SERPENT.ARG), one line of arguments as the Atari's: --script <file> plays a
  * test script (TEST.SCR), --program <name> runs that program instead of the menu, and the rest
- * go to the game. The log (every plat_log line, the lockstep checksums among them) goes out
+ * go to the game; --lockstep runs it on the PC reference's virtual clock, for comparing a run
+ * with the PC's (else it runs in real time, played with joypad 1). The log (every plat_log line, the lockstep checksums among them) goes out
  * through GD_DebugString: the drive's USB serial port, or the libretro Virtual Jaguar's stderr. */
 #include <setjmp.h>
 #include <stdio.h>
@@ -54,7 +55,8 @@ static void end_process(int code)
 
 	snprintf(text, sizeof text, "exit %d\r\n", code);
 	plat_log(text);
-	lockstep_end();
+	if (lockstep)
+		lockstep_end();
 	shutdown_all();
 	halt();
 }
@@ -198,6 +200,7 @@ void jag_main(void)
 {
 	static char *argv[MAX_ARGS];
 	const char *program_name = NULL, *script_path = NULL;
+	bool use_lockstep = false;
 	char problem[160];
 	int argc, kept = 1;
 	int16_t code;
@@ -216,7 +219,9 @@ void jag_main(void)
 			script_path = argv[++i];
 		else if (strcmp(argv[i], "--gm") == 0)
 			sound_gm = true;
-		else if (strcmp(argv[i], "--lockstep") == 0 || strcmp(argv[i], "--natfeats") == 0)
+		else if (strcmp(argv[i], "--lockstep") == 0)
+			use_lockstep = true;
+		else if (strcmp(argv[i], "--natfeats") == 0)
 			;
 		else
 			argv[kept++] = argv[i];
@@ -225,7 +230,8 @@ void jag_main(void)
 	argv[argc] = NULL;
 	argv[0] = self_name;
 
-	lockstep_start();
+	if (use_lockstep)
+		lockstep_start();
 	machine_taken = true;
 	timer_init();
 	video_init();

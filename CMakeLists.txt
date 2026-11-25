@@ -71,8 +71,9 @@ if(U7_JAGUAR)
     else()
         set(U7_PRG_NAME ULTIMA7)
     endif()
-    # For now the lockstep build: the virtual clock and a test script drive the game.
+    # With U7_DEBUG_LOG (for now always): --lockstep and --script, for tests.
     add_executable(u7 platform/jaguar/startup.S platform/jaguar/main.c platform/jaguar/jaguar.c
+        platform/jaguar/timer.c platform/jaguar/input.c
         platform/jaguar/files.c platform/jaguar/syscalls.c
         platform/common/console.c platform/common/inputq.c platform/common/lockstep.c
         platform/common/pad.c platform/common/script.c platform/common/gm.c
