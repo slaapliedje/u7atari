@@ -18,7 +18,7 @@ rows = int(sys.argv[4]) if len(sys.argv) > 4 else 30
 symbols = []
 for line in open(nm_file):
     parts = line.split()
-    if len(parts) == 3 and parts[1] in 'Tt' and not parts[2].startswith('.L') \
+    if len(parts) == 3 and parts[1] in 'TtWw' and not parts[2].startswith('.L') \
             and not parts[2].endswith(('.o', '.obj')):
         symbols.append((int(parts[0], 16) + base, parts[2]))
 symbols.sort()
