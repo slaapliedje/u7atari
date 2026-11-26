@@ -36,6 +36,9 @@ if(U7_HOST)
         "${CMAKE_CURRENT_SOURCE_DIR}/platform/common/*.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/platform/host/*.c")
     add_executable(u7host ${U7_HOST_SOURCES} tests/save_test.cpp tests/speech_hook.cpp)
+    # The engine test on the PC (engine/README.md): views of the world as pictures.
+    add_executable(u7engine EXCLUDE_FROM_ALL engine/core/engine.c engine/host/main.c)
+    target_include_directories(u7engine PRIVATE engine/core)
     if(U7_GAME STREQUAL "Serpent Isle")
         target_compile_definitions(u7host PRIVATE U7_SERPENT_ISLE)
     endif()
@@ -142,6 +145,24 @@ if(U7_JAGUAR)
         COMMAND ${CMAKE_COMMAND} -E env "OBJCOPY=${CMAKE_OBJCOPY}"
             python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/jag-rom.py" "$<TARGET_FILE:jaguar_gdtest>"
             "${U7_JAG_HEADER}" "${CMAKE_CURRENT_BINARY_DIR}/gdtest.rom"
+        VERBATIM)
+    # The engine test (engine/README.md): U7ENGINE.rom, the world view drawn Jaguar-first.
+    add_custom_command(OUTPUT tiles_gpu.o
+        COMMAND "${U7_RMAC}" -fe -o tiles_gpu.o "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/tiles_gpu.s"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/tiles_gpu.s" VERBATIM)
+    add_executable(u7engine_jag EXCLUDE_FROM_ALL platform/jaguar/startup.S engine/jaguar/main.c
+        "${CMAKE_CURRENT_BINARY_DIR}/tiles_gpu.o"
+        engine/jaguar/stubs.c engine/core/engine.c platform/jaguar/spans.c
+        "${CMAKE_CURRENT_BINARY_DIR}/spans_gpu.o"
+        "${CMAKE_CURRENT_BINARY_DIR}/gdbios.o")
+    target_include_directories(u7engine_jag PRIVATE engine/core platform/jaguar)
+    target_compile_options(u7engine_jag PRIVATE $<$<COMPILE_LANGUAGE:C>:-O2 -g -Wall -Wextra>)
+    target_link_options(u7engine_jag PRIVATE -nostartfiles
+        "-T${CMAKE_CURRENT_SOURCE_DIR}/platform/jaguar/jaguar.ld")
+    add_custom_command(TARGET u7engine_jag POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E env "OBJCOPY=${CMAKE_OBJCOPY}"
+            python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/jag-rom.py" "$<TARGET_FILE:u7engine_jag>"
+            "${U7_JAG_HEADER}" "${CMAKE_CURRENT_BINARY_DIR}/U7ENGINE.rom"
         VERBATIM)
     return()
 endif()
