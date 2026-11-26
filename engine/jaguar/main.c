@@ -1,6 +1,6 @@
 /* The engine test on the Jaguar (engine/README.md): the world view from the U7 data on the
  * GameDrive's SD card (U7/STATIC, U7/GAMEDAT), drawn double-buffered in an 8-bit bitmap object:
- * terrain by the blitter, shapes by the GPU (platform/jaguar/spans_gpu.s, asynchronously).
+ * terrain and shapes by the GPU (tiles_gpu.s, shapes_gpu.s), while the 68000 goes on.
  *
  * The pad scrolls the view a cell at a time; untouched, it walks a fixed tour so emulator runs
  * measure the same thing. Every 64 frames the frame rate goes to GD_DebugString.
@@ -12,17 +12,20 @@
 #include "engine.h"
 #include "gd.h"
 
-void shape_spans_draw(const uint8_t *source, int32_t x, int32_t y, const int16_t clip[4],
-	const uint8_t *rowTable, uint8_t *linearBase, int32_t mode, int32_t flipped,
-	const uint8_t *table);
-void shape_spans_finish(void);
-void shape_spans_async(int on);
-extern volatile int spans_busy;
-extern const uint8_t gpu_tiles[], gpu_tiles_end[];
+extern const uint8_t gpu_tiles[], gpu_tiles_end[], gpu_shapes[], gpu_shapes_end[];
+extern const uint8_t gpu_convert[], gpu_convert_end[];
+#define G_FLAGS (*(volatile uint32_t *) 0xF02100)
 #define G_PC (*(volatile uint32_t *) 0xF02110)
 #define G_CTRL (*(volatile uint32_t *) 0xF02114)
 #define TILE_PARAMS ((volatile uint32_t *) 0xF03E00)
 #define TILE_CODE ((volatile uint32_t *) 0xF03400)
+#define SHAPE_PARAMS ((volatile uint32_t *) 0xF03F80)
+#define SHAPE_CODE ((volatile uint32_t *) 0xF03000)
+#define CONVERT_PARAMS ((volatile uint32_t *) 0xF03F00)
+#define CONVERT_CODE ((volatile uint32_t *) 0xF03500)
+#define GPUGO 1
+
+static void gpu_finish(void);
 
 #define REG16(a) (*(volatile uint16_t *) (a))
 #define REG32(a) (*(volatile uint32_t *) (a))
@@ -124,7 +127,7 @@ void plat_file_close(int16_t f)
 
 int32_t plat_file_read(int16_t f, void *buffer, int32_t count)
 {
-	shape_spans_finish();
+	gpu_finish();
 	if ((int16_t) GD_FRead(files[f].gd, buffer, (uint32_t) count, GD_FREAD_CPU) < 0)
 		return -1;
 	return count;
@@ -185,7 +188,7 @@ void eb_copy(struct ESurface *dst, int16_t dx, int16_t dy, const struct ESurface
 {
 	if (w <= 0 || h <= 0)
 		return;
-	shape_spans_finish();
+	gpu_finish();
 	blit_wait();
 	BREG(A1_BASE) = (uint32_t) dst->pixels;
 	BREG(A1_FLAGS) = PIXEL8 | width_code(dst->pitch) | XADDPHR;
@@ -201,31 +204,127 @@ void eb_copy(struct ESurface *dst, int16_t dx, int16_t dy, const struct ESurface
 	blit_wait();
 }
 
-void eb_shape(struct ESurface *dst, const int16_t clip[4], const uint8_t *spans, int16_t x,
-	int16_t y, uint8_t flipped)
+/* ---- the GPU: shapes_gpu.s and tiles_gpu.s, each run while the 68000 goes on ----
+ *
+ * Shapes are put in a list. The GPU is started on the list whenever it is idle, and the next is
+ * filled meanwhile; anything that touches what it draws or reads waits for it all (gpu_finish). */
+
+#define LIST_ENTRIES 128
+struct GpuShape {
+	const uint32_t *runs;
+	uint8_t *pixels;
+	int32_t along, across, along_min, across_min, along_max, across_max, along_step, across_step;
+};
+/* the GPU loads longs: aligned past the 2 bytes the 68000's compiler gives */
+static struct GpuShape lists[2][LIST_ENTRIES] __attribute__((aligned(8)));
+static int filling, queued, gpu_busy;
+/* rows of this many pixels or more go to the blitter */
+static uint32_t blit_shortest = 16;
+
+static int gpu_loaded;
+
+static void gpu_load(void)
 {
-	shape_spans_draw(spans, x, y, clip, dst->rows, dst->pixels, 0, flipped, NULL);
+	if (gpu_loaded)
+		return;
+	G_CTRL = 0;
+	G_FLAGS = 0;                    /* no interrupts, register bank 0 */
+	for (uint32_t i = 0; i < (uint32_t) (gpu_shapes_end - gpu_shapes + 3) / 4; i++)
+		SHAPE_CODE[i] = ((const uint32_t *) gpu_shapes)[i];
+	for (uint32_t i = 0; i < (uint32_t) (gpu_tiles_end - gpu_tiles + 3) / 4; i++)
+		TILE_CODE[i] = ((const uint32_t *) gpu_tiles)[i];
+	for (uint32_t i = 0; i < (uint32_t) (gpu_convert_end - gpu_convert + 3) / 4; i++)
+		CONVERT_CODE[i] = ((const uint32_t *) gpu_convert)[i];
+	gpu_loaded = 1;
 }
 
-/* Terrain on the GPU (tiles_gpu.s): its code beside the span drawer's, loaded once; it runs while
- * the 68000 goes on, as a shape would (spans.c's busy flag, waited on before the next). */
+static void gpu_wait(void)
+{
+	if (gpu_busy) {
+		while (G_CTRL & GPUGO)
+			;
+		gpu_busy = 0;
+	}
+}
+
+static void gpu_start(uint32_t pc)
+{
+	G_PC = pc;
+	G_CTRL = GPUGO;
+	gpu_busy = 1;
+}
+
+/* The list filled so far handed to the GPU, once it is done with what it has. */
+static void gpu_flush(void)
+{
+	if (queued == 0)
+		return;
+	gpu_wait();
+	SHAPE_PARAMS[0] = (uint32_t) lists[filling];
+	SHAPE_PARAMS[1] = (uint32_t) queued;
+	SHAPE_PARAMS[2] = blit_shortest;
+	gpu_start(0xF03000);
+	filling ^= 1;
+	queued = 0;
+}
+
+static void gpu_finish(void)
+{
+	gpu_flush();
+	gpu_wait();
+}
+
+void eb_shape(struct ESurface *dst, const int16_t clip[4], const uint32_t *runs, int16_t x,
+	int16_t y, uint8_t flipped)
+{
+	struct GpuShape *g;
+
+#ifdef ENGINE_NO_FRAME_SHAPES
+	if (dst->pitch == W)
+		return;
+#endif
+	gpu_load();
+	if (queued == LIST_ENTRIES)
+		gpu_flush();
+	g = &lists[filling][queued++];
+	g->runs = runs;
+	g->pixels = dst->pixels;
+	if (!flipped) {
+		g->along = x;
+		g->across = y;
+		g->along_min = clip[0];
+		g->across_min = clip[1];
+		g->along_max = clip[2];
+		g->across_max = clip[3];
+		g->along_step = 1;
+		g->across_step = dst->pitch;
+	} else {
+		g->along = y;
+		g->across = x;
+		g->along_min = clip[1];
+		g->across_min = clip[0];
+		g->along_max = clip[3];
+		g->across_max = clip[2];
+		g->along_step = dst->pitch;
+		g->across_step = 1;
+	}
+	if (!gpu_busy || !(G_CTRL & GPUGO))
+		gpu_flush();
+#ifdef ENGINE_SHAPES_WAIT
+	gpu_finish();
+#endif
+}
+
+/* Terrain (tiles_gpu.s): after the shapes asked for before it. */
 static const uint8_t black_tile[64] __attribute__((aligned(8)));
 
 void eb_tiles(struct ESurface *dst, const struct EFlat flats[E_FLAT_TYPES],
 	const struct ETileChunk *chunks, int n)
 {
-	static int loaded;
-
 	if (n <= 0)
 		return;
-	shape_spans_finish();
-	if (!loaded) {
-		const uint32_t *code = (const uint32_t *) gpu_tiles;
-		uint32_t words = (uint32_t) (gpu_tiles_end - gpu_tiles + 3) / 4;
-		for (uint32_t i = 0; i < words; i++)
-			TILE_CODE[i] = code[i];
-		loaded = 1;
-	}
+	gpu_load();
+	gpu_finish();
 	TILE_PARAMS[0] = (uint32_t) flats;
 	TILE_PARAMS[1] = dst->pitch;
 	TILE_PARAMS[2] = (uint32_t) n;
@@ -236,14 +335,57 @@ void eb_tiles(struct ESurface *dst, const struct EFlat flats[E_FLAT_TYPES],
 		TILE_PARAMS[6 + c * 4] = chunks[c].across;
 		TILE_PARAMS[7 + c * 4] = chunks[c].down;
 	}
-	G_PC = 0xF03400;
-	G_CTRL = 1;
-	spans_busy = 1;
+	gpu_start(0xF03400);
 }
 
 void eb_finish(void)
 {
-	shape_spans_finish();
+	gpu_finish();
+}
+
+/* A shape converted by the GPU (convert_gpu.s), waited for: what is drawn next may use it. Built
+ * with ENGINE_CHECK_CONVERT, the core's C does each again and a difference is logged. */
+uint32_t eb_convert(const uint8_t *raw, uint32_t size, uint8_t *out, uint32_t room)
+{
+	static uint32_t dummy[2] __attribute__((aligned(8)));
+	uint32_t made;
+
+	gpu_load();
+	gpu_finish();
+	CONVERT_PARAMS[0] = (uint32_t) raw;
+	CONVERT_PARAMS[1] = (uint32_t) (out != NULL ? out : (uint8_t *) dummy);
+	CONVERT_PARAMS[2] = out != NULL ? 0xFFFFFFFFUL : 0;
+	CONVERT_PARAMS[3] = 0;
+	/* (measuring, the offsets are masked to 0: never past it) */
+	CONVERT_PARAMS[4] = out != NULL && room > E_CONVERT_SLACK ? room - E_CONVERT_SLACK : 0;
+	gpu_start(0xF03500);
+	gpu_wait();
+	made = CONVERT_PARAMS[3];
+#ifdef ENGINE_CHECK_CONVERT
+	static int checked, differ;
+	if (out != NULL && checked < 24) {
+		uint32_t gpu_sum = 0, c_sum = 0, again;
+		char text[96];
+		for (uint32_t i = 0; out != NULL && i < made; i++)
+			gpu_sum = gpu_sum * 31 + out[i];
+		again = e_convert_shape(raw, size, out, room);
+		for (uint32_t i = 0; out != NULL && i < again; i++)
+			c_sum = c_sum * 31 + out[i];
+		if (again != made || gpu_sum != c_sum) {
+			snprintf(text, sizeof text, "convert differs: size %lu gpu %lu c %lu\n",
+				(unsigned long) size, (unsigned long) made, (unsigned long) again);
+			GD_DebugString(text);
+			differ++;
+		}
+		if (++checked == 24) {
+			snprintf(text, sizeof text, "convert check: %d of 24 differ\n", differ);
+			GD_DebugString(text);
+		}
+	}
+#else
+	(void) size;
+#endif
+	return made;
 }
 
 uint32_t eb_clock(void)
@@ -326,6 +468,66 @@ static uint32_t pad(void)
 	return ~(JOY_READ >> 4) & 0x00F00000UL;
 }
 
+
+#ifdef ENGINE_BENCH_SHAPES
+/* Timings logged at the start: the walker's shape (721) converted, and a frame of it drawn 200
+ * times, waiting each time, with the blitter given rows from various lengths. */
+static uint8_t bench_raw[65536] __attribute__((aligned(8)));
+
+static void bench_shapes(void)
+{
+	static const int16_t clip[4] = { 0, 0, W - 1, H - 1 };
+	static const uint32_t shortest[] = { 8, 16, 24, 32, 1000 };
+	uint8_t entry[8];
+	char text[160];
+	int16_t f = plat_file_open("U7/STATIC/SHAPES.VGA", PLAT_FILE_READ);
+	uint32_t at, size, t0, t[2], made = 0, tm, tw;
+	const uint32_t *runs = e_frame_runs(721, 0);
+	uint8_t *out;
+
+	plat_file_seek(f, 0x80 + 721 * 8, PLAT_SEEK_SET);
+	plat_file_read(f, entry, 8);
+	at = entry[0] | entry[1] << 8 | (uint32_t) entry[2] << 16 | (uint32_t) entry[3] << 24;
+	size = entry[4] | entry[5] << 8 | (uint32_t) entry[6] << 16;
+	if (runs == NULL || size > sizeof bench_raw / 2) {
+		plat_file_close(f);
+		return;
+	}
+	plat_file_seek(f, (int32_t) at, PLAT_SEEK_SET);
+	plat_file_read(f, bench_raw, (int32_t) size);
+	plat_file_close(f);
+	out = bench_raw + ((size + 15) & ~15u);
+	t0 = jag_ticks;
+	for (int i = 0; i < 4; i++)
+		made = eb_convert(bench_raw, size, NULL, 0);
+	tm = jag_ticks - t0;
+	t0 = jag_ticks;
+	for (int i = 0; i < 4; i++)
+		eb_convert(bench_raw, size, out, (uint32_t) (bench_raw + sizeof bench_raw - out));
+	tw = jag_ticks - t0;
+	snprintf(text, sizeof text, "bench: shape 721, %lu bytes to %lu; blanks for 4: measured %lu, "
+		"written %lu\n", (unsigned long) size, (unsigned long) made, (unsigned long) tm,
+		(unsigned long) tw);
+	GD_DebugString(text);
+	for (int k = 0; k < 5; k++) {
+		blit_shortest = shortest[k];
+		for (int flip = 0; flip < 2; flip++) {
+			t0 = jag_ticks;
+			for (int i = 0; i < 200; i++) {
+				eb_shape(&surfaces[0], clip, runs, (int16_t) (60 + i % 200), 100,
+					(uint8_t) flip);
+				gpu_finish();
+			}
+			t[flip] = jag_ticks - t0;
+		}
+		snprintf(text, sizeof text, "bench: 200 walkers, blitted from %lu: %lu blanks, flipped "
+			"%lu\n", (unsigned long) shortest[k], (unsigned long) t[0], (unsigned long) t[1]);
+		GD_DebugString(text);
+	}
+	blit_shortest = 16;
+}
+#endif
+
 /* ---- the test ---- */
 
 static uint32_t rng = 12345;
@@ -357,13 +559,15 @@ void jag_main(void)
 			;
 	}
 	set_palette(e_palette());
+#ifdef ENGINE_BENCH_SHAPES
+	bench_shapes();
+#endif
 	for (int m = 0; m < nm; m++) {
 		walker[m].x = (int16_t) (x + 4 + rnd(32));
 		walker[m].y = (int16_t) (y + 4 + rnd(20));
 		walker[m].dir = rnd(4);
 		e_mover_add(721, walker[m].x, walker[m].y, 0);
 	}
-	shape_spans_async(1);
 	jag_prof_mask = 1;
 	jag_prof_end = profile + sizeof profile;
 	jag_prof_next = profile;

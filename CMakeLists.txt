@@ -37,8 +37,13 @@ if(U7_HOST)
         "${CMAKE_CURRENT_SOURCE_DIR}/platform/host/*.c")
     add_executable(u7host ${U7_HOST_SOURCES} tests/save_test.cpp tests/speech_hook.cpp)
     # The engine test on the PC (engine/README.md): views of the world as pictures.
-    add_executable(u7engine EXCLUDE_FROM_ALL engine/core/engine.c engine/host/main.c)
+    add_executable(u7engine EXCLUDE_FROM_ALL engine/core/engine.c engine/core/shapes.c
+        engine/host/main.c)
     target_include_directories(u7engine PRIVATE engine/core)
+    # Its dataset: the shapes converted once, for the Jaguar (U7/ENGINE/SHAPES.FLX).
+    add_executable(u7jagdata EXCLUDE_FROM_ALL engine/tools/jagdata.c engine/core/shapes.c)
+    target_include_directories(u7jagdata PRIVATE engine/core)
+    target_compile_options(u7jagdata PRIVATE -O2 -Wall -Wextra)
     if(U7_GAME STREQUAL "Serpent Isle")
         target_compile_definitions(u7host PRIVATE U7_SERPENT_ISLE)
     endif()
@@ -150,10 +155,16 @@ if(U7_JAGUAR)
     add_custom_command(OUTPUT tiles_gpu.o
         COMMAND "${U7_RMAC}" -fe -o tiles_gpu.o "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/tiles_gpu.s"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/tiles_gpu.s" VERBATIM)
+    add_custom_command(OUTPUT shapes_gpu.o
+        COMMAND "${U7_RMAC}" -fe -o shapes_gpu.o "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/shapes_gpu.s"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/shapes_gpu.s" VERBATIM)
+    add_custom_command(OUTPUT convert_gpu.o
+        COMMAND "${U7_RMAC}" -fe -o convert_gpu.o "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/convert_gpu.s"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/convert_gpu.s" VERBATIM)
     add_executable(u7engine_jag EXCLUDE_FROM_ALL platform/jaguar/startup.S engine/jaguar/main.c
-        "${CMAKE_CURRENT_BINARY_DIR}/tiles_gpu.o"
-        engine/jaguar/stubs.c engine/core/engine.c platform/jaguar/spans.c
-        "${CMAKE_CURRENT_BINARY_DIR}/spans_gpu.o"
+        "${CMAKE_CURRENT_BINARY_DIR}/tiles_gpu.o" "${CMAKE_CURRENT_BINARY_DIR}/shapes_gpu.o"
+        "${CMAKE_CURRENT_BINARY_DIR}/convert_gpu.o"
+        engine/jaguar/stubs.c engine/core/engine.c engine/core/shapes.c
         "${CMAKE_CURRENT_BINARY_DIR}/gdbios.o")
     target_include_directories(u7engine_jag PRIVATE engine/core platform/jaguar)
     target_compile_options(u7engine_jag PRIVATE $<$<COMPILE_LANGUAGE:C>:-O2 -g -Wall -Wextra>)

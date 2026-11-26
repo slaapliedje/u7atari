@@ -102,37 +102,27 @@ static inline void put(int x, int y, uint8_t c)
 		target->pixels[y * target->pitch + x] = c;
 }
 
-/* The original's spans: a word of length * 2 (+1 run-encoded; 0 ends), the offsets along and
- * across from the hot spot, then raw pixels or runs (count * 2, +1 for a fill of the byte after
- * it). Flipped, a span runs down the screen: along is y. */
-void eb_shape(struct ESurface *dst, const int16_t clip[4], const uint8_t *s, int16_t x,
+/* The engine's runs (engine.h): each a header long, then a fill's pixel or the raw pixels.
+ * Flipped, a run goes down the screen: along is y. */
+void eb_shape(struct ESurface *dst, const int16_t clip[4], const uint32_t *runs, int16_t x,
 	int16_t y, uint8_t flipped)
 {
 	target = dst;
 	bounds = clip;
-	for (;;) {
-		int head = s[0] | s[1] << 8, len = head >> 1;
-		if (head == 0)
-			return;
-		int along = (int16_t) (s[2] | s[3] << 8), across = (int16_t) (s[4] | s[5] << 8);
-		s += 6;
+	for (uint32_t h; (h = *runs++) != 0;) {
+		int across = E_RUN_ACROSS(h), along = E_RUN_ALONG(h), len = (int) E_RUN_LENGTH(h);
+		const uint8_t *px = (const uint8_t *) runs;
 		int ax = flipped ? x + across : x + along, ay = flipped ? y + along : y + across;
 		int sx = flipped ? 0 : 1, sy = flipped ? 1 : 0;
-		if (!(head & 1)) {
-			for (int i = 0; i < len; i++)
-				put(ax + i * sx, ay + i * sy, s[i]);
-			s += len;
-		} else {
-			for (int pos = 0; pos < len;) {
-				int c = s[0] >> 1, fill = s[0] & 1;
-				s++;
-				for (int i = 0; i < c; i++)
-					put(ax + (pos + i) * sx, ay + (pos + i) * sy, fill ? s[0] : s[i]);
-				s += fill ? 1 : c;
-				pos += c;
-			}
-		}
+		for (int i = 0; i < len; i++)
+			put(ax + i * sx, ay + i * sy, h & E_RUN_FILL ? px[0] : px[i]);
+		runs += h & E_RUN_FILL ? 1 : (len + 3) / 4;
 	}
+}
+
+uint32_t eb_convert(const uint8_t *raw, uint32_t size, uint8_t *out, uint32_t room)
+{
+	return e_convert_shape(raw, size, out, room);
 }
 
 void eb_finish(void)
@@ -212,9 +202,9 @@ int main(int argc, char **argv)
 		static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
 		memset(screen, 0, sizeof screen);
 		for (int fr = 0; fr < 32; fr++) {
-			const uint8_t *spans = e_frame_spans((uint16_t) sheet, (uint16_t) fr);
-			if (spans != NULL)
-				eb_shape(&frame, whole, spans, (int16_t) (fr % 8 * 40 + 32),
+			const uint32_t *runs = e_frame_runs((uint16_t) sheet, (uint16_t) fr);
+			if (runs != NULL)
+				eb_shape(&frame, whole, runs, (int16_t) (fr % 8 * 40 + 32),
 					(int16_t) (fr / 8 * 50 + 44), 0);
 		}
 		save("sheet.ppm");

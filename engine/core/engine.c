@@ -132,19 +132,17 @@ static void evict_oldest(void)
 	queue_count--;
 }
 
-/* A shape's bytes, read in if need be; NULL when it has none or cannot fit. On a backend that
- * draws as the CPU goes on, reading in waits for the drawing first (its plat_file_read): a shape
- * given way to may still be being drawn from. */
-static const uint8_t *shape(uint16_t type)
-{
-	uint32_t at, size;
+/* ---- converting a shape's frames to the engine's runs (engine.h) ---- */
 
-	if (type >= shapes.count || shape_at[type] != NULL)
-		return type < shapes.count ? shape_at[type] : NULL;
-	at = shapes.table[type * 2];
-	size = (shapes.table[type * 2 + 1] + 7) & ~(uint32_t) 7;
-	if (size == 0 || size > (uint32_t) (pool_end - pool_pinned))
-		return NULL;
+static uint8_t converted;           /* shapes is the dataset's: object shapes made already */
+static uint8_t *raw_shape;          /* an object shape as read, before it is converted */
+static uint32_t raw_shape_size;
+/* A shape, read in if need be: a flat's frames as they are, an object's converted; NULL when it
+ * has none or cannot fit. On a backend that draws as the CPU goes on, reading in waits for the
+ * drawing first (its plat_file_read): a shape given way to may still be being drawn from. */
+/* Room at pool_next for size bytes: the oldest shapes in the way give way. */
+static void make_room(uint32_t size)
+{
 	if ((uint32_t) (pool_end - pool_next) < size) {
 		/* past the end: the oldest there give way, and on from the start */
 		while (queue_count > 0 && queue[queue_head].start >= pool_next)
@@ -156,8 +154,60 @@ static const uint8_t *shape(uint16_t type)
 		evict_oldest();
 	if (queue_count == SHAPE_QUEUE)
 		evict_oldest();
-	if (!read_at(shapes.f, at, pool_next, shapes.table[type * 2 + 1]))
+}
+
+static const uint8_t *shape(uint16_t type)
+{
+	uint32_t at, raw, size;
+
+	if (type >= shapes.count || shape_at[type] != NULL)
+		return type < shapes.count ? shape_at[type] : NULL;
+	at = shapes.table[type * 2];
+	raw = shapes.table[type * 2 + 1];
+	if (raw == 0)
 		return NULL;
+	if (type >= TILE_TYPES && converted) {
+		/* the dataset's: read as it is */
+		size = (raw + 7) & ~(uint32_t) 7;
+		if (size > (uint32_t) (pool_end - pool_pinned))
+			return NULL;
+		make_room(size);
+		if (!read_at(shapes.f, at, pool_next, raw)
+			|| (e_little_endian() && !e_swap_shape(pool_next, raw, 1))
+			|| *(const uint32_t *) pool_next != raw)
+			return NULL;
+	} else if (type >= TILE_TYPES) {
+		if (raw > raw_shape_size || raw < 8 || !read_at(shapes.f, at, raw_shape, raw))
+			return NULL;
+		uint32_t first = rd32(raw_shape + 4);
+		if (rd32(raw_shape) != raw || first < 8 || first > raw || (first & 3))
+			return NULL;
+		/* made in one go where it goes, room made for more than any real shape needs (1.94
+		 * times the original's at most); else measured first */
+		uint32_t bound = (raw * 2 + 2 * E_CONVERT_SLACK + 7) & ~(uint32_t) 7;
+		size = 0;
+		if (bound <= (uint32_t) (pool_end - pool_pinned)) {
+			make_room(bound);
+			size = eb_convert(raw_shape, raw, pool_next, bound);
+		}
+		if (size == 0) {
+			if ((size = eb_convert(raw_shape, raw, NULL, 0)) == 0)
+				return NULL;
+			size = (size + 7) & ~(uint32_t) 7;
+			if (size > (uint32_t) (pool_end - pool_pinned))
+				return NULL;
+			make_room(size);
+			eb_convert(raw_shape, raw, pool_next, size + E_CONVERT_SLACK);
+		}
+		size = (size + 7) & ~(uint32_t) 7;
+	} else {
+		size = (raw + 7) & ~(uint32_t) 7;
+		if (size > (uint32_t) (pool_end - pool_pinned))
+			return NULL;
+		make_room(size);
+		if (!read_at(shapes.f, at, pool_next, raw))
+			return NULL;
+	}
 	shape_at[type] = pool_next;
 	queue[(queue_head + queue_count) % SHAPE_QUEUE].type = type;
 	queue[(queue_head + queue_count) % SHAPE_QUEUE].start = pool_next;
@@ -168,18 +218,16 @@ static const uint8_t *shape(uint16_t type)
 	return shape_at[type];
 }
 
-/* An object shape's frame header: xright, xleft, yabove, ybelow; its first span after it. */
-static const uint8_t *frame_of(uint16_t type, uint16_t frame)
+/* An object shape's frame: its box (int16 right, left, above, below), its first run after it. */
+static const int16_t *frame_of(uint16_t type, uint16_t frame)
 {
-	const uint8_t *s = shape(type);
-	uint32_t first;
+	const uint32_t *s = (const uint32_t *) shape(type);
 
-	if (s == NULL)
+	if (s == NULL || type < TILE_TYPES)
 		return NULL;
-	first = rd32(s + 4);
-	if ((frame + 1) * 4u >= first)
+	if ((frame + 1) * 4u >= s[1])
 		return NULL;
-	return s + rd32(s + 4 + frame * 4u);
+	return (const int16_t *) ((const uint8_t *) s + s[1 + frame]);
 }
 
 /* ---- regions: the fixed (U7IFIX) and movable (U7IREG) items of a region, per chunk ---- */
@@ -387,15 +435,15 @@ static struct Chunk *chunk(int cx, int cy)
  * shape or frame is missing. */
 static int picture_rect(uint16_t tf, int x, int y, int z, int16_t r[4])
 {
-	const uint8_t *f = frame_of(tf & 0x3ff, (tf >> 10) & 31);
+	const int16_t *f = frame_of(tf & 0x3ff, (tf >> 10) & 31);
 	int16_t right, left, above, below, px, py;
 
 	if (f == NULL)
 		return 0;
-	right = rds16(f);
-	left = rds16(f + 2);
-	above = rds16(f + 4);
-	below = rds16(f + 6);
+	right = f[0];
+	left = f[1];
+	above = f[2];
+	below = f[3];
 	if (tf & 0x8000) {
 		int16_t t = left; left = above; above = t;
 		t = right; right = below; below = t;
@@ -417,16 +465,16 @@ static uint8_t *shape_boxed;
 static const int16_t *box_of(uint16_t type)
 {
 	if (!shape_boxed[type]) {
-		const uint8_t *s = shape(type);
+		const uint32_t *s = (const uint32_t *) shape(type);
 		int16_t *b = shape_box[type];
 		b[0] = b[1] = b[2] = b[3] = 0;
-		if (s != NULL) {
-			uint32_t frames = (rd32(s + 4) - 4) / 4;
+		if (s != NULL && type >= TILE_TYPES) {
+			uint32_t frames = (s[1] - 4) / 4;
 			for (uint32_t f = 0; f < frames; f++) {
-				const uint8_t *h = s + rd32(s + 4 + f * 4);
+				const int16_t *h = (const int16_t *) ((const uint8_t *) s + s[1 + f]);
 				for (int i = 0; i < 4; i++)
-					if (rds16(h + i * 2) > b[i])
-						b[i] = rds16(h + i * 2);
+					if (h[i] > b[i])
+						b[i] = h[i];
 			}
 		}
 		shape_boxed[type] = 1;
@@ -514,6 +562,16 @@ static int chunk_find(const struct Chunk *k, const int16_t q[4], int flat, uint8
 
 	if (q[2] < ox || q[3] < oy || q[0] >= ox + CHUNK_BINS * 32 || q[1] >= oy + CHUNK_BINS * 32)
 		return 0;
+	if ((bx1 - bx0 + 1) * (by1 - by0 + 1) > 4) {
+		/* a large query (an area): the list itself, in order, is quicker than many bins */
+		for (uint16_t i = 0; i < k->nstatic && n < max; i++) {
+			const int16_t *r = k->statics[i].r;
+			if (k->statics[i].flat == flat && r[0] <= q[2] && q[0] <= r[2] && r[1] <= q[3]
+				&& q[1] <= r[3])
+				out[n++] = (uint8_t) i;
+		}
+		return n;
+	}
 	for (int by = by0; by <= by1; by++)
 		for (int bx = bx0; bx <= bx1; bx++) {
 			int b = by * CHUNK_BINS + bx;
@@ -597,11 +655,11 @@ static inline int overlaps(const int16_t *a, int16_t x0, int16_t y0, int16_t x1,
 static void draw_static(struct ESurface *dst, const int16_t clip[4], const struct Static *s,
 	int16_t ox, int16_t oy)
 {
-	const uint8_t *f = frame_of(s->tf & 0x3ff, (s->tf >> 10) & 31);
+	const int16_t *f = frame_of(s->tf & 0x3ff, (s->tf >> 10) & 31);
 
 	if (f == NULL)
 		return;
-	eb_shape(dst, clip, f + 8, (int16_t) (s->x * 8 + 7 - s->z * 4 - ox),
+	eb_shape(dst, clip, (const uint32_t *) (f + 4), (int16_t) (s->x * 8 + 7 - s->z * 4 - ox),
 		(int16_t) (s->y * 8 + 7 - s->z * 4 - oy), (s->tf & 0x8000) != 0);
 }
 
@@ -613,7 +671,8 @@ static void draw_static(struct ESurface *dst, const int16_t clip[4], const struc
 #define RING_H (RING_AY * 128)
 static struct ESurface ring;
 static int16_t ring_ax[RING_AX * RING_AY], ring_ay[RING_AX * RING_AY];
-static struct EFlat flat_table[E_FLAT_TYPES];
+/* read by the GPU in longs: 4-byte aligned (the 68000's compiler gives 2) */
+static struct EFlat flat_table[E_FLAT_TYPES] __attribute__((aligned(8)));
 
 static struct Local *loc;
 static uint16_t nloc;
@@ -906,8 +965,27 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 
 	if ((chunk_file = open_file("STATIC", "U7CHUNKS")) < 0)
 		return -5;
-	if (flex_open(&shapes, "STATIC", "SHAPES.VGA") < 0)
-		return -6;
+	/* the dataset's shapes if there are any (engine.h), else the original's, converted as read */
+	converted = 0;
+	if (flex_open(&shapes, "ENGINE", "SHAPES.FLX") == 0) {
+		char title[sizeof E_SHAPES_TITLE];
+		if (read_at(shapes.f, 0, title, sizeof title - 1)
+			&& memcmp(title, E_SHAPES_TITLE, sizeof title - 1) == 0)
+			converted = 1;
+		else
+			plat_file_close(shapes.f);
+	}
+	if (!converted) {
+		if (flex_open(&shapes, "STATIC", "SHAPES.VGA") < 0)
+			return -6;
+		/* room to read the largest object shape in before converting it */
+		raw_shape_size = 0;
+		for (uint16_t t = TILE_TYPES; t < shapes.count; t++)
+			if (shapes.table[t * 2 + 1] > raw_shape_size)
+				raw_shape_size = shapes.table[t * 2 + 1];
+		if ((raw_shape = take(raw_shape_size)) == NULL)
+			return -7;
+	}
 
 	for (int i = 0; i < REGION_SLOTS; i++) {
 		regions[i].id = -1;
@@ -956,11 +1034,11 @@ void e_surface_rows(struct ESurface *s)
 	}
 }
 
-const uint8_t *e_frame_spans(uint16_t type, uint16_t frame)
+const uint32_t *e_frame_runs(uint16_t type, uint16_t frame)
 {
-	const uint8_t *f = frame_of(type, frame);
+	const int16_t *f = frame_of(type, frame);
 
-	return f != NULL ? f + 8 : NULL;
+	return f != NULL ? (const uint32_t *) (f + 4) : NULL;
 }
 
 const uint8_t *e_palette(void)

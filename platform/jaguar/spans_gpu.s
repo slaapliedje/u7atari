@@ -20,11 +20,21 @@
 ; r16 first		r17 last	r18 run-encoded	r19 pos		r20 count	r21 from	r22 to
 ; r23 run byte		r24 Span	r25 Skip	r26 the mode's raw pixels	r27 its fill
 ; r28 destination	r29 RunLoop	r30 pixel	r31 step
-; Alternate bank r0: flipped. A pixel routine has r13 pixels to put at r28 on (r31 apart), from
-; r12 on (raw) or of value r30 (fill), and goes to After.
+; Alternate bank r0: flipped; r1: r14 kept while a blit has r14. A pixel routine has r13 pixels to
+; put at r28 on (r31 apart), from r12 on (raw) or of value r30 (fill), and goes to After. Copy mode
+; hands a row (not a column) of BLIT_SMALLEST pixels or more to the blitter, a pixel at a time
+; (source and destination need not share a phrase offset), and waits for it: what comes next may
+; draw over the same pixels.
 
 G_CTRL		.equ	$F02114
 SPAN_PARAMS	.equ	$F03F80
+; the blitter, for copy mode's long rows (CopyRaw, CopyFill): its registers as longs from BLITTER
+BLITTER		.equ	$F02200		; +0 A1_BASE +1 A1_FLAGS +3 A1_PIXEL +9 A2_BASE +10 A2_FLAGS
+					; +12 A2_PIXEL +14 B_CMD +15 B_COUNT +26/+27 B_PATD
+BLIT_FLAGS	.equ	$16018		; 8-bit pixels, a pixel at a time, width 4096 (one row only)
+BLIT_COPY	.equ	$01800001	; source on, replace
+BLIT_FILL	.equ	$00010000	; the pattern register's pixels
+BLIT_SMALLEST	.equ	8		; shorter rows: the byte loop is quicker than the set-up
 
 		.globl	gpu_spans
 		.globl	gpu_spans_end
@@ -296,20 +306,95 @@ SkipTest:
 ; ---- the pixel routines ----
 ; copy: the shape's pixels
 CopyRaw:
+		movei	#CopyRawBlit,r21
+		cmpq	#1,r31			; a row?
+		jr	NE,CopyRawBytes
+		cmpq	#BLIT_SMALLEST,r13	; (the delay slot) long enough?
+		jump	PL,(r21)
+		nop
+CopyRawBytes:
 		loadb	(r12),r30
 		addq	#1,r12
 		subq	#1,r13
 		storeb	r30,(r28)
-		jr	NE,CopyRaw
+		jr	NE,CopyRawBytes
 		add	r31,r28
 		movei	#After,r12
 		jump	T,(r12)
 		nop
 CopyFill:
+		movei	#CopyFillBlit,r21
+		cmpq	#1,r31
+		jr	NE,CopyFillBytes
+		cmpq	#BLIT_SMALLEST,r13
+		jump	PL,(r21)
+		nop
+CopyFillBytes:
 		subq	#1,r13
 		storeb	r30,(r28)
-		jr	NE,CopyFill
+		jr	NE,CopyFillBytes
 		add	r31,r28
+		movei	#After,r12
+		jump	T,(r12)
+		nop
+CopyRawBlit:
+		moveta	r14,r1
+		movei	#BLITTER,r14
+		moveq	#7,r23
+		move	r28,r22
+		move	r22,r21
+		and	r23,r21			; the destination's pixel in its phrase
+		sub	r21,r22			; and its phrase
+		store	r22,(r14)		; A1_BASE
+		store	r21,(r14+3)		; A1_PIXEL: y 0, that x
+		move	r12,r22
+		move	r22,r21
+		and	r23,r21
+		sub	r21,r22
+		store	r22,(r14+9)		; A2_BASE
+		store	r21,(r14+12)		; A2_PIXEL
+		movei	#BLIT_FLAGS,r22
+		store	r22,(r14+1)		; A1_FLAGS
+		store	r22,(r14+10)		; A2_FLAGS
+		movei	#$10000,r22
+		or	r13,r22
+		store	r22,(r14+15)		; B_COUNT: one row of r13
+		movei	#BLIT_COPY,r22
+		movei	#BlitGo,r21
+		jump	T,(r21)
+		nop
+CopyFillBlit:
+		moveta	r14,r1
+		movei	#BLITTER,r14
+		moveq	#7,r23
+		move	r28,r22
+		move	r22,r21
+		and	r23,r21
+		sub	r21,r22
+		store	r22,(r14)		; A1_BASE
+		store	r21,(r14+3)		; A1_PIXEL
+		movei	#BLIT_FLAGS,r22
+		store	r22,(r14+1)		; A1_FLAGS
+		move	r30,r22			; the byte in each of a phrase's eight
+		shlq	#8,r22
+		or	r30,r22
+		move	r22,r21
+		shlq	#16,r21
+		or	r21,r22
+		store	r22,(r14+26)		; B_PATD
+		store	r22,(r14+27)
+		movei	#$10000,r22
+		or	r13,r22
+		store	r22,(r14+15)		; B_COUNT
+		movei	#BLIT_FILL,r22
+BlitGo:
+		store	r22,(r14+14)		; B_CMD: go
+BlitWait:
+		load	(r14+14),r22
+		btst	#0,r22			; idle?
+		jr	EQ,BlitWait
+		nop
+		movefa	r1,r14
 		movei	#After,r12
 		jump	T,(r12)
 		nop

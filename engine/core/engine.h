@@ -38,10 +38,41 @@ int32_t plat_file_length(int16_t file);
 /* w by h pixels from (sx, sy) of src to (dx, dy) of dst; x and w multiples of 8. */
 void eb_copy(struct ESurface *dst, int16_t dx, int16_t dy, const struct ESurface *src, int16_t sx,
 	int16_t sy, int16_t w, int16_t h);
-/* A shape frame from its first span (the original's format), hot spot at (x, y) of dst, clipped
- * to clip (x0, y0, x1, y1, inclusive); flipped: mirrored across the diagonal, as the original. */
-void eb_shape(struct ESurface *dst, const int16_t clip[4], const uint8_t *spans, int16_t x,
+/* A shape frame from its first run (E_RUN_ below), hot spot at (x, y) of dst, clipped to clip
+ * (x0, y0, x1, y1, inclusive); flipped: mirrored across the diagonal, as the original. */
+void eb_shape(struct ESurface *dst, const int16_t clip[4], const uint32_t *runs, int16_t x,
 	int16_t y, uint8_t flipped);
+
+/* The engine's frames, made from the original's spans as a shape is read (core/engine.c), for a
+ * drawer that loads longs: the frame's box (right, left, above, below from the hot spot, int16),
+ * then its runs, each a long in the CPU's byte order:
+ *   bits 24-31 the row from the hot spot (signed)  16-23 the first column (signed)
+ *   8-15 the length (1-255)  0 a fill
+ * then a fill's pixel (the byte four times), or the raw pixels padded to a long. 0 ends the frame.
+ * Flipped, a run goes down a column: its row is the column from the hot spot, and its first
+ * column the first row. Fills are only kept from E_FILL_SHORTEST pixels; shorter ones are made
+ * raw, so a span is mostly one run. */
+#define E_RUN_ACROSS(h) ((int8_t) ((h) >> 24))
+#define E_RUN_ALONG(h) ((int8_t) ((h) >> 16))
+#define E_RUN_LENGTH(h) (((h) >> 8) & 255)
+#define E_RUN_FILL 1
+#define E_FILL_SHORTEST 8
+/* An object shape of the original's (size bytes at raw, its first long its size) made into the
+ * engine's form at out, or only measured when out is NULL: the size made, 0 when it cannot be,
+ * or (writing) when it might need more than room bytes. The form: the size, the frames' offsets
+ * from the start (as many as the original's: the first offset - 4, over 4), then the frames.
+ * e_convert_shape is the core's own, in C. */
+#define E_CONVERT_SLACK 1024    /* room is checked at each span: a span makes less than this */
+uint32_t eb_convert(const uint8_t *raw, uint32_t size, uint8_t *out, uint32_t room);
+uint32_t e_convert_shape(const uint8_t *raw, uint32_t size, uint8_t *out, uint32_t room);
+/* A converted shape's longs and words (not its pixels) turned to the other byte order, in place:
+ * foreign, from the other order to the CPU's; else from the CPU's. 0 when it is not well formed. */
+int e_swap_shape(uint8_t *s, uint32_t size, int foreign);
+int e_little_endian(void);
+/* The dataset (engine/tools/jagdata.c): ENGINE/SHAPES.FLX under the data's root, a flex file as
+ * the original's (little-endian table) of SHAPES.VGA's entries, the flats as they are and the
+ * object shapes converted, big-endian (the Jaguar's order). Its title starts E_SHAPES_TITLE. */
+#define E_SHAPES_TITLE "U7 engine shapes 1, big-endian"
 /* Terrain: n chunks of 16 by 16 cells into dst. Each chunk: its cell words (little-endian: type in
  * bits 0-9, frame in 10-14), dst's pixel under its first cell, and the cells across and down that
  * fall in dst. A cell is the 64 bytes at flats[type].pixels + 64 * frame, for a type below
@@ -91,8 +122,8 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size);
 const uint8_t *e_palette(void);
 /* The view's top-left cell. */
 void e_set_view(int16_t x, int16_t y);
-/* A frame's first span, for tests; NULL when missing. */
-const uint8_t *e_frame_spans(uint16_t type, uint16_t frame);
+/* A frame's first run, for tests; NULL when missing. */
+const uint32_t *e_frame_runs(uint16_t type, uint16_t frame);
 /* Draws the view into frame (E_VIEW_W by E_VIEW_H). */
 void e_draw(struct ESurface *frame);
 
