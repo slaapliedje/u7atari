@@ -56,6 +56,8 @@ if(U7_JAGUAR)
     add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-msoft-float>)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:--include=${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/rtti_align.h>")
     add_subdirectory("${U7_UPSTREAM_DIR}" game)
+    # The terrain picture goes into the viewport by blitter rectangles (platform/jaguar/blit.c).
+    target_compile_definitions(u7_game PRIVATE U7_PLAT_COPY_RECT)
     # RetroHQ's GameDrive BIOS bindings and the cartridge boot header are not in this repository
     # (no licence; an Atari-signed stub): name copies of them.
     set(U7_GDBIOS_DIR "$ENV{HOME}/dev/etjag/third_party/JagGD" CACHE PATH

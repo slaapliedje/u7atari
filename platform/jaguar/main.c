@@ -51,22 +51,25 @@ static void shutdown_all(void)
 	timer_shutdown();
 }
 
-/* --profile: the pc at every fourth vertical blank (startup.S), saved to PCPROF.BIN on the card
- * at the end: big-endian longs, for tools on the PC to map to functions. */
-#define PROFILE_SAMPLES 16384
-extern uint32_t *volatile jag_prof_buffer;
-extern volatile uint32_t jag_prof_count, jag_prof_size;
+/* --profile: the pc and the top of the stack at every 64th vertical blank (startup.S), saved to
+ * PCPROF.BIN on the card at the end: records of 33 big-endian longs, for tools/jag-profile.py. */
+#define PROFILE_SAMPLES 1024
+#define PROFILE_RECORD 132
+extern uint8_t *volatile jag_prof_next;
+extern uint8_t *volatile jag_prof_end;
+extern volatile uint32_t jag_prof_mask;
+static uint8_t *profile_buffer;
 
 static void profile_save(void)
 {
-	uint32_t *samples = jag_prof_buffer;
+	uint8_t *end = jag_prof_next;
 	int16_t f;
 
-	if (samples == NULL)
+	if (profile_buffer == NULL)
 		return;
-	jag_prof_buffer = NULL;
+	jag_prof_next = NULL;
 	if ((f = plat_file_create("PCPROF.BIN")) >= 0) {
-		plat_file_write(f, samples, (int32_t) jag_prof_count * 4);
+		plat_file_write(f, profile_buffer, (int32_t) (end - profile_buffer));
 		plat_file_close(f);
 	}
 }
@@ -246,9 +249,12 @@ void jag_main(void)
 		else if (strcmp(argv[i], "--lockstep") == 0)
 			use_lockstep = true;
 		else if (strcmp(argv[i], "--profile") == 0) {
-			jag_prof_count = 0;
-			jag_prof_size = PROFILE_SAMPLES;
-			jag_prof_buffer = malloc(PROFILE_SAMPLES * sizeof (uint32_t));
+			profile_buffer = malloc(PROFILE_SAMPLES * PROFILE_RECORD);
+			if (profile_buffer != NULL) {
+				jag_prof_mask = 63;
+				jag_prof_end = profile_buffer + PROFILE_SAMPLES * PROFILE_RECORD;
+				jag_prof_next = profile_buffer;
+			}
 		} else if (strcmp(argv[i], "--bench") == 0) {
 			use_lockstep = true;
 			jag_bench = true;

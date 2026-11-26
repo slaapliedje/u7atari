@@ -8,6 +8,7 @@
  * onto itself is blitted only downwards. Everything else, and every small one, goes to the C
  * library's own. The 68000 waits for each blit: it gets no bus while one runs anyway.
  */
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -168,4 +169,35 @@ void *__wrap_memset(void *dst, int value, size_t n)
 	blit_fill(d, (uint8_t) value, body);
 	__real_memset(d + body, value, n - body);
 	return dst;
+}
+
+/* ---- Rectangles ---- */
+
+#define WID320 0x00004200UL         /* width 320: exponent 8, mantissa 1 (1.25 * 256) */
+
+/* w by h pixels from sx, sy in src to dx, dy in dst, both 320 bytes a row, phrase mode: the game's
+ * terrain picture into the viewport (drawtile.cpp). Every x and w are multiples of 8, so only the
+ * buffers need be on a phrase boundary. */
+bool plat_copy_rect(uint8_t *dst, int16_t dx, int16_t dy, const uint8_t *src, int16_t sx,
+	int16_t sy, int16_t w, int16_t h)
+{
+	if ((((uint32_t) dst | (uint32_t) src) & 7) != 0 || !in_dram(dst, 320UL * (dy + h))
+		|| !in_dram(src, 320UL * (sy + h)))
+		return false;
+	if (w <= 0 || h <= 0)
+		return true;
+	blit_wait();
+	BREG(A1_BASE) = (uint32_t) dst;
+	BREG(A1_FLAGS) = PIXEL8 | WID320 | XADDPHR;
+	BREG(A1_CLIP) = 0;
+	BREG(A1_PIXEL) = (uint32_t) dy << 16 | (uint16_t) dx;
+	BREG(A1_STEP) = 1UL << 16 | (uint16_t) -w;
+	BREG(A2_BASE) = (uint32_t) src;
+	BREG(A2_FLAGS) = PIXEL8 | WID320 | XADDPHR;
+	BREG(A2_PIXEL) = (uint32_t) sy << 16 | (uint16_t) sx;
+	BREG(A2_STEP) = 1UL << 16 | (uint16_t) -w;
+	BREG(B_COUNT) = (uint32_t) h << 16 | (uint16_t) w;
+	BREG(B_CMD) = SRCEN | UPDA1 | UPDA2 | LFU_REPLACE;
+	blit_wait();
+	return true;
 }

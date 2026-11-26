@@ -74,20 +74,23 @@ jag_vbl:
 	beq.s	1f
 	move.l	jag_vbl_phrase, (%a0)
 	move.l	jag_vbl_phrase+4, 4(%a0)
-1:	/* profiling (jag_prof_start): every fourth blank, the pc interrupted (above the four
-	 * registers saved and the status register) */
-	move.l	jag_prof_buffer, %a0
+1:	/* profiling (--profile): at every blank whose count has none of jag_prof_mask's bits, the
+	 * pc interrupted (above the four registers saved and the status register) and the 64 words
+	 * of stack above it, where a return address will be found (tools/jag-profile.py) */
+	move.l	jag_prof_next, %a0
 	move.l	%a0, %d0
 	beq.s	3f
 	move.l	jag_ticks, %d0
-	andi.w	#3, %d0
+	and.l	jag_prof_mask, %d0
 	bne.s	3f
-	move.l	jag_prof_count, %d0
-	cmp.l	jag_prof_size, %d0
+	cmp.l	jag_prof_end, %a0
 	bcc.s	3f
-	lsl.l	#2, %d0
-	move.l	18(%sp), (%a0, %d0.l)
-	addq.l	#1, jag_prof_count
+	move.l	18(%sp), (%a0)+
+	lea	22(%sp), %a1
+	moveq	#31, %d0
+4:	move.l	(%a1)+, (%a0)+
+	dbra	%d0, 4b
+	move.l	%a0, jag_prof_next
 3:	addq.l	#1, jag_ticks
 	move.l	jag_vbl_hook, %a0
 	move.l	%a0, %d0
@@ -130,10 +133,10 @@ exc_common:
 	.bss
 	.balign	4
 	.globl	jag_ticks, jag_vbl_object, jag_vbl_phrase, jag_vbl_hook
-	.globl	jag_prof_buffer, jag_prof_count, jag_prof_size
-jag_prof_buffer:	.space	4
-jag_prof_count:	.space	4
-jag_prof_size:	.space	4
+	.globl	jag_prof_next, jag_prof_end, jag_prof_mask
+jag_prof_next:	.space	4
+jag_prof_end:	.space	4
+jag_prof_mask:	.space	4
 jag_ticks:	.space	4
 jag_vbl_object:	.space	4
 jag_vbl_phrase:	.space	8

@@ -72,14 +72,45 @@ static uint32_t adler(uint32_t sum, const uint8_t *data, uint32_t length)
 	return b << 16 | a;
 }
 
+/* The clock in ticks and in milliseconds. It is asked many times a tick, at times a little
+ * apart, so each keeps the span of microseconds that gives its last answer: a 68000 has to call
+ * a routine for the 64-bit divide, which then runs once a tick or a millisecond. */
+struct clock_span {
+	uint64_t from, to;      /* microseconds that give value; empty to start with */
+	uint32_t value;
+};
+
+static uint32_t clock_in(struct clock_span *span, uint64_t us, uint32_t per_second)
+{
+	uint64_t v;
+
+	if (us >= span->from && us < span->to)
+		return span->value;
+	/* milliseconds: the next span is the next 1000 us, with no divide */
+	if (per_second == 1000 && us >= span->to && us < span->to + 1000 && span->to != 0) {
+		span->value++;
+		span->from = span->to;
+		span->to += 1000;
+		return span->value;
+	}
+	/* value is v when v * 1000000 <= us * per_second < (v + 1) * 1000000 */
+	v = us * per_second / 1000000;
+	span->value = (uint32_t) v;
+	span->from = (v * 1000000 + per_second - 1) / per_second;
+	span->to = ((v + 1) * 1000000 + per_second - 1) / per_second;
+	return span->value;
+}
+
+static struct clock_span tick_span = { 1, 0, 0 }, ms_span = { 1, 0, 0 };
+
 static uint32_t ticks_at(uint64_t us)
 {
-	return (uint32_t) (us * PLAT_TICKS_PER_SECOND / 1000000);
+	return clock_in(&tick_span, us, PLAT_TICKS_PER_SECOND);
 }
 
 uint32_t lockstep_ms(void)
 {
-	return (uint32_t) (now_us / 1000);
+	return clock_in(&ms_span, now_us, 1000);
 }
 
 void lockstep_start(void)
