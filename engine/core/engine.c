@@ -108,9 +108,12 @@ struct Info {
 };
 #define INFO_ANIMATED 1
 #define INFO_TRANSLUCENT 2
+#define INFO_SOLID 4
+#define INFO_DOOR 8
 #define CLASS_NONE 0
 
 static struct Info info[1024];
+static uint8_t ceiling = 15;    /* statics and movers above it are not drawn (e_follow) */
 static uint8_t palette[768];
 static uint16_t *map;           /* chunk number of each of the 192 by 192 chunks */
 static struct Flex shapes;
@@ -332,7 +335,8 @@ static struct Region *region(int id)
 			fixedStart[c] = 0;
 	}
 	/* the fixed ones are now items[0..n); read the movable ones beside, then merge per chunk */
-	if ((f = open_file("GAMEDAT", name)) >= 0) {
+	/* the dataset's (a new game's, with its NPC.DAT) or the save's */
+	if ((f = open_file("ENGINE", name)) >= 0 || (f = open_file("GAMEDAT", name)) >= 0) {
 		len = plat_file_length(f);
 		if (len > 0 && len <= SCRATCH && read_at(f, 0, scratch, (uint32_t) len)) {
 			int32_t i = 0;
@@ -392,7 +396,7 @@ struct Static {
 	uint8_t z, flat;
 	int16_t r[4];               /* x0, y0, x1, y1 */
 	uint8_t fx, fy, height;     /* its footprint: cells west and north of x, y; levels up */
-	uint8_t pad;
+	uint8_t solid;              /* solid, not a door: its levels make a ceiling (e_follow) */
 };
 
 /* A static's footprint, from its shape's facts (turned if it is). */
@@ -404,7 +408,8 @@ static void set_footprint(struct Static *s)
 	s->fy = s->tf & 0x8000 ? in->fx : in->fy;
 	s->height = in->height;
 	s->flat = in->height == 0;
-	s->pad = 0;
+	/* doors (the original keeps them apart) do not make a ceiling */
+	s->solid = (in->flags & (INFO_SOLID | INFO_DOOR)) == INFO_SOLID;
 }
 
 struct Chunk {
@@ -575,7 +580,7 @@ static int chunk_record(struct Chunk *k)
 			s->fx = p[16];
 			s->fy = p[17];
 			s->height = p[18];
-			s->pad = 0;
+			s->solid = p[19];
 		}
 	memcpy(k->bin_list, scratch + E_CHUNK_HEAD + n * (uint32_t) E_CHUNK_STATIC, nl);
 	k->nstatic = k->nfixed = n;
@@ -612,7 +617,7 @@ uint32_t e_chunk_record(int cx, int cy, uint8_t *out)
 		p[16] = s->fx;
 		p[17] = s->fy;
 		p[18] = s->height;
-		p[19] = 0;
+		p[19] = s->solid;
 	}
 	memcpy(p, k->bin_list, nl);
 	return (uint32_t) (p - out) + nl;
@@ -831,6 +836,7 @@ static void draw_static(struct ESurface *dst, const int16_t clip[4], const struc
 #define RING_H (RING_AY * 128)
 static struct ESurface ring;
 static int16_t ring_ax[RING_AX * RING_AY], ring_ay[RING_AX * RING_AY];
+static uint8_t ring_top[RING_AX * RING_AY];   /* the highest level among an area's statics */
 /* read by the GPU in longs: 4-byte aligned (the 68000's compiler gives 2) */
 static struct EFlat flat_table[E_FLAT_TYPES] __attribute__((aligned(8)));
 
@@ -884,6 +890,7 @@ static void draw_area(int ax, int ay)
 	eb_tiles(&ring, flat_table, &tc, 1);
 
 	nloc = 0;
+	uint8_t top = 0;
 	for (int pass = 0; pass < 2; pass++)
 		for (int cy = ay - 1; cy <= ay + 1; cy++)
 			for (int cx = ax - 1; cx <= ax + 1; cx++) {
@@ -895,6 +902,10 @@ static void draw_area(int ax, int ay)
 				int count = chunk_find(n, area, pass == 0, found, CHUNK_STATICS);
 				for (int i = 0; i < count; i++) {
 					const struct Static *s = &n->statics[found[i]];
+					if (s->z > top)
+						top = s->z;
+					if (s->z > ceiling)
+						continue;
 					if (pass == 0)
 						draw_static(&ring, clip, s, ox, oy);
 					else if (nloc < AREA_OBJECTS)
@@ -972,6 +983,7 @@ static void draw_area(int ax, int ay)
 		draw_static(&ring, clip, loc[loc_order[i]].s, ox, oy);
 	ring_ax[slot] = (int16_t) ax;
 	ring_ay[slot] = (int16_t) ay;
+	ring_top[slot] = top;
 }
 
 static int in_ring(int ax, int ay)
@@ -1008,6 +1020,195 @@ static struct Mover {
 	const struct Static **near;
 } movers[E_MOVERS] __attribute__((aligned(8)));
 static uint8_t nmovers;
+
+/* ---- the ceiling over a mover, as the original's (UpdateCeiling): the levels the solid statics
+ * (not doors) over its row of cells take, its own left out; the highest less one, or 15 ---- */
+
+int e_follow(int i)
+{
+	const struct Mover *v = &movers[i];
+	const struct Info *in = &info[v->tf & 0x3ff];
+	int w = v->tf & 0x8000 ? in->fy : in->fx;
+	uint16_t taken = 0, own = (uint16_t) (((1u << in->height) - 1) << v->z);
+	int top = 15;
+
+	/* a static covers the cells up to its footprint west and north of it: up to 7 */
+	for (int cy = v->y >> 4; cy <= (v->y + 7) >> 4; cy++)
+		for (int cx = (v->x - w) >> 4; cx <= (v->x + 7) >> 4; cx++) {
+			if (cx < 0 || cy < 0 || cx >= 192 || cy >= 192)
+				continue;
+			const struct Chunk *k = chunk_statics(cx, cy);
+			for (uint16_t j = 0; j < k->nstatic; j++) {
+				const struct Static *s = &k->statics[j];
+				if (!s->solid || s->height == 0 || v->y < s->y - s->fy || v->y > s->y
+					|| v->x - w > s->x || v->x < s->x - s->fx)
+					continue;
+				taken |= (uint16_t) (((1u << s->height) - 1) << s->z);
+			}
+		}
+	taken &= (uint16_t) ~own;
+	if (taken != 0)
+		for (top = 15; !(taken & 0x8000); taken = (uint16_t) (taken << 1))
+			top--;
+	if (taken != 0)
+		top--;
+	if (top != ceiling) {
+		/* the areas with statics between the two drawn again, and the fronts found again */
+		int low = top < ceiling ? top : ceiling;
+		ceiling = (uint8_t) top;
+		for (int a = 0; a < RING_AX * RING_AY; a++)
+			if (ring_top[a] > low)
+				ring_ax[a] = ring_ay[a] = -1;
+		for (uint8_t m = 0; m < nmovers; m++)
+			movers[m].cached = 0;
+	}
+	return ceiling;
+}
+
+/* Levels (a bit each) the solid statics take over the cells x0..x1, y0..y1; doors too or not. */
+static uint16_t levels_taken(int x0, int y0, int x1, int y1, int doors)
+{
+	uint16_t taken = 0;
+
+	for (int cy = y0 >> 4; cy <= (y1 + 7) >> 4; cy++)
+		for (int cx = x0 >> 4; cx <= (x1 + 7) >> 4; cx++) {
+			if (cx < 0 || cy < 0 || cx >= 192 || cy >= 192)
+				continue;
+			const struct Chunk *k = chunk_statics(cx, cy);
+			for (uint16_t j = 0; j < k->nstatic; j++) {
+				const struct Static *s = &k->statics[j];
+				const struct Info *in = &info[s->tf & 0x3ff];
+				if (!(in->flags & INFO_SOLID) || (!doors && (in->flags & INFO_DOOR))
+					|| s->height == 0 || y0 > s->y || y1 < s->y - s->fy || x0 > s->x
+					|| x1 < s->x - s->fx)
+					continue;
+				taken |= (uint16_t) (((1u << s->height) - 1) << s->z);
+			}
+		}
+	return taken;
+}
+
+int e_blocked(uint16_t tf, int16_t x, int16_t y, uint8_t z)
+{
+	const struct Info *in = &info[tf & 0x3ff];
+	int fx = tf & 0x8000 ? in->fy : in->fx, fy = tf & 0x8000 ? in->fx : in->fy;
+	uint16_t body = (uint16_t) (((1u << (in->height ? in->height : 1)) - 1) << z);
+
+	return (levels_taken(x - fx, y - fy, x, y, 0) & body) != 0;
+}
+
+/* ---- the NPCs of NPC.DAT (engine.h) ---- */
+
+static int16_t npc_file;
+static uint32_t npc_at, npc_have, npc_used;   /* the file read through scratch */
+
+static int npc_byte(void)
+{
+	if (npc_used == npc_have) {
+		int32_t n = plat_file_read(npc_file, scratch, SCRATCH);
+		if (n <= 0)
+			return -1;
+		npc_at += npc_have;
+		npc_have = (uint32_t) n;
+		npc_used = 0;
+	}
+	return scratch[npc_used++];
+}
+
+static int npc_bytes(uint8_t *to, int n)
+{
+	for (int i = 0; i < n; i++) {
+		int b = npc_byte();
+		if (b < 0)
+			return 0;
+		to[i] = (uint8_t) b;
+	}
+	return 1;
+}
+
+int e_npcs(struct ENpc *out, int max)
+{
+	uint8_t rec[117];
+	int n = 0;
+
+	if ((npc_file = open_file("ENGINE", "NPC.DAT")) < 0
+		&& (npc_file = open_file("GAMEDAT", "NPC.DAT")) < 0)
+		return 0;
+	npc_at = npc_have = npc_used = 0;
+	if (!npc_bytes(rec, 4)) {
+		plat_file_close(npc_file);
+		return 0;
+	}
+	int count = rds16(rec) + rds16(rec + 2);
+	for (int i = 0; i < count && npc_bytes(rec, 117); i++) {
+		/* x, y in its region, type-frame; the extension: contents, region, .., z << 4; then the
+		 * NPC's own: .., its item (0: not on the map), status */
+		uint16_t tf = rd16(rec + 2), ref = rd16(rec + 14), status = rd16(rec + 16);
+		if (ref != 0 && (tf & 0x3ff) != 0 && rd16(rec + 4) != 0) {
+			/* what it carries, as a region's movable items: levels ended by 0 or 1 */
+			int depth = 0;
+			for (;;) {
+				int l = npc_byte();
+				uint8_t item[18];
+				if (l < 0)
+					goto done;
+				if (l == 0 || l == 1) {
+					if (depth-- == 0)
+						break;
+					continue;
+				}
+				if ((l != 6 && l != 12 && l != 18) || !npc_bytes(item, l))
+					goto done;
+				if (l >= 12 && rd16(item + 4) != 0)
+					depth++;
+			}
+		}
+		if (ref == 0 || (tf & 0x3ff) == 0 || (status & 0x8000) || n >= max)
+			continue;
+		uint8_t region = rec[6];
+		out[n].tf = tf;
+		out[n].x = (int16_t) (region % 12 * 256 + rec[0]);
+		out[n].y = (int16_t) (region / 12 * 256 + rec[1]);
+		out[n].z = rec[9] >> 4;
+		out[n].pad = 0;
+		out[n].number = (uint16_t) i;
+		n++;
+	}
+done:
+	plat_file_close(npc_file);
+	return n;
+}
+
+void e_movers_near(const struct ENpc *npcs, int n, int16_t x, int16_t y)
+{
+	static uint16_t near[E_MOVERS];
+	static int32_t far[E_MOVERS];
+	int nnear = 0;
+
+	/* those in a window round it, then the nearest of them: no multiplying for the rest */
+	for (int i = 0; i < n; i++) {
+		int dx = npcs[i].x - x, dy = npcs[i].y - y;
+		if (npcs[i].number == 0 || dx < -48 || dx > 48 || dy < -40 || dy > 40)
+			continue;
+		int32_t d = (int32_t) (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
+		int at = nnear < E_MOVERS - 1 ? nnear++ : E_MOVERS - 2;
+		if (at == E_MOVERS - 2 && nnear == E_MOVERS - 1 && d >= far[at])
+			continue;
+		while (at > 0 && far[at - 1] > d) {
+			far[at] = far[at - 1];
+			near[at] = near[at - 1];
+			at--;
+		}
+		far[at] = d;
+		near[at] = (uint16_t) i;
+	}
+	for (int slot = 1; slot < E_MOVERS; slot++)
+		if (slot - 1 < nnear) {
+			const struct ENpc *p = &npcs[near[slot - 1]];
+			e_mover_set(slot, p->tf, p->x, p->y, p->z);
+		} else
+			e_mover_set(slot, 0, 0, 0, 0);
+}
 
 int e_mover_add(uint16_t tf, int16_t x, int16_t y, uint8_t z)
 {
@@ -1121,7 +1322,8 @@ static void find_fronts(struct Mover *v)
 			/* those over the box itself, in the order the chunks would give them */
 			for (uint8_t j = 0; j < v->nnear && ncand < 128; j++) {
 				const int16_t *r = v->near[j]->r;
-				if (r[0] <= q[2] && q[0] <= r[2] && r[1] <= q[3] && q[1] <= r[3])
+				if (r[0] <= q[2] && q[0] <= r[2] && r[1] <= q[3] && q[1] <= r[3]
+					&& v->near[j]->z <= ceiling)
 					cand[ncand++] = v->near[j];
 			}
 		} else {
@@ -1140,7 +1342,8 @@ static void find_fronts(struct Mover *v)
 						v->gens[v->nslot++] = chunk_gen[k - chunks];
 					}
 					for (int j = 0; j < count && ncand < 128; j++)
-						cand[ncand++] = &k->statics[found[j]];
+						if (k->statics[found[j]].z <= ceiling)
+							cand[ncand++] = &k->statics[found[j]];
 				}
 		}
 		/* in front of it, or of one found in front of it: each new one is tried against those
@@ -1189,7 +1392,7 @@ static void ready_movers(int16_t vx, int16_t vy)
 		v->s.z = v->z;
 		if (reshaped)
 			set_footprint(&v->s);
-		v->ok = picture_rect(v->tf, v->x, v->y, v->z, v->s.r);
+		v->ok = v->z <= ceiling && picture_rect(v->tf, v->x, v->y, v->z, v->s.r);
 		if (!v->ok || v->s.r[2] < vx || v->s.r[0] >= vx + E_VIEW_W || v->s.r[3] < vy
 			|| v->s.r[1] >= vy + E_VIEW_H) {
 			v->ok = 0;
@@ -1209,6 +1412,7 @@ static void ready_movers(int16_t vx, int16_t vy)
 			struct Mover *v = &movers[m];
 			if (!v->ok || v->evictions == evictions)
 				continue;
+			shape(v->tf & 0x3ff);
 			for (uint8_t f = 0; f < v->nfront; f++)
 				shape(v->fronts[f]->tf & 0x3ff);
 			v->evictions = before;
@@ -1292,7 +1496,8 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 		info[i].cls = t[1] & 15;
 		info[i].fx = t[2] & 7;
 		info[i].fy = (t[2] >> 3) & 7;
-		info[i].flags = (uint8_t) ((t[0] & 4 ? INFO_ANIMATED : 0) | (t[2] & 0x80 ? INFO_TRANSLUCENT : 0));
+		info[i].flags = (uint8_t) ((t[0] & 4 ? INFO_ANIMATED : 0) | (t[2] & 0x80 ? INFO_TRANSLUCENT : 0)
+			| (t[0] & 8 ? INFO_SOLID : 0) | (t[1] & 0x20 ? INFO_DOOR : 0));
 	}
 
 	if (flex_open(&pal, "STATIC", "PALETTES.FLX") < 0 || !read_at(pal.f, pal.table[0], palette, 768))

@@ -105,8 +105,8 @@ int e_little_endian(void);
  * offset (the next one's is where it ends). A record: its statics and bin entries (big-endian
  * words), the flat types its cells use (150 bits in 5 longs), its 65 bin starts, then 20 bytes a
  * static (type-frame, x, y, z, flat, its picture's rectangle, its footprint west, north and up,
- * a byte spare: words but z, flat and the footprint), then its bin entries. */
-#define E_CHUNKS_TITLE "U7 engine chunks 3, big-endian"
+ * solid: words but z, flat, the footprint and solid), then its bin entries. */
+#define E_CHUNKS_TITLE "U7 engine chunks 4, big-endian"
 #define E_CHUNKS_TABLE 64
 #define E_CHUNK_HEAD (4 + 5 * 4 + 65 * 2)
 #define E_CHUNK_STATIC 20
@@ -181,6 +181,25 @@ void e_copy_view(struct ESurface *frame, const struct ESurface *ring, int16_t sx
 #define E_MOVERS 32
 int e_mover_add(uint16_t typeFrame, int16_t x, int16_t y, uint8_t z);
 void e_mover_set(int i, uint16_t typeFrame, int16_t x, int16_t y, uint8_t z);
+/* The NPCs on the map and alive in NPC.DAT: ENGINE/NPC.DAT (a new game's, from INITGAME.DAT: the
+ * dataset tool) or else GAMEDAT/NPC.DAT. Up to max into out; how many. */
+struct ENpc {
+	uint16_t tf;                /* type-frame word */
+	int16_t x, y;               /* world cell */
+	uint8_t z, pad;
+	uint16_t number;            /* in NPC.DAT; the avatar is 0 */
+};
+int e_npcs(struct ENpc *out, int max);
+/* Movers 1 to E_MOVERS - 1: the NPCs nearest x, y (not the avatar), within 48 by 40 cells. */
+void e_movers_near(const struct ENpc *npcs, int n, int16_t x, int16_t y);
+/* The ceiling over mover i (the avatar), as the original works it out: statics and movers above
+ * it are not drawn (roofs over it lifted). The view is drawn again when it changes. Call when it
+ * has moved; returns the ceiling (15: none). */
+int e_follow(int i);
+/* Whether a shape (type-frame word) standing at x, y, z would be in a solid static (doors not:
+ * they cannot be opened here). */
+int e_blocked(uint16_t tf, int16_t x, int16_t y, uint8_t z);
+
 /* An NPC shape's type-frame word walking in direction 0-3 (north, east, south, west), step n:
  * frames 0-15 face north, 16-31 south; east and west are those turned (0x8000). */
 static inline uint16_t e_walk_frame(uint16_t type, int dir, int n)

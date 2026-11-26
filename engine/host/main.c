@@ -6,6 +6,10 @@
  *     --out prefix     pictures prefix.NNNN.ppm (default view); --every k: every k-th frame
  *     --layers         the movers on a layer of their own over the ring, as the Jaguar shows
  *                      them (the picture put together from both for saving)
+ *     --avatar         the NPCs of NPC.DAT (the nearest 31 to the avatar) and the avatar, who
+ *                      walks (--walk moves it, not the view; x y are ignored), the view on it,
+ *                      roofs over it lifted, walls in its way
+ *     --path "dx,dy,n;..." with --avatar: legs of a walk, n cells each
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -193,6 +197,99 @@ static void save(const char *name)
 	fclose(f);
 }
 
+/* --avatar: the avatar walks dx, dy a frame (a cell every other frame), the 31 NPCs nearest it
+ * with it, picked again when it has gone 8 cells; the view on it; the ceiling over it */
+static struct ENpc npcs[400];
+static int nnpcs;
+static void pick_near(int16_t ax, int16_t ay)
+{
+	e_movers_near(npcs, nnpcs, ax, ay);
+}
+
+static void save(const char *name);
+
+static const char *path;
+
+static void walk_avatar(int dx, int dy, int n, const char *out, int every)
+{
+	int me = -1, leg_dx = dx, leg_dy = dy, leg_n = path ? 0 : n / 2;
+	const char *next = path;
+
+	nnpcs = e_npcs(npcs, 400);
+	for (int i = 0; i < nnpcs; i++)
+		if (npcs[i].number == 0)
+			me = i;
+	if (me < 0) {
+		fprintf(stderr, "no avatar in NPC.DAT\n");
+		return;
+	}
+	int16_t ax = npcs[me].x, ay = npcs[me].y, px = ax, py = ay;
+	uint8_t az = npcs[me].z;
+	uint16_t type = npcs[me].tf & 0x3ff;
+	int dir = dy < 0 ? 0 : dx > 0 ? 1 : dy > 0 ? 2 : 3;
+	for (int m = 0; m < E_MOVERS; m++)
+		e_mover_add(0, 0, 0, 0);
+	e_mover_set(0, npcs[me].tf, ax, ay, az);
+	pick_near(ax, ay);
+	if (path)
+		n = 100000;
+	for (int f = 0; f < n; f++) {
+		if (f > 0 && (f & 1) == 0) {
+			while (leg_n == 0 && next != NULL && *next) {
+				if (sscanf(next, "%d,%d,%d", &leg_dx, &leg_dy, &leg_n) != 3)
+					break;
+				next = strchr(next, ';');
+				next = next ? next + 1 : NULL;
+			}
+			if (leg_n == 0) {
+				if (path) {
+					printf("end: avatar %d,%d,%d\n", ax, ay, az);
+					break;
+				}
+				leg_dx = leg_dy = 0;
+			} else
+				leg_n--;
+			dx = leg_dx;
+			dy = leg_dy;
+			if (dx || dy)
+				dir = dy < 0 ? 0 : dx > 0 ? 1 : dy > 0 ? 2 : 3;
+			/* a wall in the way: along it, if one way is free */
+			int16_t nx = (int16_t) (ax + dx), ny = (int16_t) (ay + dy);
+			uint16_t tf = e_walk_frame(type, dir, 0);
+			if (e_blocked(tf, nx, ny, az)) {
+				if (dx && !e_blocked(tf, nx, ay, az))
+					ny = ay;
+				else if (dy && !e_blocked(tf, ax, ny, az))
+					nx = ax;
+				else {
+					nx = ax;
+					ny = ay;
+				}
+			}
+			ax = nx;
+			ay = ny;
+		}
+		e_mover_set(0, dx || dy ? e_walk_frame(type, dir, f / 2) : npcs[me].tf, ax, ay, az);
+		if (abs(ax - px) + abs(ay - py) >= 8) {
+			pick_near(ax, ay);
+			px = ax;
+			py = ay;
+		}
+		int ceiling = e_follow(0);
+		e_set_view((int16_t) (ax - E_VIEW_CELLS_X / 2), (int16_t) (ay - E_VIEW_CELLS_Y / 2));
+		static uint8_t layer_buf[3][E_VIEW_H * E_VIEW_W];
+		if (layers)
+			frame.pixels = layer_buf[f % 3];
+		e_draw(&frame);
+		if (f % every == 0 || f == n - 1) {
+			char name[256];
+			snprintf(name, sizeof name, "%s.%04d.ppm", out, f);
+			save(name);
+			printf("frame %d: avatar %d,%d,%d ceiling %d\n", f, ax, ay, az, ceiling);
+		}
+	}
+}
+
 static uint32_t rng = 12345;
 static int rnd(int n)
 {
@@ -203,7 +300,7 @@ static int rnd(int n)
 int main(int argc, char **argv)
 {
 	static uint8_t memory[1600 * 1024];
-	int x, y, dx = 0, dy = 0, n = 1, nm = 0, every = 1, sheet = -1;
+	int x, y, dx = 0, dy = 0, n = 1, nm = 0, every = 1, sheet = -1, avatar = 0;
 	const char *out = "view";
 	struct { int16_t x, y; int dir; } walker[E_MOVERS];
 
@@ -228,6 +325,10 @@ int main(int argc, char **argv)
 			every = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--layers"))
 			layers = 1;
+		else if (!strcmp(argv[i], "--avatar"))
+			avatar = 1;
+		else if (!strcmp(argv[i], "--path") && i + 1 < argc)
+			path = argv[++i];
 	}
 	e_surface_rows(&frame);
 	int r = e_init(argv[1], memory, sizeof memory);
@@ -246,6 +347,10 @@ int main(int argc, char **argv)
 					(int16_t) (fr / 8 * 50 + 44), 0);
 		}
 		save("sheet.ppm");
+		return 0;
+	}
+	if (avatar) {
+		walk_avatar(dx, dy, n, out, every);
 		return 0;
 	}
 	for (int m = 0; m < nm && m < E_MOVERS; m++) {

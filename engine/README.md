@@ -30,6 +30,11 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   the GPU does the rest each frame (`jaguar/movers_gpu.s`): each mover's picture from its frame,
   those in view put in order, and the shape list for them and their fronts; the 68000 only keeps
   the fronts and the shapes they use in the cache.
+- **Roofs.** As the original works it out (`UpdateCeiling`): the levels the solid statics (not
+  doors) over the avatar's row of cells take, its own left out; the highest of them less one is
+  the ceiling, and statics and movers above it are not drawn (`e_follow`). When it changes, the
+  areas holding statics between the two ceilings are drawn again: in a town, all of them, a pause
+  of 13-19 blanks going in or out of a building.
 - **Depth.** An object stands at the bottom right of its footprint and is lifted 4 pixels up and
   left a level. What lies south, east or above is in front: `order_of()` in `core/engine.c`.
 - **Shapes** are read on demand into a ring that gives the oldest way; the movers' are kept apart.
@@ -49,25 +54,35 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   (plat.h's `plat_file_*` names), a clock, and three drawing calls (`eb_copy`, `eb_tiles`,
   `eb_shape`) into 8-bit surfaces.
 - `host/` — the PC: draws views to PPM pictures (`u7engine <dir>/ <x> <y> [--walk dx dy n]
-  [--movers n] [--out p] [--every k] [--sheet shape] [--layers]`). Build: `cmake --build build-host
+  [--movers n] [--out p] [--every k] [--sheet shape] [--layers] [--avatar [--path
+  "dx,dy,n;..."]]`): `--avatar` walks the avatar as the Jaguar does. Build: `cmake --build build-host
   --target u7engine`.
 - `tools/jagdata.c` — `u7jagdata <data dir> <out dir>` (the data dir holding `STATIC/`) writes
   the dataset, in the Jaguar's byte order: `SHAPES.FLX` (7.1 MB), SHAPES.VGA with every object
-  shape converted, checked by turning it back; and `CHUNKS.DAT` (10.8 MB), each of the 36,864
-  world chunks' fixed objects as the engine makes them. For those the tool runs the engine's own
+  shape converted, checked by turning it back; `CHUNKS.DAT` (10.8 MB), each of the 36,864
+  world chunks' fixed objects as the engine makes them; and a new game's `NPC.DAT` and
+  `U7IREGxx`, as `INITGAME.DAT` holds them. For those the tool runs the engine's own
   core, shown `STATIC/` alone. Build: `cmake --build build-host --target u7jagdata`. The files go
   on the card in `U7/ENGINE/`; the PC engine reads them too (`<dir>/ENGINE/`), turning them
   round. Without them the engine makes it all from the original's files, as before.
-- `jaguar/` — the Jaguar: GameDrive files, a double-buffered 8-bit bitmap object, the blitter,
+- `jaguar/` — the Jaguar: GameDrive files, a triple-buffered 8-bit bitmap object, the blitter,
   the GPU. Build: `cmake --build <jaguar build> --target u7engine_jag`, which gives `U7ENGINE.rom`.
-  It uses the same card as the game (`U7/STATIC`, `U7/GAMEDAT`), and `U7/ENGINE` if there. The pad scrolls the view;
-  untouched, it tours Britain with 12 walkers (a cell every `SCROLL_FRAMES` frames, default 1).
+  It uses the same card as the game (`U7/STATIC`, `U7/GAMEDAT`) and `U7/ENGINE`. It starts a new
+  game's world at Trinsic: the avatar and the NPCs of `ENGINE/NPC.DAT` (the 31 nearest it), and
+  the new game's movable items (`ENGINE/U7IREGxx`, before `GAMEDAT/`'s). The pad walks the
+  avatar, 7.5 cells a second, the view on it; walls stop it (doors do not, there being no way to
+  open one); a roof over it is lifted (below). Untouched, it walks into the stables and out.
+  Built with `-DENGINE_TOUR`, it tours Britain with 12 walkers instead (a cell every
+  `SCROLL_FRAMES` frames, default 1): the measurements below.
   Every 64 frames the frame rate and timings go to `GD_DebugString` (in blanks, timed by the
   vertical count to a half-line), and once a profile of 900 samples to `U7/PCPROF.BIN`
   (`tools/jag-profile.py`). The samples are taken by Tom's timer at 37 Hz, apart from the frames:
   taken at the blanks, they fell where the frame loop always is then, and misled.
 
-## Measured (2026-11-26, timing core, Britain, 12 walkers)
+## Measured (2026-11-26, timing core, `-DENGINE_TOUR`: Britain, 12 walkers)
+
+The walk at Trinsic (into the stables and out, about 10 NPCs in view) runs at 41-59 frames a
+second, but for the pause at the roof.
 
 Frames a second, averaged over 64 frames; the view scrolls a cell every frame (60 cells a second,
 many times walking pace) or every fourth frame (15 cells a second):
@@ -141,7 +156,11 @@ call chains (`tools/jag-profile.py --frames`).
   whole dataset (7.1 MB) would fit, read once at the start.
 - **Animation.** Animated statics and terrain (water, fire, clocks) belong with the movers, not in
   the ring.
-- **Translucency, roofs** (hidden when inside), **NPCs** from the save, and the avatar.
+- **Translucency**; **NPCs** from a save (it holds them as the game's memory, `U7NBUF.DAT` and
+  `U7IBUF.DAT`, not as `NPC.DAT`), their schedules and walking; **doors** opened; steps and
+  stairs (the avatar keeps its level).
+- **The pause at a roof**: the areas could be drawn again a few a frame, nearest the avatar
+  first.
 - **Order.** `order_of()` is a simple rule. It still needs checking against the original's frames
   at the same places (the PC reference can draw them). The ring version already draws doors and
   benches that the first version lost.

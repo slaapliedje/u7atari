@@ -742,19 +742,129 @@ static void bench_shapes(void)
 
 /* ---- the test ---- */
 
+#ifdef ENGINE_TOUR
 static uint32_t rng = 12345;
 static int rnd(int n)
 {
 	rng = rng * 1103515245u + 12345u;
 	return (int) ((rng >> 16) % (uint32_t) n);
 }
+#endif
+
+/* ---- the walk: the avatar and the NPCs of a new game (ENGINE/NPC.DAT), the pad walking it ---- */
+
+#ifndef ENGINE_TOUR
+#define WALK_BLANKS 8           /* a cell every 8 blanks: 7.5 a second */
+static struct ENpc npcs[400];
+static int nnpcs, me = -1;
+static int16_t ax, ay, picked_x, picked_y;
+static uint8_t az, walk_dir;
+static uint16_t walk_steps;
+static uint32_t walk_tick;
+/* untouched, it walks this (for runs without a pad): into the stables at Trinsic and out */
+static const struct { int8_t dx, dy, n; } demo[] = {
+	{ 0, -1, 6 }, { -1, 0, 9 }, { 0, -1, 9 }, { 1, 0, 5 }, { -1, 0, 5 }, { 0, 1, 9 }, { 1, 0, 9 },
+	{ 0, 1, 6 },
+};
+static uint8_t demo_leg, demo_left, touched;
+
+static int walk_init(void)
+{
+	nnpcs = e_npcs(npcs, 400);
+	for (int i = 0; i < nnpcs; i++)
+		if (npcs[i].number == 0)
+			me = i;
+	if (me < 0)
+		return 0;
+	ax = picked_x = npcs[me].x;
+	ay = picked_y = npcs[me].y;
+	az = npcs[me].z;
+	for (int m = 0; m < E_MOVERS; m++)
+		e_mover_add(0, 0, 0, 0);
+	e_mover_set(0, npcs[me].tf, ax, ay, az);
+	e_movers_near(npcs, nnpcs, ax, ay);
+	e_follow(0);
+#ifdef ENGINE_FRAME_SUMS
+	walk_tick = 0;
+#else
+	walk_tick = jag_ticks;
+#endif
+	demo_left = (uint8_t) demo[0].n;
+	return 1;
+}
+
+/* A cell for each WALK_BLANKS blanks gone: the pad's way, or the demo's; along a wall when one way
+ * is free. The NPCs near it picked again when it has gone 8 cells; the ceiling over it. */
+static void walk_update(void)
+{
+	uint16_t type = npcs[me].tf & 0x3ff;
+	int moved = 0, walking = 0;
+
+#ifdef ENGINE_FRAME_SUMS
+	/* by frames, not time, so the frames hang on the frame count alone */
+	static uint32_t frames;
+	uint32_t now = (frames++ / 2) * WALK_BLANKS;
+	while (now - walk_tick >= WALK_BLANKS) {
+#else
+	while (jag_ticks - walk_tick >= WALK_BLANKS) {
+#endif
+		uint32_t held = pad();
+		int dx = 0, dy = 0;
+		walk_tick += WALK_BLANKS;
+		if (held)
+			touched = 1;
+		if (touched) {
+			dx = (held & (1UL << 23) ? 1 : 0) - (held & (1UL << 22) ? 1 : 0);
+			dy = (held & (1UL << 21) ? 1 : 0) - (held & (1UL << 20) ? 1 : 0);
+		} else {
+			dx = demo[demo_leg].dx;
+			dy = demo[demo_leg].dy;
+			if (--demo_left == 0) {
+				demo_leg = (uint8_t) ((demo_leg + 1) % (sizeof demo / sizeof demo[0]));
+				demo_left = (uint8_t) demo[demo_leg].n;
+			}
+		}
+		if (dx == 0 && dy == 0)
+			continue;
+		walking = 1;
+		walk_dir = (uint8_t) (dy < 0 ? 0 : dx > 0 ? 1 : dy > 0 ? 2 : 3);
+		uint16_t tf = e_walk_frame(type, walk_dir, 0);
+		int16_t nx = (int16_t) (ax + dx), ny = (int16_t) (ay + dy);
+		if (e_blocked(tf, nx, ny, az)) {
+			if (dx && !e_blocked(tf, nx, ay, az))
+				ny = ay;
+			else if (dy && !e_blocked(tf, ax, ny, az))
+				nx = ax;
+			else
+				continue;
+		}
+		ax = nx;
+		ay = ny;
+		walk_steps++;
+		moved = 1;
+	}
+	if (walking || moved)
+		e_mover_set(0, e_walk_frame(type, walk_dir, walk_steps), ax, ay, az);
+	if (moved) {
+		if ((ax > picked_x ? ax - picked_x : picked_x - ax)
+			+ (ay > picked_y ? ay - picked_y : picked_y - ay) >= 8) {
+			e_movers_near(npcs, nnpcs, ax, ay);
+			picked_x = ax;
+			picked_y = ay;
+		}
+		e_follow(0);
+	}
+}
+#endif
 
 void jag_main(void)
 {
+#ifdef ENGINE_TOUR
 	/* a tour of Britain: east along a street, then south, then back */
 	static const struct { int8_t dx, dy; int16_t n; } tour[] = {
 		{ 1, 0, 64 }, { 0, 1, 48 }, { -1, 0, 64 }, { 0, -1, 48 },
 	};
+#endif
 	char text[320];
 	int16_t x = 880, y = 1330;
 	struct { int16_t x, y; int dir; } walker[E_MOVERS];
@@ -791,12 +901,24 @@ void jag_main(void)
 		GD_DebugString(text);
 	}
 #endif
+#ifdef ENGINE_TOUR
 	for (int m = 0; m < nm; m++) {
 		walker[m].x = (int16_t) (x + 4 + rnd(32));
 		walker[m].y = (int16_t) (y + 4 + rnd(20));
 		walker[m].dir = rnd(4);
 		e_mover_add(721, walker[m].x, walker[m].y, 0);
 	}
+#else
+	(void) walker;
+	(void) nm;
+	(void) leg;
+	(void) step;
+	if (!walk_init()) {
+		GD_DebugString("no NPC.DAT: no avatar\n");
+		for (;;)
+			;
+	}
+#endif
 	/* the profile's samples by Tom's timer, at 37 Hz (26.59 MHz / 1000 / 719), apart from the
 	 * frames, which keep to the blanks */
 	REG16(0xF00050) = 999;
@@ -808,6 +930,11 @@ void jag_main(void)
 	GD_DebugString("engine test: running\n");
 	mark_ticks = last_shown = jag_ticks;
 	for (;;) {
+#ifndef ENGINE_TOUR
+		walk_update();
+		x = (int16_t) (ax - E_VIEW_CELLS_X / 2);
+		y = (int16_t) (ay - E_VIEW_CELLS_Y / 2);
+#else
 		uint32_t held = pad();
 
 		if (held) {
@@ -833,6 +960,7 @@ void jag_main(void)
 			e_mover_set(m, e_walk_frame(721, walker[m].dir, (int) frame), walker[m].x,
 				walker[m].y, 0);
 		}
+#endif
 		if (!profile_saved && jag_prof_next >= jag_prof_end) {
 			uint16_t f = GD_FOpen("U7/PCPROF.BIN", GD_FOPEN_WRITE | GD_FOPEN_CREATE_ALWAYS);
 			profile_saved = 1;

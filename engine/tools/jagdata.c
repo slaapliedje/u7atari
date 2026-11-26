@@ -6,6 +6,7 @@
  *   SHAPES.FLX  SHAPES.VGA with every object shape in the engine's form (E_SHAPES_TITLE)
  *   CHUNKS.DAT  every world chunk's fixed statics, binned, as the engine makes them: the engine's
  *               own core does it here, shown STATIC/ alone (E_CHUNKS_TITLE)
+ *   NPC.DAT     a new game's NPCs, and U7IREGxx its movable items, as INITGAME.DAT holds them
  * both in the Jaguar's byte order. They go on the card in U7/ENGINE/. The original's files are
  * only read.
  */
@@ -121,6 +122,46 @@ static void put_be32(uint8_t *p, uint32_t v)
 	p[1] = (uint8_t) (v >> 16);
 	p[2] = (uint8_t) (v >> 8);
 	p[3] = (uint8_t) v;
+}
+
+static uint32_t rd32(const uint8_t *p);
+static uint8_t *slurp(const char *path, long *size);
+
+/* NPC.DAT: INITGAME.DAT's entry of that name (each entry its 13-byte name, then the file). */
+static int write_npcs(const char *data, const char *out_dir)
+{
+	char path[1024];
+	long size;
+	uint8_t *in;
+	FILE *f;
+
+	snprintf(path, sizeof path, "%s/STATIC/INITGAME.DAT", data);
+	in = slurp(path, &size);
+	uint32_t count = rd32(in + 0x54);
+	int written = 0;
+	for (uint32_t i = 0; i < count && 0x80 + i * 8 + 8 <= (uint32_t) size; i++) {
+		uint32_t at = rd32(in + 0x80 + i * 8), n = rd32(in + 0x84 + i * 8);
+		char name[14];
+		if (n < 13 || at + n > (uint32_t) size)
+			continue;
+		memcpy(name, in + at, 13);
+		name[13] = 0;
+		for (char *c = name; *c; c++)
+			if (*c >= 'a' && *c <= 'z')
+				*c = (char) (*c - 'a' + 'A');
+		if (strcmp(name, "NPC.DAT") != 0 && strncmp(name, "U7IREG", 6) != 0)
+			continue;
+		snprintf(path, sizeof path, "%s/%s", out_dir, name);
+		if ((f = fopen(path, "wb")) == NULL || fwrite(in + at + 13, 1, n - 13, f) != n - 13
+			|| fclose(f) != 0) {
+			fprintf(stderr, "cannot write %s\n", path);
+			return 1;
+		}
+		written++;
+	}
+	free(in);
+	printf("%s/NPC.DAT and U7IREG: %d files from INITGAME.DAT\n", out_dir, written);
+	return written == 0;
 }
 
 /* CHUNKS.DAT: the core's records of every world chunk. */
@@ -276,5 +317,5 @@ int main(int argc, char **argv)
 		objects, made / 1024, raw_total / 1024, refused);
 	if (refused != 0)
 		return 1;
-	return write_chunks(argv[1], argv[2]);
+	return write_chunks(argv[1], argv[2]) || write_npcs(argv[1], argv[2]);
 }
