@@ -24,6 +24,7 @@
 #include "backend.h"
 #include "game.h"
 #include "gd.h"
+#include "spans.h"
 
 #define PATH_SIZE 128
 #define MAX_HANDLES 16
@@ -303,6 +304,7 @@ int32_t plat_file_read(int16_t file, void *buffer, int32_t count)
 {
 	handle *h = get_handle(file);
 
+	SPANS_FENCE();
 	if (h == NULL || count < 0)
 		return -1;
 	if (count > h->size - h->pos)
@@ -330,6 +332,7 @@ int32_t plat_file_write(int16_t file, const void *buffer, int32_t count)
 {
 	handle *h = get_handle(file);
 
+	SPANS_FENCE();
 	if (h == NULL || h->memory != NULL || count < 0)
 		return -1;
 	if (count == 0)

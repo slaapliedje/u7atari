@@ -1,21 +1,27 @@
-; Shape drawing in copy mode, unflipped, on Tom's GPU: DrawSpans<SHAPE_COPY, false> in the fork's
-; game/main/xmm/shapedraw.cpp, the game's most used drawing, step for step. spans.c copies this
-; to the GPU's RAM at $F03000, posts a frame in the parameter block and waits for the GPU to stop.
-; Assembled by rmac (CMakeLists.txt).
+; Shape drawing on Tom's GPU: every DrawSpans<Mode, Flipped> of the fork's
+; game/main/xmm/shapedraw.cpp, step for step. spans.c copies this to the GPU's RAM at $F03000,
+; posts a frame in the parameter block and waits for the GPU to stop. Assembled by rmac
+; (CMakeLists.txt).
 ;
 ; Parameter block (GPU RAM, $F03F80; longs):
-;   +0 source (the frame's first span)  +1 x  +2 y  +3 clip x0  +4 clip y0  +5 clip x1  +6 clip y1
-;   +7 row table (little-endian linear addresses, one a row)  +8 linear base
+;   +0 source (the frame's first span)  +1/+2 along and across base (x, y; flipped: y, x)
+;   +3/+4 clip along and across minimum  +5/+6 their maximum  +7 row table (little-endian linear
+;   addresses, one a row)  +8 linear base  +9 table  +10 mode (0 copy, 1 translate, 2 blend)
+;   +11 flipped  +12 step (1; flipped, a row: 320)
 ; A span: its length * 2 (+1 when run-encoded; 0 ends the frame), its offsets along and across
 ; from the hot spot, all little-endian words at any address, then raw pixels or runs (count * 2,
 ; +1 for a fill of the byte after it). Positions are 16-bit, as in the C: each sum is wrapped.
+; Unflipped, a span runs along a row; flipped, down a column: the screen address is the row of
+; its first visible pixel, and each pixel a row further on.
 ;
-; r0 source		r1 x		r2 y		r3/r4 clip x0/y0	r5/r6 clip x1/y1
-; r7 row table		r8 linear base	r9 length	r10 along		r11 across
-; r12/r13 temps		r15 screen (the span's first visible pixel)
-; r16 first		r17 last	r18 run-encoded	r19 pos		r20 count
-; r21 from		r22 to		r23 run byte	r28 destination		r30 pixel
-; r24-r27, r29 the addresses jumped to
+; r0 source		r1/r2 along/across base		r3/r4 clip along/across minimum
+; r5/r6 their maximum	r7 row table	r8 linear base	r9 length	r10 along	r11 across
+; r12/r13 temps		r14 table	r15 screen (the span's first visible pixel)
+; r16 first		r17 last	r18 run-encoded	r19 pos		r20 count	r21 from	r22 to
+; r23 run byte		r24 Span	r25 Skip	r26 the mode's raw pixels	r27 its fill
+; r28 destination	r29 RunLoop	r30 pixel	r31 step
+; Alternate bank r0: flipped. A pixel routine has r13 pixels to put at r28 on (r31 apart), from
+; r12 on (raw) or of value r30 (fill), and goes to After.
 
 G_CTRL		.equ	$F02114
 SPAN_PARAMS	.equ	$F03F80
@@ -39,10 +45,19 @@ gpu_spans:
 		load	(r14+6),r6
 		load	(r14+7),r7
 		load	(r14+8),r8
+		load	(r14+10),r12		; the mode's two pixel routines
+		movei	#Routines,r13
+		shlq	#3,r12
+		add	r12,r13
+		load	(r13),r26
+		addq	#4,r13
+		load	(r13),r27
+		load	(r14+11),r12
+		moveta	r12,r0			; flipped
+		load	(r14+12),r31
+		load	(r14+9),r14		; the table, last: r14 was the block
 		movei	#Span,r24
 		movei	#Skip,r25
-		movei	#Done,r26
-		movei	#Runs,r27
 		movei	#RunLoop,r29
 
 ; ---- a span's header and offsets ----
@@ -55,9 +70,10 @@ Span:
 		or	r12,r9			; the header
 		move	r9,r18
 		shrq	#1,r9			; length
-		jump	EQ,(r26)		; 0: the frame is done
-		moveq	#1,r12
-		and	r12,r18			; run-encoded
+		movei	#Done,r12
+		jump	EQ,(r12)		; 0: the frame is done
+		moveq	#1,r13
+		and	r13,r18			; run-encoded
 
 		loadb	(r0),r10
 		addq	#1,r0
@@ -67,7 +83,7 @@ Span:
 		or	r12,r10
 		add	r1,r10
 		shlq	#16,r10
-		sharq	#16,r10			; along = (int16_t) (x + offset)
+		sharq	#16,r10			; along = (int16_t) (base + offset)
 
 		loadb	(r0),r11
 		addq	#1,r0
@@ -77,16 +93,16 @@ Span:
 		or	r12,r11
 		add	r2,r11
 		shlq	#16,r11
-		sharq	#16,r11			; across = (int16_t) (y + offset)
+		sharq	#16,r11			; across = (int16_t) (base + offset)
 
 ; ---- outside the clip box: skipped ----
-		cmp	r4,r11			; across - y0
+		cmp	r4,r11			; across - minimum
 		jump	MI,(r25)
 		nop
-		cmp	r11,r6			; y1 - across
+		cmp	r11,r6			; maximum - across
 		jump	MI,(r25)
 		nop
-		cmp	r10,r5			; x1 - along
+		cmp	r10,r5			; along maximum - along
 		jump	MI,(r25)
 		nop
 		move	r10,r12
@@ -94,19 +110,19 @@ Span:
 		subq	#1,r12
 		shlq	#16,r12
 		sharq	#16,r12			; (int16_t) (along + length - 1)
-		cmp	r3,r12			; that - x0
+		cmp	r3,r12			; that - along minimum
 		jump	MI,(r25)
 		nop
 
 ; ---- the visible pixels, first to last, counted from the span's start ----
 		move	r3,r16
-		sub	r10,r16			; x0 - along
+		sub	r10,r16			; minimum - along
 		jr	PL,First
 		nop
 		moveq	#0,r16
 First:
 		move	r5,r17
-		sub	r10,r17			; x1 - along
+		sub	r10,r17			; maximum - along
 		move	r9,r12
 		subq	#1,r12			; length - 1
 		cmp	r12,r17
@@ -118,8 +134,18 @@ Last:
 		jump	MI,(r25)
 		nop
 
-; ---- screen = linear base + the row's address + along + first ----
-		move	r11,r12
+; ---- screen: linear base + a row's address + the offset into it ----
+; unflipped: row across, along + first in; flipped: row along + first, across in
+		movefa	r0,r13
+		cmpq	#0,r13
+		jr	NE,FlipRow
+		move	r11,r12			; across
+		jr	T,Row
+		nop
+FlipRow:
+		move	r10,r12
+		add	r16,r12			; along + first
+Row:
 		shlq	#2,r12
 		add	r7,r12
 		loadb	(r12),r15
@@ -136,28 +162,48 @@ Last:
 		shlq	#24,r13
 		or	r13,r15
 		add	r8,r15
+		movefa	r0,r13
+		cmpq	#0,r13
+		jr	NE,FlipIn
+		nop
 		add	r10,r15
-		add	r16,r15
-
+		jr	T,In
+		add	r16,r15			; along + first
+FlipIn:
+		add	r11,r15			; across
+In:
 		cmpq	#0,r18
-		jump	NE,(r27)
+		movei	#Runs,r12
+		jump	NE,(r12)
 		nop
 
-; ---- raw pixels: last - first + 1 from source + first ----
+; ---- raw pixels: one run of the span's whole length ----
+		moveq	#0,r19			; pos
+		move	r9,r20			; count
+		move	r16,r21			; from
+		move	r17,r22			; to
 		move	r0,r12
-		add	r16,r12
-		move	r17,r13
-		sub	r16,r13
-		addq	#1,r13
-Copy:
-		loadb	(r12),r30
-		addq	#1,r12
-		subq	#1,r13
-		storeb	r30,(r15)
-		jr	NE,Copy
-		addq	#1,r15
-		jump	T,(r24)
+		add	r16,r12			; source + first
 		add	r9,r0			; past the span
+
+; ---- pixels from to to of a raw run, r12 at from's ----
+EmitRaw:
+		cmp	r21,r22			; to - from: none when negative
+		jr	MI,NoPixels
+		nop
+		move	r22,r13
+		sub	r21,r13
+		addq	#1,r13			; to - from + 1
+		move	r21,r28
+		sub	r16,r28
+		imult	r31,r28
+		add	r15,r28			; screen + (from - first) * step
+		jump	T,(r26)
+		nop
+NoPixels:
+		movei	#After,r13
+		jump	T,(r13)
+		nop
 
 ; ---- runs: each clipped to first..last ----
 Runs:
@@ -184,46 +230,42 @@ From:
 		nop
 		move	r17,r22
 To:
-		move	r21,r28			; destination: screen + from - first
-		sub	r16,r28
-		add	r15,r28
-		move	r22,r13			; to - from + 1 pixels
+		movei	#RunRaw,r12
+		btst	#0,r23
+		jump	EQ,(r12)
+		nop
+		loadb	(r0),r30		; a fill of one value
+		addq	#1,r0
+		cmp	r21,r22
+		jr	MI,NoFill
+		nop
+		move	r22,r13
 		sub	r21,r13
 		addq	#1,r13
-		btst	#0,r23
-		jr	EQ,RawRun
+		move	r21,r28
+		sub	r16,r28
+		imult	r31,r28
+		add	r15,r28
+		jump	T,(r27)
 		nop
-
-		loadb	(r0),r30		; a fill
-		addq	#1,r0
-		cmp	r21,r22			; to - from: none when negative
-		jump	MI,(r29)
-		add	r20,r19			; pos += count (the delay slot runs either way)
-Fill:
-		subq	#1,r13
-		storeb	r30,(r28)
-		jr	NE,Fill
-		addq	#1,r28
+NoFill:
 		jump	T,(r29)
-		nop
-
-RawRun:
+		add	r20,r19			; pos += count
+RunRaw:
 		move	r21,r12			; source + from - pos
 		sub	r19,r12
 		add	r0,r12
-		cmp	r21,r22			; to - from: none when negative
-		jr	MI,RawDone
-		add	r20,r19			; pos += count
-RawCopy:
-		loadb	(r12),r30
-		addq	#1,r12
-		subq	#1,r13
-		storeb	r30,(r28)
-		jr	NE,RawCopy
-		addq	#1,r28
-RawDone:
-		jump	T,(r29)
+		movei	#EmitRaw,r13
+		jump	T,(r13)
 		add	r20,r0			; past the run's pixels
+
+; ---- after a run's pixels: the next run, or the next span ----
+After:
+		cmpq	#0,r18
+		jump	EQ,(r24)		; a raw span: done
+		nop
+		jump	T,(r29)
+		add	r20,r19			; pos += count
 
 ; ---- a span not drawn: past its pixels ----
 Skip:
@@ -251,6 +293,87 @@ SkipTest:
 		jump	T,(r24)
 		nop
 
+; ---- the pixel routines ----
+; copy: the shape's pixels
+CopyRaw:
+		loadb	(r12),r30
+		addq	#1,r12
+		subq	#1,r13
+		storeb	r30,(r28)
+		jr	NE,CopyRaw
+		add	r31,r28
+		movei	#After,r12
+		jump	T,(r12)
+		nop
+CopyFill:
+		subq	#1,r13
+		storeb	r30,(r28)
+		jr	NE,CopyFill
+		add	r31,r28
+		movei	#After,r12
+		jump	T,(r12)
+		nop
+
+; translate: the screen through the table, whatever the shape's pixels
+Translate:
+		loadb	(r28),r30
+		add	r14,r30
+		loadb	(r30),r30
+		subq	#1,r13
+		storeb	r30,(r28)
+		jr	NE,Translate
+		add	r31,r28
+		movei	#After,r12
+		jump	T,(r12)
+		nop
+
+; blend: a pixel the table maps to 255 stays solid; any other picks the 256-byte table, counted
+; from the table's start, that recolors the screen
+BlendRaw:
+		movei	#255,r22
+BlendRawLoop:
+		loadb	(r12),r30		; the pixel
+		addq	#1,r12
+		move	r14,r23
+		add	r30,r23
+		loadb	(r23),r23		; mix
+		cmp	r22,r23
+		jr	EQ,BlendRawPut
+		shlq	#8,r23
+		add	r14,r23
+		loadb	(r28),r21
+		add	r21,r23
+		loadb	(r23),r30		; table[mix * 256 + screen]
+BlendRawPut:
+		subq	#1,r13
+		storeb	r30,(r28)
+		jr	NE,BlendRawLoop
+		add	r31,r28
+		movei	#After,r12
+		jump	T,(r12)
+		nop
+BlendFill:
+		move	r14,r23
+		add	r30,r23
+		loadb	(r23),r23		; mix
+		movei	#255,r22
+		movei	#CopyFill,r21
+		cmp	r22,r23
+		jump	EQ,(r21)		; solid
+		shlq	#8,r23
+		add	r14,r23			; the recoloring table
+BlendFillLoop:
+		loadb	(r28),r30
+		add	r23,r30
+		loadb	(r30),r30
+		subq	#1,r13
+		storeb	r30,(r28)
+		jr	NE,BlendFillLoop
+		add	r31,r28
+		movei	#After,r12
+		jump	T,(r12)
+		nop
+
 Done:
 		loadb	(r0),r9			; after the last store has gone out
 		or	r9,r9
@@ -259,6 +382,13 @@ Done:
 		store	r0,(r1)
 		nop
 		nop
+
+; each mode's raw and fill routines
+		.long
+Routines:
+		dc.l	CopyRaw, CopyFill
+		dc.l	Translate, Translate
+		dc.l	BlendRaw, BlendFill
 
 		.68000
 		.long

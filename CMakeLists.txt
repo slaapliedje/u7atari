@@ -58,8 +58,8 @@ if(U7_JAGUAR)
     add_subdirectory("${U7_UPSTREAM_DIR}" game)
     # The terrain picture goes into the viewport by blitter rectangles (platform/jaguar/blit.c).
     target_compile_definitions(u7_game PRIVATE U7_PLAT_COPY_RECT)
-    # Copy-mode shape spans are drawn by the GPU (platform/jaguar/spans.c and spans_gpu.s).
-    target_compile_definitions(u7_game PRIVATE U7_SHAPE_SPANS_68K)
+    # Shapes are drawn by the GPU, every mode (platform/jaguar/spans.c and spans_gpu.s).
+    target_compile_definitions(u7_game PRIVATE U7_SHAPE_SPANS_BACKEND)
     # Without the original's re-summing of the flags and item lookups at every read and write, a
     # check against stray writes that only ever finds memory gone bad.
     target_compile_definitions(u7_game PRIVATE U7_NO_STRAY_WRITE_CHECKS)

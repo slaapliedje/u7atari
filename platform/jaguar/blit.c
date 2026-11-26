@@ -6,11 +6,14 @@
  * phrase (the 68000 does the bytes before the first phrase and after the last). The block goes
  * as rows of 4096 bytes and a last shorter row. The blitter goes up through memory, so a move
  * onto itself is blitted only downwards. Everything else, and every small one, goes to the C
- * library's own. The 68000 waits for each blit: it gets no bus while one runs anyway.
+ * library's own. The 68000 waits for each blit: it gets no bus while one runs anyway. Each first
+ * waits for the GPU's shape drawing, if any (spans.h).
  */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#include "spans.h"
 
 #define BREG(off) (*(volatile uint32_t *) (0xF02200UL + (off)))
 #define A1_BASE 0x00
@@ -140,6 +143,7 @@ static int blittable(const void *dst, const void *src, size_t n)
 /* Small ones go straight on: most are, and this is on every one's way. */
 void *__wrap_memcpy(void *dst, const void *src, size_t n)
 {
+	SPANS_FENCE();
 	if (n < SMALLEST || !blittable(dst, src, n))
 		return __real_memcpy(dst, src, n);
 	return copy(dst, src, n);
@@ -147,6 +151,7 @@ void *__wrap_memcpy(void *dst, const void *src, size_t n)
 
 void *__wrap_memmove(void *dst, const void *src, size_t n)
 {
+	SPANS_FENCE();
 	/* upwards over itself: the blitter would read what it had just written */
 	if (n < SMALLEST || !blittable(dst, src, n) || ((uint8_t *) dst > (const uint8_t *) src
 		&& (uint8_t *) dst < (const uint8_t *) src + n))
@@ -159,6 +164,7 @@ void *__wrap_memset(void *dst, int value, size_t n)
 	uint8_t *d = dst;
 	size_t head, body;
 
+	SPANS_FENCE();
 	if (n < SMALLEST || !in_dram(dst, n))
 		return __real_memset(dst, value, n);
 	head = (size_t) (-(uint32_t) d & 7);
@@ -186,6 +192,7 @@ bool plat_copy_rect(uint8_t *dst, int16_t dx, int16_t dy, const uint8_t *src, in
 		return false;
 	if (w <= 0 || h <= 0)
 		return true;
+	SPANS_FENCE();
 	blit_wait();
 	BREG(A1_BASE) = (uint32_t) dst;
 	BREG(A1_FLAGS) = PIXEL8 | WID320 | XADDPHR;
