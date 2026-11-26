@@ -112,6 +112,7 @@ struct EStats {
 	uint32_t finish_time;       /* ... waiting for the drawing to finish */
 	uint32_t front_time;        /* of object_time, working out what is in front of movers */
 	uint32_t front_misses;      /* movers whose fronts were worked out anew */
+	uint32_t load_time;         /* of build_time and object_time, reading shapes in */
 };
 extern struct EStats e_stats;
 

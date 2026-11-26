@@ -71,11 +71,21 @@ static int profile_saved;
 
 static uint32_t gd_bios[1024];
 static uint32_t object_list[12] __attribute__((aligned(16)));
-static uint8_t frames[2][W * H] __attribute__((aligned(16)));
+/* Three frames: one shown, one waiting for the next blank, one being drawn; so the 68000 goes on
+ * drawing instead of waiting for a blank (ENGINE_DOUBLE_BUFFER: two, waiting). */
+#ifdef ENGINE_DOUBLE_BUFFER
+#define FRAMES 2
+#else
+#define FRAMES 3
+#endif
+static uint8_t frames[FRAMES][W * H] __attribute__((aligned(16)));
 static uint8_t store[1260 * 1024] __attribute__((aligned(8)));
 static uint8_t row_table[H * 4];
-static struct ESurface surfaces[2] = {
+static struct ESurface surfaces[FRAMES] = {
 	{ frames[0], W, W, H, row_table }, { frames[1], W, W, H, row_table },
+#if FRAMES == 3
+	{ frames[2], W, W, H, row_table },
+#endif
 };
 static uint32_t stop_link;
 
@@ -401,14 +411,25 @@ static void branch(uint32_t *object, uint32_t link, uint16_t ypos, uint32_t cond
 	object[1] = link << 21 | condition << 14 | (uint32_t) ypos << 3 | 3;
 }
 
-/* From the next vertical blank on, the bitmap shows pixels. */
+/* From the next vertical blank on, the bitmap shows pixels. With three frames, the one given
+ * last time has to have been put up first (a blank since): then the frame given before it is no
+ * longer shown, and is the next to be drawn. With two, waits for the blank. */
+static uint32_t shown_tick;
+
 static void show(const uint8_t *pixels)
 {
+#if FRAMES == 3
+	while (jag_ticks == shown_tick)
+		;
+	jag_vbl_phrase[0] = (uint32_t) pixels << 8 | stop_link >> 11;
+	shown_tick = jag_ticks;
+#else
 	uint32_t ticks = jag_ticks;
 
 	jag_vbl_phrase[0] = (uint32_t) pixels << 8 | stop_link >> 11;
 	while (jag_ticks == ticks)
 		;
+#endif
 }
 
 static void video_init(void)
@@ -547,10 +568,11 @@ void jag_main(void)
 	int16_t x = 880, y = 1330;
 	struct { int16_t x, y; int dir; } walker[E_MOVERS];
 	int nm = 12, leg = 0, step = 0, r;
-	uint32_t frame = 0, mark_ticks, mark_frame = 0;
+	uint32_t frame = 0, mark_ticks, mark_frame = 0, last_shown, worst = 0;
 
 	GD_Install(gd_bios);
 	e_surface_rows(&surfaces[0]);
+	shown_tick = jag_ticks - 1;
 	video_init();
 	if ((r = e_init("U7/", store, sizeof store)) != 0) {
 		snprintf(text, sizeof text, "e_init failed: %d\n", r);
@@ -572,7 +594,7 @@ void jag_main(void)
 	jag_prof_end = profile + sizeof profile;
 	jag_prof_next = profile;
 	GD_DebugString("engine test: running\n");
-	mark_ticks = jag_ticks;
+	mark_ticks = last_shown = jag_ticks;
 	for (;;) {
 		uint32_t held = pad();
 
@@ -608,23 +630,29 @@ void jag_main(void)
 				GD_DebugString("profile saved\n");
 			}
 		}
-		struct ESurface *drawing = &surfaces[(frame + 1) & 1];
+		struct ESurface *drawing = &surfaces[(frame + 1) % FRAMES];
 		e_set_view(x, y);
 		e_draw(drawing);
 		show(drawing->pixels);
 		frame++;
+		if (jag_ticks - last_shown > worst && frame > 1)
+			worst = jag_ticks - last_shown;
+		last_shown = jag_ticks;
 		if ((frame & 63) == 0) {
 			uint32_t now = jag_ticks, tenths = (frame - mark_frame) * 600 / (now - mark_ticks);
 			snprintf(text, sizeof text, "fps %lu.%lu (frame %lu, blank %lu) rebuilds %lu statics %lu "
 				"edges %lu drawn %lu shapes %luK loads %lu; blanks: build %lu copy %lu objects %lu "
-				"finish %lu fronts %lu misses %lu\n", (unsigned long) tenths / 10,
+				"finish %lu fronts %lu misses %lu; worst frame %lu loads %lu\n", (unsigned long) tenths / 10,
 				(unsigned long) tenths % 10, (unsigned long) frame, (unsigned long) now,
 				(unsigned long) e_stats.rebuilds, (unsigned long) e_stats.statics,
 				(unsigned long) e_stats.edges, (unsigned long) e_stats.drawn,
 				(unsigned long) e_stats.shape_bytes / 1024, (unsigned long) e_stats.shape_loads,
 				(unsigned long) e_stats.build_time, (unsigned long) e_stats.copy_time,
 				(unsigned long) e_stats.object_time, (unsigned long) e_stats.finish_time,
-				(unsigned long) e_stats.front_time, (unsigned long) e_stats.front_misses);
+				(unsigned long) e_stats.front_time, (unsigned long) e_stats.front_misses,
+				(unsigned long) worst, (unsigned long) e_stats.load_time);
+			worst = 0;
+			e_stats.load_time = 0;
 			e_stats.front_time = e_stats.front_misses = 0;
 			e_stats.build_time = e_stats.copy_time = e_stats.object_time = e_stats.finish_time = 0;
 			GD_DebugString(text);

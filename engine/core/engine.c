@@ -20,7 +20,9 @@
 #define TILE_TYPES 150          /* types below are flat 8 by 8 tiles */
 #define REGION_SLOTS 4         /* the chunks in use touch at most 2 by 2 */
 #define REGION_ITEMS 4096
+#ifndef CHUNK_SLOTS
 #define CHUNK_SLOTS 36         /* the ring's 4 by 3 areas and those around them, 6 by 5 */
+#endif
 #define CHUNK_OBJECTS 96       /* cells with an object shape */
 #define CHUNK_STATICS 224      /* its objects, all told */
 #define AREA_OBJECTS 512       /* objects over one area */
@@ -156,12 +158,23 @@ static void make_room(uint32_t size)
 		evict_oldest();
 }
 
+static const uint8_t *load_shape(uint16_t type);
+
 static const uint8_t *shape(uint16_t type)
 {
-	uint32_t at, raw, size;
 
 	if (type >= shapes.count || shape_at[type] != NULL)
 		return type < shapes.count ? shape_at[type] : NULL;
+	uint32_t t0 = eb_clock();
+	const uint8_t *got = load_shape(type);
+	e_stats.load_time += eb_clock() - t0;
+	return got;
+}
+
+static const uint8_t *load_shape(uint16_t type)
+{
+	uint32_t at, raw, size;
+
 	at = shapes.table[type * 2];
 	raw = shapes.table[type * 2 + 1];
 	if (raw == 0)
@@ -665,8 +678,10 @@ static void draw_static(struct ESurface *dst, const int16_t clip[4], const struc
 
 /* ---- the ring of areas ---- */
 
+#ifndef RING_AX
 #define RING_AX 4
 #define RING_AY 3
+#endif
 #define RING_W (RING_AX * 128)
 #define RING_H (RING_AY * 128)
 static struct ESurface ring;

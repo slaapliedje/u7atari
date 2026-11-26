@@ -68,6 +68,7 @@ many times walking pace) or every fourth frame (15 cells a second):
 | Ring of areas drawn ahead of the view | 18-31 | 23-28 with the walkers in view, 44-51 without |
 | Shapes converted as read, drawn from a list | 17-21 | 24-30 with the walkers in view, 38-40 without |
 | Shapes converted on the PC, read as they are | 23-35 | 25-34 with the walkers in view, 43-53 without |
+| Three frames, so the 68000 does not wait for a blank | 25-39 | 35-44 with the walkers in view, 49-56 without |
 
 There is no stall at the crossings any more. The converted shapes draw faster (a walker's frame,
 200 times: 6 blanks against 9 the original's way, flipped 9 against 11). Converted as read, they
@@ -77,12 +78,21 @@ blanks per 64 frames against 92-146), and the shape cache gets back the 49 KB th
 needed. What is left of a walker's cost is one main-RAM access for each pixel read and one for
 each written.
 
+Reading shapes now costs almost nothing (0-7 blanks in 64 frames). What is left is the 68000's
+work on each area: its chunks, their objects found and put in order, about 5 or 6 blanks an
+area and up to 12 in a dense one, all in the frame that draws it. That frame is the hitch the log
+shows as its worst frame. A larger ring (4 by 4, 5 by 4: `-DRING_AX= -DRING_AY= -DCHUNK_SLOTS=`)
+changes nothing, and getting chunks ready in the frames before costs more than it saves (the
+region files are read again).
+
 Built with `-DENGINE_BENCH_SHAPES` the Jaguar build logs those timings at the start;
 `-DENGINE_CHECK_CONVERT` converts the first 24 shapes in C too and logs any difference;
 `-DENGINE_NO_FRAME_SHAPES` leaves the movers and what is in front of them undrawn.
 
 ## Not done yet
 
+- **An area's work spread out.** Its objects' lists and order could come from the PC dataset as
+  the shapes do, or the drawing of an area be carried on over several frames.
 - **The shape cache** in the GameDrive's 16 MB of cartridge RAM (words and longs only): the
   whole dataset (7.1 MB) would fit, read once at the start.
 - **Animation.** Animated statics and terrain (water, fire, clocks) belong with the movers, not in
