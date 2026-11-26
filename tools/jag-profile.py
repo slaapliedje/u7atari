@@ -81,6 +81,7 @@ def main():
         return symbols[i][1] if i >= 0 else "?"
 
     counts = collections.Counter()
+    inclusive = collections.Counter()
     callers = collections.Counter()
     pairs = collections.Counter()
     total = len(data) // RECORD
@@ -93,10 +94,18 @@ def main():
             counts["(RAM: %s)" % ("GPU/DSP" if pc >= 0xF00000 else "DRAM")] += 1
             continue
         counts[name] += 1
+        stack = rec[4:]
+        # every function with a return address in the stack kept, once a sample
+        seen = {name}
+        for o in range(0, len(stack) - 2, 2):
+            a = struct.unpack(">I", stack[o:o + 4])[0]
+            if not a & 1 and base < a < end and after_call(text, base, a):
+                seen.add(function(a))
+        for f in seen:
+            inclusive[f] += 1
         if not is_helper(name):
             continue
         helper_samples += 1
-        stack = rec[4:]
         caller = "(not found)"
         for o in range(0, len(stack) - 2, 2):
             a = struct.unpack(">I", stack[o:o + 4])[0]
@@ -114,6 +123,9 @@ def main():
         print(f"{100 * n / total:6.2f}%  {n:6d}  {name[:100]}")
     print(f"\n{helper_samples} samples in helpers, by caller")
     for name, n in callers.most_common(rows):
+        print(f"{100 * n / total:6.2f}%  {n:6d}  {name[:100]}")
+    print("\nfunctions with a return address on the stack kept (128 bytes: shallow), or running")
+    for name, n in inclusive.most_common(rows):
         print(f"{100 * n / total:6.2f}%  {n:6d}  {name[:100]}")
     print("\nhelper <- caller")
     for (h, c), n in pairs.most_common(rows):
