@@ -58,6 +58,8 @@ if(U7_JAGUAR)
     add_subdirectory("${U7_UPSTREAM_DIR}" game)
     # The terrain picture goes into the viewport by blitter rectangles (platform/jaguar/blit.c).
     target_compile_definitions(u7_game PRIVATE U7_PLAT_COPY_RECT)
+    # Copy-mode shape spans are drawn by the GPU (platform/jaguar/spans.c and spans_gpu.s).
+    target_compile_definitions(u7_game PRIVATE U7_SHAPE_SPANS_68K)
     # RetroHQ's GameDrive BIOS bindings and the cartridge boot header are not in this repository
     # (no licence; an Atari-signed stub): name copies of them.
     set(U7_GDBIOS_DIR "$ENV{HOME}/dev/etjag/third_party/JagGD" CACHE PATH
@@ -68,6 +70,10 @@ if(U7_JAGUAR)
     add_custom_command(OUTPUT gdbios.o
         COMMAND "${U7_RMAC}" -fe -o gdbios.o "${U7_GDBIOS_DIR}/gdbios_bindings.s"
         DEPENDS "${U7_GDBIOS_DIR}/gdbios_bindings.s" VERBATIM)
+    add_custom_command(OUTPUT spans_gpu.o
+        COMMAND "${U7_RMAC}" -fe -o spans_gpu.o
+            "${CMAKE_CURRENT_SOURCE_DIR}/platform/jaguar/spans_gpu.s"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/platform/jaguar/spans_gpu.s" VERBATIM)
     if(U7_GAME STREQUAL "Serpent Isle")
         set(U7_PRG_NAME SERPENT)
     else()
@@ -76,7 +82,8 @@ if(U7_JAGUAR)
     # With U7_DEBUG_LOG (for now always): --lockstep and --script, for tests.
     add_executable(u7 platform/jaguar/startup.S platform/jaguar/main.c platform/jaguar/jaguar.c
         platform/jaguar/timer.c platform/jaguar/input.c platform/jaguar/blit.c
-        platform/jaguar/files.c platform/jaguar/syscalls.c
+        platform/jaguar/files.c platform/jaguar/syscalls.c platform/jaguar/spans.c
+        "${CMAKE_CURRENT_BINARY_DIR}/spans_gpu.o"
         platform/common/console.c platform/common/inputq.c platform/common/lockstep.c
         platform/common/pad.c platform/common/script.c platform/common/gm.c
         tests/save_test.cpp tests/speech_hook.cpp "${CMAKE_CURRENT_BINARY_DIR}/gdbios.o")
