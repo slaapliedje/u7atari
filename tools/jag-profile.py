@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sums a Jaguar profile (PCPROF.BIN, from --profile) by function.
 
-    tools/jag-profile.py <PCPROF.BIN> <program.elf> [rows]
+    tools/jag-profile.py [--frames] <PCPROF.BIN> <program.elf> [rows]
 
 PCPROF.BIN holds a record for every 64th vertical blank under --bench, every 16th otherwise
 (platform/jaguar/startup.S): the program counter interrupted and the 64 words of stack above it,
@@ -11,6 +11,10 @@ as 33 big-endian longs. Each pc is put down to the function it lies in, by the p
 A sample in a helper (libgcc's arithmetic, the memory copies) is also put down to the function
 that called it: the first long on the stack that points into the code just after a call
 instruction, and lies outside the helpers. Those are listed second.
+
+--frames: the program was built with frame pointers (U7_JAG_FRAME_POINTERS), so each record has
+32 more longs, the return addresses up a6's chain. Then every function on the way up is counted
+(inclusive), and the calls are printed as a tree, outermost first, down to 1% of the samples.
 """
 import bisect
 import collections
@@ -55,12 +59,17 @@ def after_call(text, base, a):
 
 
 def main():
-    if len(sys.argv) < 3:
+    args = sys.argv[1:]
+    frames = "--frames" in args
+    if frames:
+        args.remove("--frames")
+    if len(args) < 2:
         sys.exit(__doc__.strip().splitlines()[2].strip())
-    data = open(sys.argv[1], "rb").read()
-    rows = int(sys.argv[3]) if len(sys.argv) > 3 else 40
+    data = open(args[0], "rb").read()
+    rows = int(args[2]) if len(args) > 2 else 40
+    record = RECORD + (128 if frames else 0)
     nm = os.environ.get("NM", "m68k-elf-nm")
-    out = subprocess.run([nm, "-n", "-C", sys.argv[2]], capture_output=True, text=True,
+    out = subprocess.run([nm, "-n", "-C", args[1]], capture_output=True, text=True,
                          check=True).stdout
     symbols = []
     for line in out.splitlines():
@@ -70,7 +79,7 @@ def main():
             symbols.append((int(parts[0], 16), parts[2]))
     symbols.sort()
     starts = [a for a, _ in symbols]
-    text = load_text(sys.argv[2])
+    text = load_text(args[1])
     base = 0x802000
     end = base + len(text)
 
@@ -84,23 +93,51 @@ def main():
     inclusive = collections.Counter()
     callers = collections.Counter()
     pairs = collections.Counter()
-    total = len(data) // RECORD
+    tree = {}
+    total = len(data) // record
     helper_samples = 0
     for r in range(total):
-        rec = data[r * RECORD:(r + 1) * RECORD]
+        rec = data[r * record:(r + 1) * record]
         pc = struct.unpack(">I", rec[:4])[0]
         name = function(pc)
         if name is None:
             counts["(RAM: %s)" % ("GPU/DSP" if pc >= 0xF00000 else "DRAM")] += 1
             continue
         counts[name] += 1
-        stack = rec[4:]
-        # every function with a return address in the stack kept, once a sample
+        stack = rec[4:RECORD]
         seen = {name}
-        for o in range(0, len(stack) - 2, 2):
-            a = struct.unpack(">I", stack[o:o + 4])[0]
-            if not a & 1 and base < a < end and after_call(text, base, a):
-                seen.add(function(a))
+        if frames:
+            # the chain, innermost first; a helper keeps no frame, so its caller is the first
+            # return address on the stack
+            path = [name]
+            if is_helper(name):
+                for o in range(0, len(stack) - 2, 2):
+                    a = struct.unpack(">I", stack[o:o + 4])[0]
+                    if not a & 1 and base < a < end and after_call(text, base, a):
+                        if not is_helper(function(a)):
+                            path.append(function(a))
+                            break
+            for o in range(RECORD, record, 4):
+                a = struct.unpack(">I", rec[o:o + 4])[0]
+                if a == 0:
+                    break
+                f = function(a)
+                if f is None:
+                    break
+                if f != path[-1]:
+                    path.append(f)
+            seen.update(path)
+            node = tree
+            for f in reversed(path):
+                entry = node.setdefault(f, [0, {}])
+                entry[0] += 1
+                node = entry[1]
+        else:
+            # every function with a return address in the stack kept, once a sample
+            for o in range(0, len(stack) - 2, 2):
+                a = struct.unpack(">I", stack[o:o + 4])[0]
+                if not a & 1 and base < a < end and after_call(text, base, a):
+                    seen.add(function(a))
         for f in seen:
             inclusive[f] += 1
         if not is_helper(name):
@@ -124,12 +161,25 @@ def main():
     print(f"\n{helper_samples} samples in helpers, by caller")
     for name, n in callers.most_common(rows):
         print(f"{100 * n / total:6.2f}%  {n:6d}  {name[:100]}")
-    print("\nfunctions with a return address on the stack kept (128 bytes: shallow), or running")
+    if frames:
+        print("\nfunctions on the way up the frames, or running")
+    else:
+        print("\nfunctions with a return address on the stack kept (128 bytes: shallow), or running")
     for name, n in inclusive.most_common(rows):
         print(f"{100 * n / total:6.2f}%  {n:6d}  {name[:100]}")
     print("\nhelper <- caller")
     for (h, c), n in pairs.most_common(rows):
         print(f"{100 * n / total:6.2f}%  {n:6d}  {h} <- {c[:80]}")
+    if frames:
+        print("\ncalls, outermost first (inclusive)")
+
+        def show(node, depth):
+            for f, (n, children) in sorted(node.items(), key=lambda e: -e[1][0]):
+                if 100 * n / total < 1:
+                    continue
+                print(f"{100 * n / total:6.2f}%  {'  ' * depth}{f.split('(')[0][:90]}")
+                show(children, depth + 1)
+        show(tree, 0)
 
 
 if __name__ == "__main__":

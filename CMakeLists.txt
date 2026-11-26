@@ -55,6 +55,12 @@ endif()
 if(U7_JAGUAR)
     add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-msoft-float>)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:--include=${CMAKE_CURRENT_SOURCE_DIR}/platform/atari/rtti_align.h>")
+    # For profiles that follow the calls all the way up (--profile, tools/jag-profile.py): every
+    # function keeps a frame pointer, a little slower.
+    option(U7_JAG_FRAME_POINTERS "Jaguar: frame pointers, for whole call chains in profiles" OFF)
+    if(U7_JAG_FRAME_POINTERS)
+        add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-fno-omit-frame-pointer>)
+    endif()
     add_subdirectory("${U7_UPSTREAM_DIR}" game)
     # The terrain picture goes into the viewport by blitter rectangles (platform/jaguar/blit.c).
     target_compile_definitions(u7_game PRIVATE U7_PLAT_COPY_RECT)
@@ -63,6 +69,8 @@ if(U7_JAGUAR)
     # Without the original's re-summing of the flags and item lookups at every read and write, a
     # check against stray writes that only ever finds memory gone bad.
     target_compile_definitions(u7_game PRIVATE U7_NO_STRAY_WRITE_CHECKS)
+    # The resource cache's entries on 8-byte boundaries, so its compaction is blitted (rescache.cpp).
+    target_compile_definitions(u7_game PRIVATE U7_CACHE_ALIGN)
     # -O2, which inlines the game's small accessors (at -Os GCC calls them), about 40% faster than
     # -Os; without strict aliasing, which the game's code does not keep to. The usecode interpreter
     # goes wrong under GCC's global CSE at -O2 (bg-tour diverges), so it is built without it.
@@ -102,6 +110,9 @@ if(U7_JAGUAR)
         COMPILE_OPTIONS "$<TARGET_PROPERTY:u7_game,COMPILE_OPTIONS>;-w")
     set_target_properties(u7 PROPERTIES OUTPUT_NAME ${U7_PRG_NAME} SUFFIX ".elf")
     target_compile_definitions(u7 PRIVATE U7_DEBUG_LOG)
+    if(U7_JAG_FRAME_POINTERS)
+        target_compile_definitions(u7 PRIVATE JAG_PROF_FRAMES)
+    endif()
     if(U7_GAME STREQUAL "Serpent Isle")
         target_compile_definitions(u7 PRIVATE U7_SERPENT_ISLE)
     endif()

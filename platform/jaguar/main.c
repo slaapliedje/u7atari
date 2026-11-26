@@ -54,8 +54,14 @@ static void shutdown_all(void)
 /* --profile: the pc and the top of the stack at every 64th vertical blank under --bench, every
  * 16th otherwise (startup.S), saved to PCPROF.BIN on the card at the end: records of 33
  * big-endian longs, for tools/jag-profile.py. */
+#ifdef JAG_PROF_FRAMES
+/* and, built with frame pointers, 32 more: the return addresses up the frames' chain */
+#define PROFILE_SAMPLES 512
+#define PROFILE_RECORD 260
+#else
 #define PROFILE_SAMPLES 1024
 #define PROFILE_RECORD 132
+#endif
 extern uint8_t *volatile jag_prof_next;
 extern uint8_t *volatile jag_prof_end;
 extern volatile uint32_t jag_prof_mask;

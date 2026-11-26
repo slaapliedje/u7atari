@@ -90,6 +90,27 @@ jag_vbl:
 	moveq	#31, %d0
 4:	move.l	(%a1)+, (%a0)+
 	dbra	%d0, 4b
+#ifdef JAG_PROF_FRAMES
+	/* built with frame pointers (U7_JAG_FRAME_POINTERS): then the return addresses of up to 32
+	 * frames up a6's chain, each frame above the last, the rest 0 */
+	move.l	%a6, %a1
+	move.l	%sp, %d1
+	moveq	#31, %d0
+8:	cmp.l	%d1, %a1
+	bls.s	9f
+	move.l	%a1, %d1
+	btst	#0, %d1
+	bne.s	9f
+	cmp.l	#0x200000, %d1
+	bcc.s	9f
+	move.l	4(%a1), (%a0)+
+	move.l	(%a1), %a1
+	dbra	%d0, 8b
+	bra.s	10f
+9:	clr.l	(%a0)+
+	dbra	%d0, 9b
+10:
+#endif
 	move.l	%a0, jag_prof_next
 3:	addq.l	#1, jag_ticks
 	move.l	jag_vbl_hook, %a0
