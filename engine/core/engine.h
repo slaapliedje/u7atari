@@ -38,6 +38,13 @@ int32_t plat_file_length(int16_t file);
 /* w by h pixels from (sx, sy) of src to (dx, dy) of dst; x and w multiples of 8. */
 void eb_copy(struct ESurface *dst, int16_t dx, int16_t dy, const struct ESurface *src, int16_t sx,
 	int16_t sy, int16_t w, int16_t h);
+/* The view's background: the ring's window from (sx, sy), E_VIEW_W by E_VIEW_H, wrapping at the
+ * ring's edges; the movers are then drawn into frame. 1 when the backend copied it into frame
+ * (e_copy_view does); 0 when it shows the ring itself under frame, frame being a layer whose 0 is
+ * clear: then the core clears frame (eb_clear) where it drew in it before. */
+int eb_view(struct ESurface *frame, const struct ESurface *ring, int16_t sx, int16_t sy);
+/* w by h pixels at (x, y) of dst set to 0; x and w multiples of 8. */
+void eb_clear(struct ESurface *dst, int16_t x, int16_t y, int16_t w, int16_t h);
 /* A shape frame from its first run (E_RUN_ below), hot spot at (x, y) of dst, clipped to clip
  * (x0, y0, x1, y1, inclusive); flipped: mirrored across the diagonal, as the original. */
 void eb_shape(struct ESurface *dst, const int16_t clip[4], const uint32_t *runs, int16_t x,
@@ -56,6 +63,10 @@ void eb_shape(struct ESurface *dst, const int16_t clip[4], const uint32_t *runs,
 #define E_RUN_ALONG(h) ((int8_t) ((h) >> 16))
 #define E_RUN_LENGTH(h) (((h) >> 8) & 255)
 #define E_RUN_FILL 1
+/* Colour 0 (black) is kept as E_BLACK, which no shape uses, and the palette has E_BLACK as black
+ * too: so a layer drawn over another can take 0 as clear (the Jaguar's object processor's
+ * transparent colour). */
+#define E_BLACK 255
 #define E_FILL_SHORTEST 8
 /* An object shape of the original's (size bytes at raw, its first long its size) made into the
  * engine's form at out, or only measured when out is NULL: the size made, 0 when it cannot be,
@@ -72,7 +83,21 @@ int e_little_endian(void);
 /* The dataset (engine/tools/jagdata.c): ENGINE/SHAPES.FLX under the data's root, a flex file as
  * the original's (little-endian table) of SHAPES.VGA's entries, the flats as they are and the
  * object shapes converted, big-endian (the Jaguar's order). Its title starts E_SHAPES_TITLE. */
-#define E_SHAPES_TITLE "U7 engine shapes 1, big-endian"
+#define E_SHAPES_TITLE "U7 engine shapes 2, big-endian"
+/* And ENGINE/CHUNKS.DAT: each world chunk's fixed statics (its own objects and its U7IFIX items),
+ * as the engine makes them, binned. Its title starts E_CHUNKS_TITLE (in the first 64 bytes);
+ * then at E_CHUNKS_TABLE, 192 * 192 + 1 big-endian longs, chunk (cy * 192 + cx)'s record's
+ * offset (the next one's is where it ends). A record: its statics and bin entries (big-endian
+ * words), the flat types its cells use (150 bits in 5 longs), its 65 bin starts, then 20 bytes a
+ * static (type-frame, x, y, z, flat, its picture's rectangle, its footprint west, north and up,
+ * a byte spare: words but z, flat and the footprint), then its bin entries. */
+#define E_CHUNKS_TITLE "U7 engine chunks 3, big-endian"
+#define E_CHUNKS_TABLE 64
+#define E_CHUNK_HEAD (4 + 5 * 4 + 65 * 2)
+#define E_CHUNK_STATIC 20
+#define E_CHUNK_MOST (E_CHUNK_HEAD + 224 * E_CHUNK_STATIC + 1024)
+/* A world chunk's record, made from the original's files (the dataset tool); its size. */
+uint32_t e_chunk_record(int cx, int cy, uint8_t *out);
 /* Terrain: n chunks of 16 by 16 cells into dst. Each chunk: its cell words (little-endian: type in
  * bits 0-9, frame in 10-14), dst's pixel under its first cell, and the cells across and down that
  * fall in dst. A cell is the 64 bytes at flats[type].pixels + 64 * frame, for a type below
@@ -102,7 +127,6 @@ struct EStats {
 	uint32_t rebuilds;          /* times the static layer was built */
 	uint32_t statics;           /* objects in the window at the last build */
 	uint32_t edges;             /* "drawn before" pairs found then */
-	uint32_t compares;          /* pair tests then */
 	uint32_t drawn;             /* shapes drawn in the last frame */
 	uint32_t shape_bytes;       /* shape cache in use */
 	uint32_t shape_loads;       /* shapes read from the file so far */
@@ -113,6 +137,14 @@ struct EStats {
 	uint32_t front_time;        /* of object_time, working out what is in front of movers */
 	uint32_t front_misses;      /* movers whose fronts were worked out anew */
 	uint32_t load_time;         /* of build_time and object_time, reading shapes in */
+	uint32_t chunk_time;        /* of build_time, reading chunks and their objects (regions too) */
+	uint32_t order_time;        /* of build_time, putting an area's objects in order */
+	uint32_t pair_tests;        /* pictures tested for overlap then */
+	uint32_t region_time;       /* of chunk_time, reading regions' items */
+	uint32_t cells_time;        /* of chunk_time, reading chunks' cells */
+	uint32_t near_finds;        /* statics near a mover looked for anew */
+	uint32_t front_cands;       /* statics over movers tried for being in front */
+	uint32_t front_compares;    /* compares then */
 };
 extern struct EStats e_stats;
 
@@ -125,8 +157,10 @@ const uint8_t *e_palette(void);
 void e_set_view(int16_t x, int16_t y);
 /* A frame's first run, for tests; NULL when missing. */
 const uint32_t *e_frame_runs(uint16_t type, uint16_t frame);
-/* Draws the view into frame (E_VIEW_W by E_VIEW_H). */
+/* Draws the view into frame (E_VIEW_W by E_VIEW_H), or the movers into it (eb_view). */
 void e_draw(struct ESurface *frame);
+/* The ring's window copied into frame, in up to four pieces where it wraps (for eb_view). */
+void e_copy_view(struct ESurface *frame, const struct ESurface *ring, int16_t sx, int16_t sy);
 
 /* Things that move (NPCs): up to E_MOVERS, re-placed every frame. */
 #define E_MOVERS 32

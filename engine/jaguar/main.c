@@ -38,6 +38,7 @@ static void gpu_finish(void);
 #define VDB 0xF00046
 #define VDE 0xF00048
 #define VI 0xF0004E
+#define VC 0xF00006
 #define BG 0xF00058
 #define INT1 0xF000E0
 #define CLUT 0xF00400
@@ -51,16 +52,23 @@ static void gpu_finish(void);
 #define PHRASES (W / 8)
 
 extern void jag_vbl(void);
-extern volatile uint32_t *jag_vbl_object;
-extern uint32_t jag_vbl_phrase[2];
+extern uint32_t *volatile jag_vbl_list;
+extern uint32_t *volatile jag_vbl_live;
 extern volatile uint32_t jag_ticks;
-/* startup.S's profiler: the pc and 32 longs of stack at each blank whose count has none of the
- * mask's bits, written to U7/PCPROF.BIN when the buffer is full (tools/jag-profile.py) */
+/* startup.S's profiler: the pc and 32 longs of stack at each tick of Tom's timer (set going in
+ * jag_main), written to U7/PCPROF.BIN when the buffer is full (tools/jag-profile.py) */
 extern uint8_t *volatile jag_prof_next;
 extern uint8_t *volatile jag_prof_end;
 extern volatile uint32_t jag_prof_mask;
+extern volatile uint32_t jag_prof_pit;
+extern volatile uint16_t jag_int_enable;
+#ifdef JAG_PROF_FRAMES
+#define PROFILE_RECORD 260      /* and 32 return addresses up the frame pointers' chain */
+#define PROFILE_SAMPLES 450
+#else
 #define PROFILE_RECORD 132
 #define PROFILE_SAMPLES 900
+#endif
 static uint8_t profile[PROFILE_SAMPLES * PROFILE_RECORD] __attribute__((aligned(4)));
 static int profile_saved;
 
@@ -70,7 +78,18 @@ static int profile_saved;
 #endif
 
 static uint32_t gd_bios[1024];
-static uint32_t object_list[12] __attribute__((aligned(16)));
+/* The object list: two branches (above and below the picture: stop), up to OBJECTS bitmaps, a
+ * stop. The bitmaps are put back at each blank from one of obj_lists (startup.S,
+ * jag_vbl_list). */
+#define OBJECTS 5
+#define STOP_AT (4 + OBJECTS * 4)
+static uint32_t object_list[STOP_AT + 2] __attribute__((aligned(16)));
+static uint32_t obj_lists[2][1 + OBJECTS * 4];
+static uint8_t list_next;
+static uint16_t obj_x, obj_y;   /* the picture's top left: x in pixels, y in half-lines */
+/* the ring's window to show under the frame (eb_view), or none (ring NULL: it was copied) */
+static const struct ESurface *view_ring;
+static int16_t view_sx, view_sy;
 /* Three frames: one shown, one waiting for the next blank, one being drawn; so the 68000 goes on
  * drawing instead of waiting for a blank (ENGINE_DOUBLE_BUFFER: two, waiting). */
 #ifdef ENGINE_DOUBLE_BUFFER
@@ -87,7 +106,6 @@ static struct ESurface surfaces[FRAMES] = {
 	{ frames[2], W, W, H, row_table },
 #endif
 };
-static uint32_t stop_link;
 
 void eb_log(const char *text)
 {
@@ -186,6 +204,8 @@ static uint32_t width_code(uint16_t w)
 #define UPDA1 0x00000200UL
 #define UPDA2 0x00000400UL
 #define LFU_REPLACE 0x01800000UL
+#define PATDSEL 0x00010000UL
+#define B_PATD 0x68
 
 static void blit_wait(void)
 {
@@ -211,7 +231,7 @@ void eb_copy(struct ESurface *dst, int16_t dx, int16_t dy, const struct ESurface
 	BREG(A2_STEP) = 1UL << 16 | (uint16_t) -w;
 	BREG(B_COUNT) = (uint32_t) h << 16 | (uint16_t) w;
 	BREG(B_CMD) = SRCEN | UPDA1 | UPDA2 | LFU_REPLACE;
-	blit_wait();
+	/* not waited for: the GPU's shapes wait for the blitter before each run, and eb_finish */
 }
 
 /* ---- the GPU: shapes_gpu.s and tiles_gpu.s, each run while the 68000 goes on ----
@@ -351,6 +371,7 @@ void eb_tiles(struct ESurface *dst, const struct EFlat flats[E_FLAT_TYPES],
 void eb_finish(void)
 {
 	gpu_finish();
+	blit_wait();
 }
 
 /* A shape converted by the GPU (convert_gpu.s), waited for: what is drawn next may use it. Built
@@ -398,9 +419,38 @@ uint32_t eb_convert(const uint8_t *raw, uint32_t size, uint8_t *out, uint32_t ro
 	return made;
 }
 
+/* The clock: half-lines, from the blanks counted and the vertical count since the last one (the
+ * blank's interrupt comes at VC = vc_irq; a field is vc_period half-lines, measured). Kept from
+ * going back where the count has passed vc_irq but the interrupt has not yet been taken. */
+static uint16_t vc_period = 525, vc_irq;
+
 uint32_t eb_clock(void)
 {
-	return jag_ticks;
+	static uint32_t last;
+	uint32_t t, now;
+	int phase;
+
+	do {
+		t = jag_ticks;
+		phase = (int) (REG16(VC) & 0x7FF) - vc_irq;
+	} while (t != jag_ticks);
+	if (phase < 0)
+		phase += vc_period;
+	/* t * vc_period in two mulu.w (in C, a call to libgcc's 32-bit multiply) */
+	uint32_t lo = (uint16_t) t, hi = (uint16_t) (t >> 16);
+	__asm__ ("mulu.w %1,%0" : "+d" (lo) : "d" (vc_period));
+	__asm__ ("mulu.w %1,%0" : "+d" (hi) : "d" (vc_period));
+	now = lo + (hi << 16) + (uint32_t) phase;
+	if (now < last)
+		now = last;
+	last = now;
+	return now;
+}
+
+/* Clock units in tenths of a blank, for the log. */
+static unsigned long tenths(uint32_t units)
+{
+	return (unsigned long) ((uint64_t) units * 10 / vc_period);
 }
 
 /* ---- video: the bitmap object, shown from one frame while the other is drawn ---- */
@@ -411,25 +461,119 @@ static void branch(uint32_t *object, uint32_t link, uint16_t ypos, uint32_t cond
 	object[1] = link << 21 | condition << 14 | (uint32_t) ypos << 3 | 3;
 }
 
-/* From the next vertical blank on, the bitmap shows pixels. With three frames, the one given
- * last time has to have been put up first (a blank since): then the frame given before it is no
- * longer shown, and is the next to be drawn. With two, waits for the blank. */
+/* Bitmap object k of n (8-bit pixels, pitch phrases a row; trans: colour 0 clear), at its place
+ * in object_list (linked to the next, the last to the stop), made into o. */
+static void bitmap(uint32_t *o, int k, int n, const uint8_t *data, uint16_t x, uint16_t y,
+	uint16_t w, uint16_t h, uint16_t pitch, int trans)
+{
+	uint32_t link = (uint32_t) &object_list[k + 1 < n ? 4 + (k + 1) * 4 : STOP_AT];
+	uint32_t iwidth = (uint32_t) w / 8, dwidth = (uint32_t) pitch / 8;
+
+	o[0] = (uint32_t) data << 8 | link >> 11;
+	o[1] = link << 21 | (uint32_t) h << 14 | (uint32_t) y << 3;
+	o[2] = iwidth >> 4 | (trans ? 1UL << 15 : 0);
+	o[3] = iwidth << 28 | dwidth << 18 | 1UL << 15 | 3UL << 12 | x;
+}
+
+/* The objects for a frame: the ring's window in up to four pieces where it wraps, then pixels
+ * over it, 0 clear; or pixels alone (the window copied in). Into one of obj_lists. */
+static uint32_t *make_list(const uint8_t *pixels)
+{
+	uint32_t *l = obj_lists[list_next];
+	struct { const uint8_t *data; uint16_t x, y, w, h, pitch; } piece[OBJECTS];
+	int n = 0;
+
+	if (view_ring != NULL) {
+		const struct ESurface *r = view_ring;
+		uint16_t w1 = (uint16_t) (r->w - view_sx < W ? r->w - view_sx : W);
+		uint16_t h1 = (uint16_t) (r->h - view_sy < H ? r->h - view_sy : H);
+		for (int py = 0; py < 2; py++)
+			for (int px = 0; px < 2; px++) {
+				uint16_t w = px ? (uint16_t) (W - w1) : w1, h = py ? (uint16_t) (H - h1) : h1;
+				if (w == 0 || h == 0)
+					continue;
+				piece[n].data = r->pixels + (py ? 0 : view_sy) * r->pitch + (px ? 0 : view_sx);
+				piece[n].x = (uint16_t) (obj_x + (px ? w1 : 0));
+				piece[n].y = (uint16_t) (obj_y + (py ? h1 * 2 : 0));
+				piece[n].w = w;
+				piece[n].h = h;
+				piece[n].pitch = r->pitch;
+				n++;
+			}
+	}
+	piece[n].data = pixels;
+	piece[n].x = obj_x;
+	piece[n].y = obj_y;
+	piece[n].w = W;
+	piece[n].h = H;
+	piece[n].pitch = W;
+	n++;
+	l[0] = (uint32_t) n * 4;
+	for (int k = 0; k < n; k++)
+		bitmap(&l[1 + k * 4], k, n, piece[k].data, piece[k].x, piece[k].y, piece[k].w,
+			piece[k].h, piece[k].pitch, view_ring != NULL && k == n - 1);
+	list_next ^= 1;
+	return l;
+}
+
+/* From the next vertical blank on, the frame's objects are shown. With three frames, the ones
+ * given last time have to have been put up first (a blank since): then the frame given before
+ * them is no longer shown, and is the next to be drawn. With two, waits for the blank. */
 static uint32_t shown_tick;
 
 static void show(const uint8_t *pixels)
 {
+	uint32_t *l = make_list(pixels);
 #if FRAMES == 3
 	while (jag_ticks == shown_tick)
 		;
-	jag_vbl_phrase[0] = (uint32_t) pixels << 8 | stop_link >> 11;
+	jag_vbl_list = l;
 	shown_tick = jag_ticks;
 #else
 	uint32_t ticks = jag_ticks;
 
-	jag_vbl_phrase[0] = (uint32_t) pixels << 8 | stop_link >> 11;
+	jag_vbl_list = l;
 	while (jag_ticks == ticks)
 		;
 #endif
+}
+
+/* The ring's window copied into the frame by the blitter; or, built with ENGINE_LAYERS, shown by
+ * the object processor itself, the frame a layer over it. Not copying saves 0.2 blanks a frame,
+ * but on the timing core the 68000 then runs the movers some 20% slower (the object processor
+ * reading the ring's pieces and the layer, line by line), and the layered frames come out
+ * slower where movers are in view. */
+int eb_view(struct ESurface *frame, const struct ESurface *ring, int16_t sx, int16_t sy)
+{
+#ifdef ENGINE_LAYERS
+	(void) frame;
+	view_ring = ring;
+	view_sx = sx;
+	view_sy = sy;
+	return 0;
+#else
+	view_ring = NULL;
+	e_copy_view(frame, ring, sx, sy);
+	return 1;
+#endif
+}
+
+void eb_clear(struct ESurface *dst, int16_t x, int16_t y, int16_t w, int16_t h)
+{
+	if (w <= 0 || h <= 0)
+		return;
+	gpu_finish();
+	blit_wait();
+	BREG(A1_BASE) = (uint32_t) dst->pixels;
+	BREG(A1_FLAGS) = PIXEL8 | width_code(dst->pitch) | XADDPHR;
+	BREG(A1_CLIP) = 0;
+	BREG(A1_PIXEL) = (uint32_t) y << 16 | (uint16_t) x;
+	BREG(A1_STEP) = 1UL << 16 | (uint16_t) -w;
+	BREG(B_PATD) = 0;
+	BREG(B_PATD + 4) = 0;
+	BREG(B_COUNT) = (uint32_t) h << 16 | (uint16_t) w;
+	BREG(B_CMD) = PATDSEL | UPDA1;
+	/* not waited for, as eb_copy */
 }
 
 static void video_init(void)
@@ -439,11 +583,10 @@ static void video_init(void)
 	uint16_t height = ntsc ? 241 : 287, vmid = ntsc ? 266 : 322;
 	uint16_t hde = (uint16_t) ((width / 2 - 1) | 0x400), hdb = (uint16_t) (hmid - width / 2 + 4);
 	uint16_t vdb = (uint16_t) (vmid - height), vde = (uint16_t) (vmid + height);
-	uint32_t stop = (uint32_t) &object_list[8], data = (uint32_t) frames[0];
-	uint16_t ypos = (uint16_t) ((height - H + vdb) & ~1);
-	uint16_t xpos = (uint16_t) ((width / 4 - W) / 2);
+	uint32_t stop = (uint32_t) &object_list[STOP_AT];
 
-	stop_link = stop;
+	obj_y = (uint16_t) ((height - H + vdb) & ~1);
+	obj_x = (uint16_t) ((width / 4 - W) / 2);
 	REG16(HDB1) = hdb;
 	REG16(HDB2) = hdb;
 	REG16(HDE) = hde;
@@ -453,24 +596,35 @@ static void video_init(void)
 	REG16(BG) = 0;
 	branch(&object_list[0], stop, vde, 2);
 	branch(&object_list[2], stop, vdb, 1);
-	object_list[4] = data << 8 | stop >> 11;
-	object_list[5] = stop << 21 | (uint32_t) H << 14 | (uint32_t) ypos << 3;
-	object_list[6] = PHRASES >> 4;
-	object_list[7] = (uint32_t) PHRASES << 28 | (uint32_t) PHRASES << 18 | 1 << 15 | 3 << 12 | xpos;
-	object_list[8] = 0;
-	object_list[9] = 4 | 8;
-	jag_vbl_phrase[0] = object_list[4];
-	jag_vbl_phrase[1] = object_list[5];
-	jag_vbl_object = &object_list[4];
+	object_list[STOP_AT] = 0;
+	object_list[STOP_AT + 1] = 4 | 8;
+	/* to start, frame 0 alone */
+	uint32_t *l = make_list(frames[0]);
+	memcpy(&object_list[4], &l[1], l[0] * 4);
+	jag_vbl_live = &object_list[4];
+	jag_vbl_list = l;
 	volatile uint32_t *level0 = (volatile uint32_t *) LEVEL0;
 	__asm__ ("" : "+a" (level0));
 	*level0 = (uint32_t) jag_vbl;
 	REG16(VI) = vde | 1;
+	vc_irq = vde | 1;
 	REG16(INT1) = 1;
 	REG16(VMODE) = 0;
 	REG32(OLP) = (uint32_t) object_list << 16 | (uint32_t) object_list >> 16;
 	REG16(VMODE) = 0x6C7;                        /* RGB16 CLUT, 320 wide, on */
 	__asm__ volatile ("andi.w #0xF8FF, %%sr" ::: "cc");
+	/* a field's length in half-lines: the highest count seen between two blanks */
+	uint32_t t = jag_ticks;
+	uint16_t top = 0;
+	while (jag_ticks == t)
+		;
+	t = jag_ticks;
+	while (jag_ticks == t) {
+		uint16_t vc = REG16(VC) & 0x7FF;
+		if (vc > top)
+			top = vc;
+	}
+	vc_period = (uint16_t) (top + 1);
 }
 
 static void set_palette(const uint8_t *rgb)
@@ -564,7 +718,7 @@ void jag_main(void)
 	static const struct { int8_t dx, dy; int16_t n; } tour[] = {
 		{ 1, 0, 64 }, { 0, 1, 48 }, { -1, 0, 64 }, { 0, -1, 48 },
 	};
-	char text[256];
+	char text[320];
 	int16_t x = 880, y = 1330;
 	struct { int16_t x, y; int dir; } walker[E_MOVERS];
 	int nm = 12, leg = 0, step = 0, r;
@@ -584,13 +738,34 @@ void jag_main(void)
 #ifdef ENGINE_BENCH_SHAPES
 	bench_shapes();
 #endif
+#ifdef ENGINE_BENCH_CPU
+	{
+		/* the 68000's speed: 55,556 turns of subq.l and bne (8 + 10 cycles: 1,000,000), then
+		 * 100,000 word reads of main RAM, each with a subq.l and a bne (26 cycles a turn if the
+		 * bus is free: 2,600,000) */
+		uint32_t t0 = eb_clock();
+		__asm__ volatile ("move.l #55556,%%d0\n1: subq.l #1,%%d0\n bne 1b" ::: "d0", "cc");
+		uint32_t t1 = eb_clock();
+		__asm__ volatile ("move.l %0,%%a0\n move.l #100000,%%d0\n1: move.w (%%a0)+,%%d1\n"
+			" subq.l #1,%%d0\n bne 1b" :: "g" (store) : "d0", "d1", "a0", "cc", "memory");
+		uint32_t t2 = eb_clock();
+		snprintf(text, sizeof text, "cpu: 1M cycles of loop in %lu half-lines, 2.6M of reads in %lu "
+			"(a field %u)\n", (unsigned long) (t1 - t0), (unsigned long) (t2 - t1), vc_period);
+		GD_DebugString(text);
+	}
+#endif
 	for (int m = 0; m < nm; m++) {
 		walker[m].x = (int16_t) (x + 4 + rnd(32));
 		walker[m].y = (int16_t) (y + 4 + rnd(20));
 		walker[m].dir = rnd(4);
 		e_mover_add(721, walker[m].x, walker[m].y, 0);
 	}
-	jag_prof_mask = 1;
+	/* the profile's samples by Tom's timer, at 37 Hz (26.59 MHz / 1000 / 719), apart from the
+	 * frames, which keep to the blanks */
+	REG16(0xF00050) = 999;
+	REG16(0xF00052) = 718;
+	jag_int_enable = 1 | 8;
+	jag_prof_pit = 1;
 	jag_prof_end = profile + sizeof profile;
 	jag_prof_next = profile;
 	GD_DebugString("engine test: running\n");
@@ -639,20 +814,28 @@ void jag_main(void)
 			worst = jag_ticks - last_shown;
 		last_shown = jag_ticks;
 		if ((frame & 63) == 0) {
-			uint32_t now = jag_ticks, tenths = (frame - mark_frame) * 600 / (now - mark_ticks);
-			snprintf(text, sizeof text, "fps %lu.%lu (frame %lu, blank %lu) rebuilds %lu statics %lu "
-				"edges %lu drawn %lu shapes %luK loads %lu; blanks: build %lu copy %lu objects %lu "
-				"finish %lu fronts %lu misses %lu; worst frame %lu loads %lu\n", (unsigned long) tenths / 10,
-				(unsigned long) tenths % 10, (unsigned long) frame, (unsigned long) now,
-				(unsigned long) e_stats.rebuilds, (unsigned long) e_stats.statics,
-				(unsigned long) e_stats.edges, (unsigned long) e_stats.drawn,
-				(unsigned long) e_stats.shape_bytes / 1024, (unsigned long) e_stats.shape_loads,
-				(unsigned long) e_stats.build_time, (unsigned long) e_stats.copy_time,
-				(unsigned long) e_stats.object_time, (unsigned long) e_stats.finish_time,
-				(unsigned long) e_stats.front_time, (unsigned long) e_stats.front_misses,
-				(unsigned long) worst, (unsigned long) e_stats.load_time);
+			uint32_t now = jag_ticks, fps10 = (frame - mark_frame) * 600 / (now - mark_ticks);
+			/* the timings in blanks, to a tenth */
+#define T(v) tenths(v) / 10, tenths(v) % 10
+			snprintf(text, sizeof text, "fps %lu.%lu (frame %lu) areas %lu shapes %luK; blanks: "
+				"build %lu.%lu (chunks %lu.%lu: regions %lu.%lu cells %lu.%lu; order %lu.%lu) "
+				"copy %lu.%lu movers %lu.%lu (fronts %lu.%lu) finish %lu.%lu shapes read "
+				"%lu.%lu; worst %lu; misses %lu finds %lu cands %lu cmp %lu\n",
+				(unsigned long) fps10 / 10, (unsigned long) fps10 % 10, (unsigned long) frame,
+				(unsigned long) e_stats.rebuilds, (unsigned long) e_stats.shape_bytes / 1024,
+				T(e_stats.build_time), T(e_stats.chunk_time), T(e_stats.region_time),
+				T(e_stats.cells_time), T(e_stats.order_time), T(e_stats.copy_time),
+				T(e_stats.object_time), T(e_stats.front_time), T(e_stats.finish_time),
+				T(e_stats.load_time), (unsigned long) worst, (unsigned long) e_stats.front_misses,
+				(unsigned long) e_stats.near_finds, (unsigned long) e_stats.front_cands,
+				(unsigned long) e_stats.front_compares);
+			e_stats.near_finds = e_stats.front_cands = e_stats.front_compares = 0;
+#undef T
+			text[255] = 0;          /* GD_DebugString's most */
+			e_stats.pair_tests = 0;
+			e_stats.region_time = e_stats.cells_time = 0;
 			worst = 0;
-			e_stats.load_time = 0;
+			e_stats.load_time = e_stats.chunk_time = e_stats.order_time = 0;
 			e_stats.front_time = e_stats.front_misses = 0;
 			e_stats.build_time = e_stats.copy_time = e_stats.object_time = e_stats.finish_time = 0;
 			GD_DebugString(text);

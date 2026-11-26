@@ -39,7 +39,8 @@ static int emit_raw(int across, int along, const uint8_t *px, int len)
 		emit32((uint32_t) (uint8_t) across << 24 | (uint32_t) (uint8_t) along << 16
 			| (uint32_t) l << 8);
 		if (conv_out != NULL) {
-			memcpy(conv_out + conv_n, px, (size_t) l);
+			for (int i = 0; i < l; i++)
+				conv_out[conv_n + (uint32_t) i] = px[i] ? px[i] : E_BLACK;
 			memset(conv_out + conv_n + l, 0, (size_t) ((4 - (l & 3)) & 3));
 		}
 		conv_n += (uint32_t) (l + 3) & ~3u;
@@ -111,7 +112,7 @@ uint32_t e_convert_shape(const uint8_t *s, uint32_t size, uint8_t *out, uint32_t
 					emit32((uint32_t) (uint8_t) across << 24
 						| (uint32_t) (uint8_t) (along + pos) << 16 | (uint32_t) c << 8
 						| E_RUN_FILL);
-					emit32(s[p] * 0x01010101u);
+					emit32((s[p] ? s[p] : E_BLACK) * 0x01010101u);
 					p++;
 					start = pos + c;
 				} else {

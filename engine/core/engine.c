@@ -115,6 +115,7 @@ static uint8_t palette[768];
 static uint16_t *map;           /* chunk number of each of the 192 by 192 chunks */
 static struct Flex shapes;
 static int16_t chunk_file;
+static int16_t chunk_data = -1;  /* the dataset's chunks (engine.h), or -1 */
 
 /* ---- the shape cache: a ring, the oldest shapes giving way; the movers' kept below it ---- */
 
@@ -295,6 +296,7 @@ static struct Region *region(int id)
 	r = old;
 	r->id = (int16_t) id;
 	r->age = ++age_now;
+	uint32_t t_region = eb_clock();
 
 	/* fixed items: a flex of 256 entries, one a chunk, of 4-byte records; and the movable ones:
 	 * 256 trees, one a chunk, of records by length (6, 12, 18; 0 or 1 ends a level), whose
@@ -302,7 +304,7 @@ static struct Region *region(int id)
 	uint16_t fixedStart[257];
 	uint8_t *fixed = NULL;
 	snprintf(name, sizeof name, "U7IFIX%02X", id);
-	if ((f = open_file("STATIC", name)) >= 0) {
+	if (chunk_data < 0 && (f = open_file("STATIC", name)) >= 0) {
 		len = plat_file_length(f);
 		if (len > 0x80 + 256 * 8 && len <= SCRATCH && read_at(f, 0, scratch, (uint32_t) len))
 			fixed = scratch;
@@ -371,6 +373,7 @@ static struct Region *region(int id)
 	}
 	r->start[256] = m;
 	memcpy(items, merged, m * sizeof *items);
+	e_stats.region_time += eb_clock() - t_region;
 	return r;
 }
 
@@ -385,13 +388,29 @@ struct Static {
 	int16_t x, y;
 	uint8_t z, flat;
 	int16_t r[4];               /* x0, y0, x1, y1 */
+	uint8_t fx, fy, height;     /* its footprint: cells west and north of x, y; levels up */
+	uint8_t pad;
 };
+
+/* A static's footprint, from its shape's facts (turned if it is). */
+static void set_footprint(struct Static *s)
+{
+	const struct Info *in = &info[s->tf & 0x3ff];
+
+	s->fx = s->tf & 0x8000 ? in->fy : in->fx;
+	s->fy = s->tf & 0x8000 ? in->fx : in->fy;
+	s->height = in->height;
+	s->flat = in->height == 0;
+	s->pad = 0;
+}
 
 struct Chunk {
 	int16_t cx, cy;
 	uint16_t age;
 	uint8_t nobj, built;
 	uint16_t nstatic;
+	uint16_t nfixed;            /* of them, those in the bins (the rest looked through) */
+	int16_t reach[4];           /* the box round all their pictures (x0, y0, x1, y1) */
 	uint32_t flats[5];          /* the flat types its cells use, a bit each */
 	uint8_t cells[512];
 	uint8_t obj[CHUNK_OBJECTS]; /* cells with a shape of class none: objects at z 0 */
@@ -404,7 +423,9 @@ struct Chunk {
 
 static struct Chunk *chunks;
 static uint8_t *chunk_slot;     /* per chunk of the world, its slot + 1, or 0 */
-static uint16_t chunk_epoch;    /* counts slots given to another chunk: statics moved */
+static uint16_t chunk_gen[CHUNK_SLOTS]; /* per slot, counts the chunks given it: statics moved */
+
+static int chunk_record(struct Chunk *k);
 
 /* The chunk's cells, read in if need be, the least lately used giving way. */
 static struct Chunk *chunk(int cx, int cy)
@@ -423,7 +444,7 @@ static struct Chunk *chunk(int cx, int cy)
 	k = old;
 	if (k->cx >= 0)
 		chunk_slot[k->cy * 192 + k->cx] = 0;
-	chunk_epoch++;
+	chunk_gen[k - chunks]++;
 	chunk_slot[cy * 192 + cx] = (uint8_t) (k - chunks + 1);
 	k->cx = (int16_t) cx;
 	k->cy = (int16_t) cy;
@@ -432,8 +453,18 @@ static struct Chunk *chunk(int cx, int cy)
 	k->built = 0;
 	k->nstatic = 0;
 	memset(k->flats, 0, sizeof k->flats);
+	uint32_t t_cells = eb_clock();
 	if (!read_at(chunk_file, map[cy * 192 + cx] * 512u, k->cells, 512))
 		memset(k->cells, 0, 512);
+	e_stats.cells_time += eb_clock() - t_cells;
+	if (chunk_data >= 0) {
+		/* the dataset's record: what the cells hold, and the fixed statics, binned */
+		if (!chunk_record(k)) {
+			k->nstatic = k->nfixed = 0;
+			memset(k->bin_start, 0, sizeof k->bin_start);
+		}
+		return k;
+	}
 	for (int i = 0; i < 256; i++) {
 		uint16_t type = rd16(k->cells + i * 2) & 0x3ff;
 		if (type < TILE_TYPES)
@@ -496,7 +527,127 @@ static const int16_t *box_of(uint16_t type)
 }
 
 /* The chunk with its statics listed, in the chunk's own order. */
+/* ---- the dataset's chunks (engine.h): a chunk's fixed statics, binned ---- */
+
+static inline uint16_t be16(const uint8_t *p) { return (uint16_t) (p[0] << 8 | p[1]); }
+static inline void put_be16(uint8_t *p, uint16_t v)
+{
+	p[0] = (uint8_t) (v >> 8);
+	p[1] = (uint8_t) v;
+}
+
+/* Into k: its record's statics and bins. 0 when it cannot be read. */
+static int chunk_record(struct Chunk *k)
+{
+	uint8_t at[8];
+	uint32_t idx = (uint32_t) k->cy * 192 + (uint32_t) k->cx, from, size;
+
+	if (!read_at(chunk_data, E_CHUNKS_TABLE + idx * 4, at, 8))
+		return 0;
+	from = (uint32_t) be16(at) << 16 | be16(at + 2);
+	size = ((uint32_t) be16(at + 4) << 16 | be16(at + 6)) - from;
+	if (size < E_CHUNK_HEAD || size > SCRATCH || !read_at(chunk_data, from, scratch, size))
+		return 0;
+	uint16_t n = be16(scratch), nl = be16(scratch + 2);
+	const uint8_t *p = scratch + E_CHUNK_HEAD;
+	if (n > CHUNK_STATICS || nl > CHUNK_BIN_ENTRIES
+		|| size < E_CHUNK_HEAD + n * (uint32_t) E_CHUNK_STATIC + nl)
+		return 0;
+	for (int i = 0; i < 5; i++)
+		k->flats[i] = (uint32_t) be16(scratch + 4 + i * 4) << 16 | be16(scratch + 6 + i * 4);
+	for (int b = 0; b <= CHUNK_BINS * CHUNK_BINS; b++)
+		k->bin_start[b] = be16(scratch + 24 + b * 2);
+	if (!e_little_endian())
+		memcpy(k->statics, p, n * (uint32_t) E_CHUNK_STATIC);
+	else
+		for (uint16_t i = 0; i < n; i++, p += E_CHUNK_STATIC) {
+			struct Static *s = &k->statics[i];
+			s->tf = be16(p);
+			s->x = (int16_t) be16(p + 2);
+			s->y = (int16_t) be16(p + 4);
+			s->z = p[6];
+			s->flat = p[7];
+			for (int j = 0; j < 4; j++)
+				s->r[j] = (int16_t) be16(p + 8 + j * 2);
+			s->fx = p[16];
+			s->fy = p[17];
+			s->height = p[18];
+			s->pad = 0;
+		}
+	memcpy(k->bin_list, scratch + E_CHUNK_HEAD + n * (uint32_t) E_CHUNK_STATIC, nl);
+	k->nstatic = k->nfixed = n;
+	return 1;
+}
+
+static struct Chunk *chunk_statics_now(int cx, int cy);
+
+uint32_t e_chunk_record(int cx, int cy, uint8_t *out)
+{
+	const struct Chunk *k = chunk_statics_now(cx, cy);
+	uint16_t nl = k->bin_start[CHUNK_BINS * CHUNK_BINS];
+	uint8_t *p = out + E_CHUNK_HEAD;
+
+	if (nl > CHUNK_BIN_ENTRIES)
+		nl = CHUNK_BIN_ENTRIES;
+	put_be16(out, k->nstatic);
+	put_be16(out + 2, nl);
+	for (int i = 0; i < 5; i++) {
+		put_be16(out + 4 + i * 4, (uint16_t) (k->flats[i] >> 16));
+		put_be16(out + 6 + i * 4, (uint16_t) k->flats[i]);
+	}
+	for (int b = 0; b <= CHUNK_BINS * CHUNK_BINS; b++)
+		put_be16(out + 24 + b * 2, k->bin_start[b]);
+	for (uint16_t i = 0; i < k->nstatic; i++, p += E_CHUNK_STATIC) {
+		const struct Static *s = &k->statics[i];
+		put_be16(p, s->tf);
+		put_be16(p + 2, (uint16_t) s->x);
+		put_be16(p + 4, (uint16_t) s->y);
+		p[6] = s->z;
+		p[7] = s->flat;
+		for (int j = 0; j < 4; j++)
+			put_be16(p + 8 + j * 2, (uint16_t) s->r[j]);
+		p[16] = s->fx;
+		p[17] = s->fy;
+		p[18] = s->height;
+		p[19] = 0;
+	}
+	memcpy(p, k->bin_list, nl);
+	return (uint32_t) (p - out) + nl;
+}
+
 static struct Chunk *chunk_statics(int cx, int cy)
+{
+	uint8_t slot = chunk_slot[cy * 192 + cx];
+
+	if (slot != 0 && chunks[slot - 1].built) {
+		chunks[slot - 1].age = ++age_now;
+		return &chunks[slot - 1];
+	}
+	uint32_t t0 = eb_clock();
+	struct Chunk *k = chunk_statics_now(cx, cy);
+	e_stats.chunk_time += eb_clock() - t0;
+	return k;
+}
+
+/* The box round all of a chunk's statics' pictures (empty: x0 > x1). */
+static void chunk_reach(struct Chunk *k)
+{
+	int16_t x0 = 32767, y0 = 32767, x1 = -32768, y1 = -32768;
+
+	for (uint16_t i = 0; i < k->nstatic; i++) {
+		const int16_t *r = k->statics[i].r;
+		if (r[0] < x0) x0 = r[0];
+		if (r[1] < y0) y0 = r[1];
+		if (r[2] > x1) x1 = r[2];
+		if (r[3] > y1) y1 = r[3];
+	}
+	k->reach[0] = x0;
+	k->reach[1] = y0;
+	k->reach[2] = x1;
+	k->reach[3] = y1;
+}
+
+static struct Chunk *chunk_statics_now(int cx, int cy)
 {
 	struct Chunk *k = chunk(cx, cy);
 
@@ -507,7 +658,9 @@ static struct Chunk *chunk_statics(int cx, int cy)
 	int rx = (cx >> 4) << 8, ry = (cy >> 4) << 8;
 	int n = k->nobj + r->start[c + 1] - r->start[c];
 
-	k->nstatic = 0;
+	/* with the dataset, the fixed ones are in (chunk()), and the region gave the movable ones
+	 * alone; the chunk's own objects are among the fixed */
+	k->nstatic = chunk_data >= 0 ? k->nfixed : 0;
 	for (int i = 0; i < n && k->nstatic < CHUNK_STATICS; i++) {
 		struct Static *s = &k->statics[k->nstatic];
 		if (i < k->nobj) {
@@ -525,9 +678,15 @@ static struct Chunk *chunk_statics(int cx, int cy)
 		}
 		if ((s->tf & 0x3ff) < TILE_TYPES || !picture_rect(s->tf, s->x, s->y, s->z, s->r))
 			continue;
-		s->flat = info[s->tf & 0x3ff].height == 0;
+		set_footprint(s);
 		k->nstatic++;
 	}
+	if (chunk_data >= 0) {
+		chunk_reach(k);
+		k->built = 1;
+		return k;
+	}
+	k->nfixed = k->nstatic;
 	/* the bins: counts, starts, the lists, the starts back */
 	int16_t ox = (int16_t) (cx * 128 - 120), oy = (int16_t) (cy * 128 - 120);
 	memset(k->bin_start, 0, sizeof k->bin_start);
@@ -560,6 +719,7 @@ static struct Chunk *chunk_statics(int cx, int cy)
 	for (int b = CHUNK_BINS * CHUNK_BINS; b > 0; b--)
 		k->bin_start[b] = k->bin_start[b - 1];
 	k->bin_start[0] = 0;
+	chunk_reach(k);
 	k->built = 1;
 	return k;
 }
@@ -573,7 +733,8 @@ static int chunk_find(const struct Chunk *k, const int16_t q[4], int flat, uint8
 	int by0 = clampi((q[1] - oy) >> 5, 0, CHUNK_BINS - 1), by1 = clampi((q[3] - oy) >> 5, 0, CHUNK_BINS - 1);
 	int n = 0;
 
-	if (q[2] < ox || q[3] < oy || q[0] >= ox + CHUNK_BINS * 32 || q[1] >= oy + CHUNK_BINS * 32)
+	if (q[2] < ox || q[3] < oy || q[0] >= ox + CHUNK_BINS * 32 || q[1] >= oy + CHUNK_BINS * 32
+		|| q[2] < k->reach[0] || q[3] < k->reach[1] || q[0] > k->reach[2] || q[1] > k->reach[3])
 		return 0;
 	if ((bx1 - bx0 + 1) * (by1 - by0 + 1) > 4) {
 		/* a large query (an area): the list itself, in order, is quicker than many bins */
@@ -607,6 +768,13 @@ static int chunk_find(const struct Chunk *k, const int16_t q[4], int flat, uint8
 				out[at] = i;
 			}
 		}
+	/* those not binned (the movable ones, with the dataset's chunks), after: later in the list */
+	for (uint16_t i = k->nfixed; i < k->nstatic && n < max; i++) {
+		const int16_t *r = k->statics[i].r;
+		if (k->statics[i].flat == flat && r[0] <= q[2] && q[0] <= r[2] && r[1] <= q[3]
+			&& q[1] <= r[3])
+			out[n++] = (uint8_t) i;
+	}
 	return n;
 }
 
@@ -623,40 +791,14 @@ struct Local {
 
 static void make_local(struct Local *l, const struct Static *s)
 {
-	uint16_t type = s->tf & 0x3ff;
-	int fx = info[type].fx, fy = info[type].fy;
-
-	if (s->tf & 0x8000) {
-		int t = fx; fx = fy; fy = t;
-	}
 	l->s = s;
 	memcpy(l->r, s->r, sizeof l->r);
 	l->cx1 = s->x;
-	l->cx0 = (int16_t) (s->x - fx);
+	l->cx0 = (int16_t) (s->x - s->fx);
 	l->cy1 = s->y;
-	l->cy0 = (int16_t) (s->y - fy);
+	l->cy0 = (int16_t) (s->y - s->fy);
 	l->z0 = s->z;
-	l->z1 = (uint8_t) (s->z + info[type].height);
-}
-
-/* -1: a is drawn before b; 1: after; 0: either. By the ranges of their footprints and levels:
- * what lies south or east, or above, is in front. */
-static int compare(const struct Local *a, const struct Local *b)
-{
-	int xc = a->cx1 < b->cx0 ? -1 : a->cx0 > b->cx1 ? 1 : 0;
-	int yc = a->cy1 < b->cy0 ? -1 : a->cy0 > b->cy1 ? 1 : 0;
-	int zc = a->z1 <= b->z0 ? -1 : a->z0 >= b->z1 ? 1 : 0;
-
-	e_stats.compares++;
-	if (xc == 0 && yc == 0)
-		return zc;
-	if (zc != 0 && (xc == 0 || xc == zc) && (yc == 0 || yc == zc))
-		return zc;
-	if (xc == 0)
-		return yc;
-	if (yc == 0)
-		return xc;
-	return xc == yc ? xc : 0;
+	l->z1 = (uint8_t) (s->z + s->height);
 }
 
 static inline int overlaps(const int16_t *a, int16_t x0, int16_t y0, int16_t x1, int16_t y1)
@@ -707,6 +849,14 @@ static void visit(uint16_t i)
 
 /* Draws area (ax, ay) into its place in the ring: the chunk's terrain, then every static over
  * it, the flat ones first in the chunks' order, then the standing ones in order. */
+/* An area object's picture and footprint, for comparing (order_of()'s, inline in draw_area). */
+static struct Edge {
+	int16_t x0, x1, y0, y1;
+	int16_t cx0, cx1, cy0, cy1;
+	uint8_t z0, z1;
+	uint16_t pad;
+} edges[AREA_OBJECTS];
+
 static void draw_area(int ax, int ay)
 {
 	int slot = (ay % RING_AY) * RING_AX + ax % RING_AX;
@@ -750,16 +900,50 @@ static void draw_area(int ax, int ay)
 			}
 	e_stats.statics = nloc;
 
+	uint32_t t_order = eb_clock();
 	/* each overlapping pair once; then by object its list, and the walk */
-	for (uint16_t i = 0; i < nloc; i++)
+	/* most of an area's pictures overlap, so nearly every pair is compared: the pictures' edges
+	 * and the footprints side by side, and order_of() as it is, inline, without the calls */
+	for (uint16_t i = 0; i < nloc; i++) {
+		const struct Local *l = &loc[i];
+		struct Edge *e = &edges[i];
+		e->x0 = l->r[0];
+		e->y0 = l->r[1];
+		e->x1 = l->r[2];
+		e->y1 = l->r[3];
+		e->cx0 = l->cx0;
+		e->cx1 = l->cx1;
+		e->cy0 = l->cy0;
+		e->cy1 = l->cy1;
+		e->z0 = l->z0;
+		e->z1 = l->z1;
+	}
+	for (uint16_t i = 0; i < nloc; i++) {
+		const struct Edge *a = &edges[i], *b = a;
 		for (uint16_t j = (uint16_t) (i + 1); j < nloc; j++) {
-			if (!overlaps(loc[i].r, loc[j].r[0], loc[j].r[1], loc[j].r[2], loc[j].r[3]))
+			b++;
+			if (b->x0 > a->x1 || b->x1 < a->x0 || b->y0 > a->y1 || b->y1 < a->y0)
 				continue;
-			int r = compare(&loc[i], &loc[j]);
+			int xc = a->cx1 < b->cx0 ? -1 : a->cx0 > b->cx1 ? 1 : 0;
+			int yc = a->cy1 < b->cy0 ? -1 : a->cy0 > b->cy1 ? 1 : 0;
+			int zc = a->z1 <= b->z0 ? -1 : a->z0 >= b->z1 ? 1 : 0;
+			int r;
+			if (xc == 0 && yc == 0)
+				r = zc;
+			else if (zc != 0 && (xc == 0 || xc == zc) && (yc == 0 || yc == zc))
+				r = zc;
+			else if (xc == 0)
+				r = yc;
+			else if (yc == 0)
+				r = xc;
+			else
+				r = xc == yc ? xc : 0;
 			if (r != 0 && npairs < AREA_EDGES)
 				loc_pairs[npairs++] = r < 0 ? (uint32_t) j << 16 | i : (uint32_t) i << 16 | j;
 		}
+	}
 	e_stats.edges = npairs;
+	e_stats.pair_tests += (uint32_t) nloc * (nloc - 1u) / 2;
 	for (uint16_t i = 0; i <= nloc; i++)
 		loc[i].pred = 0;
 	for (uint32_t p = 0; p < npairs; p++)
@@ -780,6 +964,7 @@ static void draw_area(int ax, int ay)
 	nlocorder = 0;
 	for (uint16_t i = 0; i < nloc; i++)
 		visit(i);
+	e_stats.order_time += eb_clock() - t_order;
 	for (uint16_t i = 0; i < nlocorder; i++)
 		draw_static(&ring, clip, loc[loc_order[i]].s, ox, oy);
 	ring_ax[slot] = (int16_t) ax;
@@ -796,17 +981,27 @@ static int in_ring(int ax, int ay)
 /* ---- movers ---- */
 
 #define MOVER_FRONTS 32
+#ifndef MOVER_MARGIN
+#define MOVER_CANDS 160        /* statics kept near a mover */
+#define MOVER_MARGIN 24        /* pixels round its box they are kept for */
+#endif
+#define MOVER_SLOTS 12         /* chunks they come from */
 static struct Mover {
 	uint16_t tf;
 	int16_t x, y;
 	uint8_t z, ok;
 	struct Static s;
-	struct Local l;
-	/* the statics in front of it, in drawing order, worked out for it as it is (s) while no
-	 * chunk's statics have moved since (epoch); valid, or not yet */
+	/* the statics in front of it, in drawing order, worked out for it as it is (s); valid, or
+	 * not yet */
 	uint8_t cached, nfront;
-	uint16_t epoch;
 	const struct Static *fronts[MOVER_FRONTS];
+	/* the standing statics over its box and MOVER_MARGIN round it (near), from the chunks in
+	 * slots (each still given the chunk it was: gens); kept while it moves within that box */
+	int16_t near_box[4];
+	uint8_t near_ok, nnear, nslot;
+	uint8_t slots[MOVER_SLOTS];
+	uint16_t gens[MOVER_SLOTS];
+	const struct Static **near;
 } movers[E_MOVERS];
 static uint8_t nmovers;
 
@@ -833,29 +1028,92 @@ void e_mover_set(int i, uint16_t tf, int16_t x, int16_t y, uint8_t z)
 
 /* Draws the movers into frame, behind ones first, each followed by the statics in front of it
  * (and those in front of them), clipped to it. */
+/* -1: a is drawn before b; 1: after; 0: either. By the ranges of their footprints and levels:
+ * what lies south or east, or above, is in front. (Inline in draw_area too, from struct Edge.) */
+static inline int order_of(const struct Static *a, const struct Static *b)
+{
+	int ax0 = a->x - a->fx, ay0 = a->y - a->fy, bx0 = b->x - b->fx, by0 = b->y - b->fy;
+	int az1 = a->z + a->height, bz1 = b->z + b->height;
+	int xc = a->x < bx0 ? -1 : ax0 > b->x ? 1 : 0;
+	int yc = a->y < by0 ? -1 : ay0 > b->y ? 1 : 0;
+	int zc = az1 <= b->z ? -1 : a->z >= bz1 ? 1 : 0;
+
+	if (xc == 0 && yc == 0)
+		return zc;
+	if (zc != 0 && (xc == 0 || xc == zc) && (yc == 0 || yc == zc))
+		return zc;
+	if (xc == 0)
+		return yc;
+	if (yc == 0)
+		return xc;
+	return xc == yc ? xc : 0;
+}
+
+/* The chunks a mover's statics came from (near, and its fronts) still hold them. */
+static int near_valid(const struct Mover *v)
+{
+	for (uint8_t i = 0; i < v->nslot; i++)
+		if (chunk_gen[v->slots[i]] != v->gens[i])
+			return 0;
+	return 1;
+}
+
+/* The standing statics over a mover's box and MOVER_MARGIN round it, kept; near_ok 0 when there
+ * are too many to keep (or too many chunks). */
+static void find_near(struct Mover *v, const int16_t box[4])
+{
+	int16_t q[4] = {
+		(int16_t) (box[0] - MOVER_MARGIN), (int16_t) (box[1] - MOVER_MARGIN),
+		(int16_t) (box[2] + MOVER_MARGIN), (int16_t) (box[3] + MOVER_MARGIN),
+	};
+
+	e_stats.near_finds++;
+	v->near_ok = 0;
+	v->nnear = v->nslot = 0;
+	memcpy(v->near_box, q, sizeof q);
+	for (int cy = (q[1] - REACH_AFTER) >> 7; cy <= (q[3] + REACH_BEFORE) >> 7; cy++)
+		for (int cx = (q[0] - REACH_AFTER) >> 7; cx <= (q[2] + REACH_BEFORE) >> 7; cx++) {
+			if (cx < 0 || cy < 0 || cx >= 192 || cy >= 192)
+				continue;
+			struct Chunk *k = chunk_statics(cx, cy);
+			uint8_t found[CHUNK_STATICS];
+			int count = chunk_find(k, q, 0, found, CHUNK_STATICS);
+			if (v->nslot == MOVER_SLOTS || v->nnear + count > MOVER_CANDS)
+				return;
+			v->slots[v->nslot] = (uint8_t) (k - chunks);
+			v->gens[v->nslot++] = chunk_gen[k - chunks];
+			for (int j = 0; j < count; j++)
+				v->near[v->nnear++] = &k->statics[found[j]];
+		}
+	/* a chunk read in for a later one may have taken the slot of an earlier one */
+	v->near_ok = (uint8_t) near_valid(v);
+}
+
+static void note_drawn(const struct ESurface *frame, const int16_t clip[4]);
+
 static void draw_movers(struct ESurface *frame, int16_t vx, int16_t vy)
 {
 	uint8_t sorted[E_MOVERS], n = 0;
-	static struct Local cand[128], front[64];
 
 	for (uint8_t m = 0; m < nmovers; m++) {
 		struct Mover *v = &movers[m];
 		/* what is in front of it depends on where it stands and its shape, not on which frame it
 		 * shows: the statics over the box of all its frames are found once it stands somewhere */
-		if (v->s.x != v->x || v->s.y != v->y || v->s.z != v->z
-			|| ((v->s.tf ^ v->tf) & 0x83ff) != 0)
+		int reshaped = ((v->s.tf ^ v->tf) & 0x83ff) != 0;
+		if (v->s.x != v->x || v->s.y != v->y || v->s.z != v->z || reshaped)
 			v->cached = 0;
 		v->s.tf = v->tf;
 		v->s.x = v->x;
 		v->s.y = v->y;
 		v->s.z = v->z;
+		if (reshaped)
+			set_footprint(&v->s);
 		v->ok = picture_rect(v->tf, v->x, v->y, v->z, v->s.r);
 		if (!v->ok || v->s.r[2] < vx || v->s.r[0] >= vx + E_VIEW_W || v->s.r[3] < vy
 			|| v->s.r[1] >= vy + E_VIEW_H)
 			continue;
-		make_local(&v->l, &v->s);
 		uint8_t k = n++;
-		while (k > 0 && compare(&v->l, &movers[sorted[k - 1]].l) < 0) {
+		while (k > 0 && order_of(&v->s, &movers[sorted[k - 1]].s) < 0) {
 			sorted[k] = sorted[k - 1];
 			k--;
 		}
@@ -868,12 +1126,13 @@ static void draw_movers(struct ESurface *frame, int16_t vx, int16_t vy)
 			(int16_t) (r[0] - vx), (int16_t) (r[1] - vy), (int16_t) (r[2] - vx), (int16_t) (r[3] - vy),
 		};
 		static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
-		uint8_t ncand = 0, nfront = 0;
 
 		draw_static(frame, whole, &v->s, vx, vy);
 		e_stats.drawn++;
+		if (v->cached && !near_valid(v))
+			v->cached = 0;
+		if (!v->cached) {
 		uint32_t f0 = eb_clock();
-		if (!v->cached || v->epoch != chunk_epoch) {
 		e_stats.front_misses++;
 		const int16_t *b = box_of(v->tf & 0x3ff);
 		int16_t px = (int16_t) (v->x * 8 + 7 - v->z * 4), py = (int16_t) (v->y * 8 + 7 - v->z * 4);
@@ -886,31 +1145,54 @@ static void draw_movers(struct ESurface *frame, int16_t vx, int16_t vy)
 			box[2] = (int16_t) (px + b[0]); box[3] = (int16_t) (py + b[3]);
 		}
 		const int16_t *q = box;
-		/* the statics over it, from the chunks whose objects can reach it */
-		for (int cy = (q[1] - REACH_AFTER) >> 7; cy <= (q[3] + REACH_BEFORE) >> 7; cy++)
-			for (int cx = (q[0] - REACH_AFTER) >> 7; cx <= (q[2] + REACH_BEFORE) >> 7; cx++) {
-				if (cx < 0 || cy < 0 || cx >= 192 || cy >= 192)
-					continue;
-				struct Chunk *k = chunk_statics(cx, cy);
-				uint8_t found[CHUNK_STATICS];
-				int count = chunk_find(k, q, 0, found, CHUNK_STATICS);
-				for (int j = 0; j < count && ncand < 128; j++)
-					make_local(&cand[ncand++], &k->statics[found[j]]);
+		const struct Static *cand[128];
+		uint8_t ncand = 0;
+		if (!v->near_ok || !near_valid(v) || box[0] < v->near_box[0] || box[1] < v->near_box[1]
+			|| box[2] > v->near_box[2] || box[3] > v->near_box[3])
+			find_near(v, box);
+		if (v->near_ok) {
+			/* those over the box itself, in the order the chunks would give them */
+			for (uint8_t j = 0; j < v->nnear && ncand < 128; j++) {
+				const int16_t *r = v->near[j]->r;
+				if (r[0] <= q[2] && q[0] <= r[2] && r[1] <= q[3] && q[1] <= r[3])
+					cand[ncand++] = v->near[j];
 			}
+		} else {
+			/* too many near it to keep: the statics over it, from the chunks whose objects
+			 * can reach it */
+			v->nslot = 0;
+			for (int cy = (q[1] - REACH_AFTER) >> 7; cy <= (q[3] + REACH_BEFORE) >> 7; cy++)
+				for (int cx = (q[0] - REACH_AFTER) >> 7; cx <= (q[2] + REACH_BEFORE) >> 7; cx++) {
+					if (cx < 0 || cy < 0 || cx >= 192 || cy >= 192)
+						continue;
+					struct Chunk *k = chunk_statics(cx, cy);
+					uint8_t found[CHUNK_STATICS];
+					int count = chunk_find(k, q, 0, found, CHUNK_STATICS);
+					if (v->nslot < MOVER_SLOTS) {
+						v->slots[v->nslot] = (uint8_t) (k - chunks);
+						v->gens[v->nslot++] = chunk_gen[k - chunks];
+					}
+					for (int j = 0; j < count && ncand < 128; j++)
+						cand[ncand++] = &k->statics[found[j]];
+				}
+		}
 		/* in front of it, or of one found in front of it: each new one is tried against those
 		 * left; then they are drawn each after those it is in front of */
-		uint8_t draw[64];
+		const struct Static *front[64];
+		uint8_t nfront = 0, draw[64];
+		e_stats.front_cands += ncand;
 		for (int8_t against = -1; against < (int8_t) nfront; against++) {
-			const struct Local *by = against < 0 ? &v->l : &front[against];
+			const struct Static *by = against < 0 ? &v->s : front[against];
+			e_stats.front_compares += ncand;
 			for (uint8_t j = 0; j < ncand && nfront < 64; j++)
-				if (cand[j].s != NULL && compare(&cand[j], by) > 0) {
+				if (cand[j] != NULL && order_of(cand[j], by) > 0) {
 					front[nfront++] = cand[j];
-					cand[j].s = NULL;
+					cand[j] = NULL;
 				}
 		}
 		for (uint8_t f = 0; f < nfront; f++) {
 			uint8_t at = f;
-			while (at > 0 && compare(&front[f], &front[draw[at - 1]]) < 0) {
+			while (at > 0 && order_of(front[f], front[draw[at - 1]]) < 0) {
 				draw[at] = draw[at - 1];
 				at--;
 			}
@@ -918,16 +1200,15 @@ static void draw_movers(struct ESurface *frame, int16_t vx, int16_t vy)
 		}
 		v->nfront = nfront < MOVER_FRONTS ? nfront : MOVER_FRONTS;
 		for (uint8_t f = 0; f < v->nfront; f++)
-			v->fronts[f] = front[draw[f]].s;
-		/* the chunks looked in may have taken slots: the epoch after them */
-		v->epoch = chunk_epoch;
+			v->fronts[f] = front[draw[f]];
 		v->cached = 1;
-		}
 		e_stats.front_time += eb_clock() - f0;
+		}
 		if (clip[0] < 0) clip[0] = 0;
 		if (clip[1] < 0) clip[1] = 0;
 		if (clip[2] > E_VIEW_W - 1) clip[2] = E_VIEW_W - 1;
 		if (clip[3] > E_VIEW_H - 1) clip[3] = E_VIEW_H - 1;
+		note_drawn(frame, clip);
 		for (uint8_t f = 0; f < v->nfront; f++) {
 			draw_static(frame, clip, v->fronts[f], vx, vy);
 			e_stats.drawn++;
@@ -965,6 +1246,7 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 
 	if (flex_open(&pal, "STATIC", "PALETTES.FLX") < 0 || !read_at(pal.f, pal.table[0], palette, 768))
 		return -3;
+	memcpy(palette + E_BLACK * 3, palette, 3);
 	plat_file_close(pal.f);
 
 	if ((map = take(192 * 192 * 2)) == NULL || (f = open_file("STATIC", "U7MAP")) < 0)
@@ -980,6 +1262,15 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 
 	if ((chunk_file = open_file("STATIC", "U7CHUNKS")) < 0)
 		return -5;
+	chunk_data = open_file("ENGINE", "CHUNKS.DAT");
+	if (chunk_data >= 0) {
+		char title[sizeof E_CHUNKS_TITLE];
+		if (!read_at(chunk_data, 0, title, sizeof title - 1)
+			|| memcmp(title, E_CHUNKS_TITLE, sizeof title - 1) != 0) {
+			plat_file_close(chunk_data);
+			chunk_data = -1;
+		}
+	}
 	/* the dataset's shapes if there are any (engine.h), else the original's, converted as read */
 	converted = 0;
 	if (flex_open(&shapes, "ENGINE", "SHAPES.FLX") == 0) {
@@ -1031,6 +1322,9 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 		|| (loc_pairs = take(AREA_EDGES * 4)) == NULL || (loc_preds = take(AREA_EDGES * 2)) == NULL
 		|| (loc_order = take(AREA_OBJECTS * 2)) == NULL)
 		return -7;
+	for (int i = 0; i < E_MOVERS; i++)
+		if ((movers[i].near = take(MOVER_CANDS * sizeof *movers[i].near)) == NULL)
+			return -7;
 	pool = pool_next = pool_pinned = mem_next;
 	pool_end = mem_end;
 	if (pool_end - pool < 256 * 1024)
@@ -1072,9 +1366,81 @@ void e_set_view(int16_t x, int16_t y)
 
 /* The next area ahead of the view not yet in the ring, if the ring has room for it beside what
  * the view covers: 1 and its place when there is one. */
-static int next_ahead(int ax0, int ay0, int ax1, int ay1, int *ax, int *ay)
+void e_copy_view(struct ESurface *frame, const struct ESurface *r, int16_t tx, int16_t ty)
 {
-	if (heading_x != 0 && ax1 - ax0 + 1 < RING_AX) {
+	int16_t w = (int16_t) (RING_W - tx < E_VIEW_W ? RING_W - tx : E_VIEW_W);
+	int16_t h = (int16_t) (RING_H - ty < E_VIEW_H ? RING_H - ty : E_VIEW_H);
+
+	eb_copy(frame, 0, 0, r, tx, ty, w, h);
+	if (w < E_VIEW_W)
+		eb_copy(frame, w, 0, r, 0, ty, (int16_t) (E_VIEW_W - w), h);
+	if (h < E_VIEW_H) {
+		eb_copy(frame, 0, h, r, tx, 0, w, (int16_t) (E_VIEW_H - h));
+		if (w < E_VIEW_W)
+			eb_copy(frame, w, h, r, 0, 0, (int16_t) (E_VIEW_W - w), (int16_t) (E_VIEW_H - h));
+	}
+}
+
+/* Where the movers were drawn in each frame (a layer, shown over the ring), to be cleared before
+ * it is drawn in again; a few frames' worth (the backend's buffers). */
+#define DRAWN_FRAMES 4
+static struct Drawn {
+	const uint8_t *pixels;
+	uint8_t n;
+	int16_t r[E_MOVERS][4];
+} drawn[DRAWN_FRAMES];
+
+static struct Drawn *drawn_of(const struct ESurface *frame)
+{
+	struct Drawn *free_one = NULL;
+
+	for (int i = 0; i < DRAWN_FRAMES; i++) {
+		if (drawn[i].pixels == frame->pixels)
+			return &drawn[i];
+		if (drawn[i].pixels == NULL && free_one == NULL)
+			free_one = &drawn[i];
+	}
+	if (free_one != NULL)
+		free_one->pixels = frame->pixels;
+	return free_one;
+}
+
+static void clear_drawn(struct ESurface *frame)
+{
+	struct Drawn *d = drawn_of(frame);
+
+	if (d == NULL)
+		return;
+	for (uint8_t i = 0; i < d->n; i++) {
+		int16_t x0 = (int16_t) (d->r[i][0] & ~7), x1 = (int16_t) ((d->r[i][2] + 8) & ~7);
+		eb_clear(frame, x0, d->r[i][1], (int16_t) (x1 - x0), (int16_t) (d->r[i][3] - d->r[i][1] + 1));
+	}
+	d->n = 0;
+}
+
+/* A mover's picture drawn in frame, clipped to it: to be cleared next time. */
+static void note_drawn(const struct ESurface *frame, const int16_t clip[4])
+{
+	struct Drawn *d = drawn_of(frame);
+
+	if (d != NULL && d->n < E_MOVERS)
+		memcpy(d->r[d->n++], clip, sizeof d->r[0]);
+}
+
+/* The next area ahead of the view, the way it last moved, that the ring has room for. When the
+ * backend shows the ring itself (eb_view gave 0), the area left behind is only given up a little
+ * way past (RING_TRAIL pixels): it may still be on the screen for a frame or two. */
+#define RING_TRAIL 16
+static uint8_t ring_shown;      /* the last eb_view showed the ring itself */
+static int next_ahead(int16_t vx, int16_t vy, int ax0, int ay0, int ax1, int ay1, int *ax, int *ay)
+{
+	int trail = ring_shown ? RING_TRAIL : 0;
+	int tx0 = heading_x > 0 ? (vx - trail) >> 7 : ax0;
+	int tx1 = heading_x < 0 ? (vx + E_VIEW_W - 1 + trail) >> 7 : ax1;
+	int ty0 = heading_y > 0 ? (vy - trail) >> 7 : ay0;
+	int ty1 = heading_y < 0 ? (vy + E_VIEW_H - 1 + trail) >> 7 : ay1;
+
+	if (heading_x != 0 && tx1 - tx0 + 1 < RING_AX) {
 		int col = heading_x > 0 ? ax1 + 1 : ax0 - 1;
 		for (int y = ay0; y <= ay1; y++)
 			if (col >= 0 && col < 192 && !in_ring(col, y)) {
@@ -1083,7 +1449,7 @@ static int next_ahead(int ax0, int ay0, int ax1, int ay1, int *ax, int *ay)
 				return 1;
 			}
 	}
-	if (heading_y != 0 && ay1 - ay0 + 1 < RING_AY) {
+	if (heading_y != 0 && ty1 - ty0 + 1 < RING_AY) {
 		int row = heading_y > 0 ? ay1 + 1 : ay0 - 1;
 		for (int x = ax0; x <= ax1; x++)
 			if (row >= 0 && row < 192 && !in_ring(x, row)) {
@@ -1116,24 +1482,17 @@ void e_draw(struct ESurface *frame)
 				draw_area(ax, ay);
 				drew = 1;
 			}
-	if (!drew && next_ahead(ax0, ay0, ax1, ay1, &ax, &ay))
+	if (!drew && next_ahead(vx, vy, ax0, ay0, ax1, ay1, &ax, &ay))
 		draw_area(ax, ay);
 	t1 = eb_clock();
 	e_stats.build_time += t1 - t0;
 	t0 = t1;
 
-	/* the ring under the view, in up to four pieces where it wraps */
-	int16_t tx = (int16_t) (vx % RING_W), ty = (int16_t) (vy % RING_H);
-	int16_t w = (int16_t) (RING_W - tx < E_VIEW_W ? RING_W - tx : E_VIEW_W);
-	int16_t h = (int16_t) (RING_H - ty < E_VIEW_H ? RING_H - ty : E_VIEW_H);
-	eb_copy(frame, 0, 0, &ring, tx, ty, w, h);
-	if (w < E_VIEW_W)
-		eb_copy(frame, w, 0, &ring, 0, ty, (int16_t) (E_VIEW_W - w), h);
-	if (h < E_VIEW_H) {
-		eb_copy(frame, 0, h, &ring, tx, 0, w, (int16_t) (E_VIEW_H - h));
-		if (w < E_VIEW_W)
-			eb_copy(frame, w, h, &ring, 0, 0, (int16_t) (E_VIEW_W - w), (int16_t) (E_VIEW_H - h));
-	}
+	/* the ring under the view: copied, or shown under the frame with the frame cleared where the
+	 * movers were drawn in it before */
+	ring_shown = !eb_view(frame, &ring, (int16_t) (vx % RING_W), (int16_t) (vy % RING_H));
+	if (ring_shown)
+		clear_drawn(frame);
 	t1 = eb_clock();
 	e_stats.copy_time += t1 - t0;
 	t0 = t1;

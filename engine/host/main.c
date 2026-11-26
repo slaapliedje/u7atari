@@ -4,6 +4,8 @@
  *     --walk dx dy n   move the view dx, dy cells a frame for n frames (default: one frame)
  *     --movers n       n NPCs wandering about the view
  *     --out prefix     pictures prefix.NNNN.ppm (default view); --every k: every k-th frame
+ *     --layers         the movers on a layer of their own over the ring, as the Jaguar shows
+ *                      them (the picture put together from both for saving)
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -70,6 +72,29 @@ void eb_copy(struct ESurface *dst, int16_t dx, int16_t dy, const struct ESurface
 	for (int16_t r = 0; r < h; r++)
 		memcpy(dst->pixels + (dy + r) * dst->pitch + dx, src->pixels + (sy + r) * src->pitch + sx,
 			(size_t) w);
+}
+
+/* --layers: the ring is not copied; the picture is the ring's window with the layer over it */
+static int layers;
+static const struct ESurface *shown_ring;
+static int16_t shown_x, shown_y;
+
+int eb_view(struct ESurface *dst, const struct ESurface *ring, int16_t sx, int16_t sy)
+{
+	if (!layers) {
+		e_copy_view(dst, ring, sx, sy);
+		return 1;
+	}
+	shown_ring = ring;
+	shown_x = sx;
+	shown_y = sy;
+	return 0;
+}
+
+void eb_clear(struct ESurface *dst, int16_t x, int16_t y, int16_t w, int16_t h)
+{
+	for (int16_t r = 0; r < h; r++)
+		memset(dst->pixels + (y + r) * dst->pitch + x, 0, (size_t) w);
 }
 
 void eb_tiles(struct ESurface *dst, const struct EFlat flats[E_FLAT_TYPES],
@@ -149,7 +174,11 @@ static void save(const char *name)
 	fprintf(f, "P6\n%d %d\n255\n", E_VIEW_W, E_VIEW_H);
 	for (int y = 0; y < E_VIEW_H; y++)
 		for (int x = 0; x < E_VIEW_W; x++) {
-			const uint8_t *c = pal + screen[y][x] * 3;
+			uint8_t i = frame.pixels[y * frame.pitch + x];
+			if (layers && i == 0)
+				i = shown_ring->pixels[(shown_y + y) % shown_ring->h * shown_ring->pitch
+					+ (shown_x + x) % shown_ring->w];
+			const uint8_t *c = pal + i * 3;
 			uint8_t rgb[3] = { (uint8_t) (c[0] << 2 | c[0] >> 4), (uint8_t) (c[1] << 2 | c[1] >> 4),
 				(uint8_t) (c[2] << 2 | c[2] >> 4) };
 			fwrite(rgb, 1, 3, f);
@@ -190,6 +219,8 @@ int main(int argc, char **argv)
 			sheet = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--every") && i + 1 < argc)
 			every = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--layers"))
+			layers = 1;
 	}
 	e_surface_rows(&frame);
 	int r = e_init(argv[1], memory, sizeof memory);
@@ -227,6 +258,10 @@ int main(int argc, char **argv)
 			walker[m].y = (int16_t) (walker[m].y + ddy[walker[m].dir]);
 			e_mover_set(m, e_walk_frame(721, walker[m].dir, f), walker[m].x, walker[m].y, 0);
 		}
+		/* layers: three of them in turn, as the Jaguar's frames */
+		static uint8_t layer_buf[3][E_VIEW_H * E_VIEW_W];
+		if (layers)
+			frame.pixels = layer_buf[f % 3];
 		e_draw(&frame);
 		if (f % every == 0 || f == n - 1) {
 			char name[256];
@@ -235,9 +270,9 @@ int main(int argc, char **argv)
 		}
 	}
 	double s = (double) (clock() - t0) / CLOCKS_PER_SEC;
-	printf("%d frames, %.3f ms each; rebuilds %u, statics %u, edges %u, compares %u, drawn %u, "
+	printf("%d frames, %.3f ms each; rebuilds %u, statics %u, edges %u, pair tests %u, drawn %u, "
 		"shapes %u KB (%u loads)\n", n, 1000.0 * s / n, e_stats.rebuilds, e_stats.statics,
-		e_stats.edges, e_stats.compares, e_stats.drawn, e_stats.shape_bytes / 1024,
+		e_stats.edges, e_stats.pair_tests, e_stats.drawn, e_stats.shape_bytes / 1024,
 		e_stats.shape_loads);
 	return 0;
 }

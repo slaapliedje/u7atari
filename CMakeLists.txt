@@ -41,7 +41,8 @@ if(U7_HOST)
         engine/host/main.c)
     target_include_directories(u7engine PRIVATE engine/core)
     # Its dataset: the shapes converted once, for the Jaguar (U7/ENGINE/SHAPES.FLX).
-    add_executable(u7jagdata EXCLUDE_FROM_ALL engine/tools/jagdata.c engine/core/shapes.c)
+    add_executable(u7jagdata EXCLUDE_FROM_ALL engine/tools/jagdata.c engine/core/engine.c
+        engine/core/shapes.c)
     target_include_directories(u7jagdata PRIVATE engine/core)
     target_compile_options(u7jagdata PRIVATE -O2 -Wall -Wextra)
     if(U7_GAME STREQUAL "Serpent Isle")
@@ -167,6 +168,9 @@ if(U7_JAGUAR)
         engine/jaguar/stubs.c engine/core/engine.c engine/core/shapes.c
         "${CMAKE_CURRENT_BINARY_DIR}/gdbios.o")
     target_include_directories(u7engine_jag PRIVATE engine/core platform/jaguar)
+    if(U7_JAG_FRAME_POINTERS)
+        target_compile_definitions(u7engine_jag PRIVATE JAG_PROF_FRAMES)
+    endif()
     target_compile_options(u7engine_jag PRIVATE $<$<COMPILE_LANGUAGE:C>:-O2 -g -Wall -Wextra>)
     target_link_options(u7engine_jag PRIVATE -nostartfiles
         "-T${CMAKE_CURRENT_SOURCE_DIR}/platform/jaguar/jaguar.ld")

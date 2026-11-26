@@ -65,26 +65,15 @@ _start:
 	jsr	jag_main
 7:	bra.s	7b
 
-	.text
-	.globl	jag_vbl
-jag_vbl:
-	movem.l	%d0-%d1/%a0-%a1, -(%sp)
-	move.l	jag_vbl_object, %a0
-	move.l	%a0, %d0
-	beq.s	1f
-	move.l	jag_vbl_phrase, (%a0)
-	move.l	jag_vbl_phrase+4, 4(%a0)
-1:	/* profiling (--profile): at every blank whose count has none of jag_prof_mask's bits, the
-	 * pc interrupted (above the four registers saved and the status register) and the 64 words
-	 * of stack above it, where a return address will be found (tools/jag-profile.py) */
+/* A profile sample (--profile), unless the buffer is full: the pc interrupted (above the four
+ * registers saved and the status register) and the 64 words of stack above it, where a return
+ * address will be found (tools/jag-profile.py). Uses d0-d1/a0-a1. */
+	.macro	PROF_TAKE
 	move.l	jag_prof_next, %a0
 	move.l	%a0, %d0
-	beq.s	3f
-	move.l	jag_ticks, %d0
-	and.l	jag_prof_mask, %d0
-	bne.s	3f
+	beq	3f
 	cmp.l	jag_prof_end, %a0
-	bcc.s	3f
+	bcc	3f
 	move.l	18(%sp), (%a0)+
 	lea	22(%sp), %a1
 	moveq	#31, %d0
@@ -112,12 +101,60 @@ jag_vbl:
 10:
 #endif
 	move.l	%a0, jag_prof_next
-3:	addq.l	#1, jag_ticks
+3:
+	.endm
+
+/* Tom's interrupts. The vertical blank: the bitmap object's first phrase put back (or a run of
+ * objects, jag_vbl_list: the object processor changes them as it draws them), a profile
+ * sample at every blank whose count has none of jag_prof_mask's bits (unless jag_prof_pit), the
+ * count, the hook. Tom's timer (enabled in jag_int_enable by whoever sets it going): a profile
+ * sample when jag_prof_pit is set, so samples fall apart from the frames. */
+	.text
+	.globl	jag_vbl
+jag_vbl:
+	movem.l	%d0-%d1/%a0-%a1, -(%sp)
+	btst	#3, INT1+1
+	beq	11f
+	tst.l	jag_prof_pit
+	beq	12f
+	PROF_TAKE
+12:	move.w	jag_int_enable, %d0
+	or.w	#0x800, %d0
+	move.w	%d0, INT1
+	move.w	#0, INT2
+	btst	#0, INT1+1
+	bne.s	11f
+	movem.l	(%sp)+, %d0-%d1/%a0-%a1
+	rte
+11:	move.l	jag_vbl_object, %a0
+	move.l	%a0, %d0
+	beq.s	1f
+	move.l	jag_vbl_phrase, (%a0)
+	move.l	jag_vbl_phrase+4, 4(%a0)
+1:	/* or a run of objects: jag_vbl_list's longs (its first long their count) to jag_vbl_live */
+	move.l	jag_vbl_list, %a0
+	move.l	%a0, %d0
+	beq.s	14f
+	move.l	jag_vbl_live, %a1
+	move.l	(%a0)+, %d0
+	subq.w	#1, %d0
+	bmi.s	14f
+15:	move.l	(%a0)+, (%a1)+
+	dbra	%d0, 15b
+14:	tst.l	jag_prof_pit
+	bne	13f
+	move.l	jag_ticks, %d0
+	and.l	jag_prof_mask, %d0
+	bne	13f
+	PROF_TAKE
+13:	addq.l	#1, jag_ticks
 	move.l	jag_vbl_hook, %a0
 	move.l	%a0, %d0
 	beq.s	2f
 	jsr	(%a0)
-2:	move.w	#0x101, INT1
+2:	move.w	jag_int_enable, %d0
+	or.w	#0x100, %d0
+	move.w	%d0, INT1
 	move.w	#0, INT2
 	movem.l	(%sp)+, %d0-%d1/%a0-%a1
 	rte
@@ -151,14 +188,20 @@ exc_common:
 	jsr	jag_crash
 9:	bra.s	9b
 
+	.data
+	.balign	2
+jag_int_enable:	.word	1		/* Tom's interrupts on: the blank; | 8 the timer */
 	.bss
 	.balign	4
-	.globl	jag_ticks, jag_vbl_object, jag_vbl_phrase, jag_vbl_hook
-	.globl	jag_prof_next, jag_prof_end, jag_prof_mask
+	.globl	jag_ticks, jag_vbl_object, jag_vbl_phrase, jag_vbl_hook, jag_vbl_list, jag_vbl_live
+	.globl	jag_prof_next, jag_prof_end, jag_prof_mask, jag_prof_pit, jag_int_enable
 jag_prof_next:	.space	4
 jag_prof_end:	.space	4
 jag_prof_mask:	.space	4
+jag_prof_pit:	.space	4
 jag_ticks:	.space	4
 jag_vbl_object:	.space	4
 jag_vbl_phrase:	.space	8
 jag_vbl_hook:	.space	4
+jag_vbl_list:	.space	4
+jag_vbl_live:	.space	4

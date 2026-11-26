@@ -16,7 +16,7 @@
 ; r11 count  r12 a byte  r13 the open raw run's header offset  r14 params
 ; r15 the open raw run's length (-1: none)  r16 its first column  r17-r19 temps  r20 AppFull
 ; r21/r22 Append's step and source
-; r23 AppLoop  r24 255  r25 SpanLoop  r26 Fail  r27 our next frame offset's place  r28 the mask
+; r23 AppLoop  r24 255 (a run's longest, and E_BLACK)  r25 SpanLoop  r26 Fail  r27 our next frame offset's place  r28 the mask
 ; r29 return from Open and Close  r30 return from Append
 
 G_CTRL		.equ	$F02114
@@ -226,6 +226,11 @@ EncFill:
 		bset	#0,r17			; a fill
 		PUT32	r17
 		RDB	r12
+		cmpq	#0,r12			; colour 0 kept as E_BLACK
+		jr	NE,EncNZ
+		nop
+		move	r24,r12
+EncNZ:
 		move	r12,r17
 		shlq	#8,r17
 		or	r12,r17
@@ -288,6 +293,11 @@ AppLoop:
 AppByte:
 		loadb	(r22),r12
 		add	r21,r22
+		cmpq	#0,r12			; colour 0 kept as E_BLACK (r24: 255)
+		jr	NE,AppNZ
+		nop
+		move	r24,r12
+AppNZ:
 		PUTB	r12
 		addq	#1,r15
 		addq	#1,r10
