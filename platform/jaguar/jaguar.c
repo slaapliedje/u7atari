@@ -41,10 +41,16 @@ extern uint32_t jag_vbl_phrase[2];
 uint32_t jag_heap_used(void);         /* syscalls.c */
 uint32_t jag_heap_size(void);
 
+/* --bench (main.c): the virtual clock, so a run does the same whatever the speed, but no
+ * checksums, so the time it takes is the game's own. */
+bool jag_bench;
+
 #ifdef U7_DEBUG_LOG
 #define IF_LOCKSTEP(call) do { if (lockstep) call; } while (0)
+#define IF_CHECKSUM(call) do { if (lockstep && !jag_bench) call; } while (0)
 #else
 #define IF_LOCKSTEP(call) do { } while (0)
+#define IF_CHECKSUM(call) do { } while (0)
 #endif
 
 /* ---- Video ---- */
@@ -141,7 +147,7 @@ void plat_video_set_palette(int16_t first, int16_t count, const uint8_t *rgb)
 
 		clut[first + i] = (uint16_t) ((c[0] & 0x3e) << 10 | (c[2] & 0x3e) << 5 | (c[1] & 0x3f));
 	}
-	IF_LOCKSTEP(lockstep_palette(first, count, rgb));
+	IF_CHECKSUM(lockstep_palette(first, count, rgb));
 }
 
 #ifdef U7_DEBUG_LOG
@@ -153,7 +159,7 @@ void plat_video_present(const uint8_t *pixels)
 {
 	last_pixels = pixels;
 	memcpy(screen, pixels, sizeof screen);
-	IF_LOCKSTEP(lockstep_frame(pixels, 'P'));
+	IF_CHECKSUM(lockstep_frame(pixels, 'P'));
 #ifdef U7_DEBUG_LOG
 	/* every 10 s of real time: the frame rate, to the log */
 	presents++;
@@ -196,7 +202,8 @@ int16_t video_pointer(void) { return 0; }
 void video_pointer_shape(const uint8_t *pixels, int16_t width, int16_t height, int16_t hot_x,
 	int16_t hot_y) { (void) pixels; (void) width; (void) height; (void) hot_x; (void) hot_y; }
 void video_pointer_show(int16_t visible) { (void) visible; }
-uint8_t *video_frame(void) { return (uint8_t *) last_pixels; }
+/* none under --bench: lockstep.c then checksums no yields either */
+uint8_t *video_frame(void) { return jag_bench ? NULL : (uint8_t *) last_pixels; }
 /* Serpent Isle's debug screens: not shown yet. */
 void video_show_text(const uint16_t *cells, int16_t cursor_x, int16_t cursor_y)
 {
@@ -245,7 +252,7 @@ static void midi_out(const uint8_t *message, int16_t length)
 {
 	plat_sound_lock();
 	sound_midi_bytes += (uint32_t) length;
-	IF_LOCKSTEP(lockstep_midi(message, length));
+	IF_CHECKSUM(lockstep_midi(message, length));
 	plat_sound_unlock();
 }
 
@@ -340,8 +347,15 @@ int32_t plat_pcm_pending(void)
 
 void plat_pcm_stop(void) { IF_LOCKSTEP(lockstep_pcm_stop()); }
 
+/* for the script's mem step: the heap, and the frames shown by then, for frame rates */
 void memory_report(char *text, size_t size)
 {
-	snprintf(text, size, "heap %lu K in use of %lu K", (unsigned long) (jag_heap_used() >> 10),
-		(unsigned long) (jag_heap_size() >> 10));
+	extern uint32_t files_read_bytes, files_written_bytes, files_drive_blanks, files_opens;
+
+	snprintf(text, size, "%luK/%luK %lu fr %lu ms rd %luK wr %luK op %lu drv %lu ms",
+		(unsigned long) (jag_heap_used() >> 10),
+		(unsigned long) (jag_heap_size() >> 10), (unsigned long) presents,
+		(unsigned long) timer_real_milliseconds(), (unsigned long) (files_read_bytes >> 10),
+		(unsigned long) (files_written_bytes >> 10), (unsigned long) files_opens,
+		(unsigned long) (files_drive_blanks * 1000 / 60));
 }

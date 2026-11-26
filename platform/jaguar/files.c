@@ -64,6 +64,10 @@ typedef struct {
 } find_list;
 
 static char root[PATH_SIZE] = "U7";
+/* for the script's mem step: bytes read and written on the card, and the vertical blanks spent
+ * in the drive's BIOS doing so and opening */
+extern volatile uint32_t jag_ticks;
+uint32_t files_read_bytes, files_written_bytes, files_drive_blanks, files_opens;
 static handle handles[MAX_HANDLES];
 static int live_count;
 static uint32_t use_clock;
@@ -101,7 +105,14 @@ static bool use(handle *h)
 	if (h->memory != NULL || h->live)
 		return true;
 	make_room(1);
-	if (FAILED(h->gd = GD_FOpen(h->path, h->mode)))
+	{
+		uint32_t began = jag_ticks;
+
+		h->gd = GD_FOpen(h->path, h->mode);
+		files_drive_blanks += jag_ticks - began;
+		files_opens++;
+	}
+	if (FAILED(h->gd))
 		return false;
 	h->live = true;
 	live_count++;
@@ -204,7 +215,14 @@ static int16_t open_path(const char *path, uint16_t mode, bool create)
 	if (file < 0)
 		return -1;
 	make_room(1);
-	if (FAILED(gd = GD_FOpen(path, mode)))
+	{
+		uint32_t began = jag_ticks;
+
+		gd = GD_FOpen(path, mode);
+		files_drive_blanks += jag_ticks - began;
+		files_opens++;
+	}
+	if (FAILED(gd))
 		return -1;
 	h = &handles[file];
 	memset(h, 0, sizeof *h);
@@ -295,8 +313,15 @@ int32_t plat_file_read(int16_t file, void *buffer, int32_t count)
 		return -1;
 	if (h->memory != NULL)
 		memcpy(buffer, h->memory + h->pos, (size_t) count);
-	else if (FAILED(GD_FRead(h->gd, buffer, (uint32_t) count, GD_FREAD_CPU)))
-		return -1;
+	else {
+		uint32_t began = jag_ticks;
+		uint16_t r = GD_FRead(h->gd, buffer, (uint32_t) count, GD_FREAD_CPU);
+
+		files_drive_blanks += jag_ticks - began;
+		files_read_bytes += (uint32_t) count;
+		if (FAILED(r))
+			return -1;
+	}
 	h->pos += count;
 	return count;
 }
@@ -309,8 +334,17 @@ int32_t plat_file_write(int16_t file, const void *buffer, int32_t count)
 		return -1;
 	if (count == 0)
 		return 0;
-	if (!use(h) || FAILED(GD_FWrite(h->gd, buffer, (uint32_t) count)))
+	if (!use(h))
 		return -1;
+	{
+		uint32_t began = jag_ticks;
+		uint16_t r = GD_FWrite(h->gd, buffer, (uint32_t) count);
+
+		files_drive_blanks += jag_ticks - began;
+		files_written_bytes += (uint32_t) count;
+		if (FAILED(r))
+			return -1;
+	}
 	h->pos += count;
 	if (h->pos > h->size)
 		h->size = h->pos;

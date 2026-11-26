@@ -30,8 +30,10 @@ extern void (*volatile jag_vbl_hook)(void);
 #endif
 
 static uint32_t start_ticks;
-/* microseconds a blank: NTSC 16683 (59.94 Hz), PAL 20000 */
-static uint32_t blank_us = 16683;
+/* The blank's rate as a fraction: NTSC 60000/1001 Hz (59.94), PAL 50/1. Time is worked out from
+ * blanks with 32-bit arithmetic only, the 68000 having no 64-bit (nor 32-bit) divide: blanks
+ * times 1001, split into whole seconds and the rest, keeps every product in range. */
+static uint32_t rate_num = 60000, rate_den = 1001;
 static plat_timer_fn game_timers[MAX_GAME_TIMERS];
 static uint32_t timers_ran_to;
 static plat_timer_fn volatile sound_tick;
@@ -71,7 +73,13 @@ static void timer_vbl(void)
 void timer_init(void)
 {
 	start_ticks = jag_ticks;
-	blank_us = (*(volatile uint16_t *) CONFIG & 0x10) ? 16683 : 20000;
+	if (*(volatile uint16_t *) CONFIG & 0x10) {
+		rate_num = 60000;
+		rate_den = 1001;
+	} else {
+		rate_num = 50;
+		rate_den = 1;
+	}
 	LOCKSTEP((void) 0);
 	timers_ran_to = 0;
 	sound_ticks_run = sound_ticks_due;
@@ -84,15 +92,24 @@ void timer_shutdown(void)
 	jag_vbl_hook = NULL;
 }
 
+/* t (blanks times rate_den) in whole seconds and what is left over, times unit, over rate_num */
+static uint32_t scaled(uint32_t unit)
+{
+	uint32_t t = blanks() * rate_den;
+	uint32_t seconds = t / rate_num, rest = t % rate_num;
+
+	return seconds * unit + rest * unit / rate_num;
+}
+
 uint32_t timer_real_milliseconds(void)
 {
-	return (uint32_t) ((uint64_t) blanks() * blank_us / 1000);
+	return scaled(1000);
 }
 
 uint32_t plat_ticks(void)
 {
 	LOCKSTEP_VALUE(lockstep_plat_ticks());
-	return (uint32_t) ((uint64_t) blanks() * blank_us * PLAT_TICKS_PER_SECOND / 1000000);
+	return scaled(PLAT_TICKS_PER_SECOND);
 }
 
 uint32_t plat_milliseconds(void)

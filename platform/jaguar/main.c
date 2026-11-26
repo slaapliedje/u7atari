@@ -5,7 +5,8 @@
  * ULTIMA7.ARG (SERPENT.ARG), one line of arguments as the Atari's: --script <file> plays a
  * test script (TEST.SCR), --program <name> runs that program instead of the menu, and the rest
  * go to the game; --lockstep runs it on the PC reference's virtual clock, for comparing a run
- * with the PC's (else it runs in real time, played with joypad 1). The log (every plat_log line, the lockstep checksums among them) goes out
+ * with the PC's (else it runs in real time, played with joypad 1); --bench is --lockstep without
+ * the checksums, to time a run that does the same whatever the speed. The log (every plat_log line, the lockstep checksums among them) goes out
  * through GD_DebugString: the drive's USB serial port, or the libretro Virtual Jaguar's stderr. */
 #include <setjmp.h>
 #include <stdio.h>
@@ -25,6 +26,7 @@
 #define MAX_ARGS 16
 
 static uint32_t gd_bios[1024];
+extern bool jag_bench;                  /* jaguar.c */
 static bool gd_ready;
 static jmp_buf *program_jump;
 static int16_t program_code;
@@ -49,9 +51,31 @@ static void shutdown_all(void)
 	timer_shutdown();
 }
 
+/* --profile: the pc at every fourth vertical blank (startup.S), saved to PCPROF.BIN on the card
+ * at the end: big-endian longs, for tools on the PC to map to functions. */
+#define PROFILE_SAMPLES 16384
+extern uint32_t *volatile jag_prof_buffer;
+extern volatile uint32_t jag_prof_count, jag_prof_size;
+
+static void profile_save(void)
+{
+	uint32_t *samples = jag_prof_buffer;
+	int16_t f;
+
+	if (samples == NULL)
+		return;
+	jag_prof_buffer = NULL;
+	if ((f = plat_file_create("PCPROF.BIN")) >= 0) {
+		plat_file_write(f, samples, (int32_t) jag_prof_count * 4);
+		plat_file_close(f);
+	}
+}
+
 static void end_process(int code)
 {
 	char text[32];
+
+	profile_save();
 
 	snprintf(text, sizeof text, "exit %d\r\n", code);
 	plat_log(text);
@@ -221,6 +245,14 @@ void jag_main(void)
 			sound_gm = true;
 		else if (strcmp(argv[i], "--lockstep") == 0)
 			use_lockstep = true;
+		else if (strcmp(argv[i], "--profile") == 0) {
+			jag_prof_count = 0;
+			jag_prof_size = PROFILE_SAMPLES;
+			jag_prof_buffer = malloc(PROFILE_SAMPLES * sizeof (uint32_t));
+		} else if (strcmp(argv[i], "--bench") == 0) {
+			use_lockstep = true;
+			jag_bench = true;
+		}
 		else if (strcmp(argv[i], "--natfeats") == 0)
 			;
 		else

@@ -69,6 +69,20 @@ void jag_main(void)
 	f = GD_FOpen("SUB/U7TEST3.TXT", GD_FOPEN_WRITE | GD_FOPEN_CREATE_ALWAYS);
 	report("open in a folder", f);
 	report("close", GD_FClose(f));
+	/* from and into a buffer at an odd address, as stdio's or the game's can be */
+	{
+		static char odd[80];
+
+		memcpy(odd + 1, text, sizeof text - 1);
+		f = GD_FOpen("U7ODD.TXT", GD_FOPEN_WRITE | GD_FOPEN_CREATE_ALWAYS);
+		report("odd write", GD_FWrite(f, odd + 1, sizeof text - 1));
+		report("close", GD_FClose(f));
+		memset(odd, 0, sizeof odd);
+		f = GD_FOpen("U7ODD.TXT", GD_FOPEN_READ);
+		report("odd read", GD_FRead(f, odd + 1, sizeof text - 1, GD_FREAD_CPU));
+		report("close", GD_FClose(f));
+		report(memcmp(odd + 1, text, sizeof text - 1) == 0 ? "odd: the same" : "odd: NOT the same", 0);
+	}
 	GD_DebugString("done\n");
 	for (;;)
 		;

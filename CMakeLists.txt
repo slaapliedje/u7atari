@@ -73,7 +73,7 @@ if(U7_JAGUAR)
     endif()
     # With U7_DEBUG_LOG (for now always): --lockstep and --script, for tests.
     add_executable(u7 platform/jaguar/startup.S platform/jaguar/main.c platform/jaguar/jaguar.c
-        platform/jaguar/timer.c platform/jaguar/input.c
+        platform/jaguar/timer.c platform/jaguar/input.c platform/jaguar/blit.c
         platform/jaguar/files.c platform/jaguar/syscalls.c
         platform/common/console.c platform/common/inputq.c platform/common/lockstep.c
         platform/common/pad.c platform/common/script.c platform/common/gm.c
@@ -91,7 +91,9 @@ if(U7_JAGUAR)
     target_compile_options(u7 PRIVATE -Wall -Wextra)
     target_link_options(u7 PRIVATE -nostartfiles
         "-T${CMAKE_CURRENT_SOURCE_DIR}/platform/jaguar/jaguar.ld"
-        "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/${U7_PRG_NAME}.map" -Wl,--gc-sections)
+        "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/${U7_PRG_NAME}.map" -Wl,--gc-sections
+        # big copies and fills on the blitter (platform/jaguar/blit.c)
+        -Wl,--wrap=memcpy -Wl,--wrap=memmove -Wl,--wrap=memset)
     set_target_properties(u7 PROPERTIES LINK_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/platform/jaguar/jaguar.ld")
     target_link_libraries(u7 PRIVATE u7_game)
