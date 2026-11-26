@@ -33,8 +33,10 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
 - **Roofs.** As the original works it out (`UpdateCeiling`): the levels the solid statics (not
   doors) over the avatar's row of cells take, its own left out; the highest of them less one is
   the ceiling, and statics and movers above it are not drawn (`e_follow`). When it changes, the
-  areas holding statics between the two ceilings are drawn again: in a town, all of them, a pause
-  of 13-19 blanks going in or out of a building.
+  areas holding statics between the two ceilings are drawn again, one a frame, the one nearest
+  the middle of the view first (those out of view are given up): the roof comes away over the
+  avatar first and the rest follows in a few frames. Drawn all at once, it was a pause of 13-19
+  blanks going in or out of a building; now the worst frame is 4-6.
 - **Depth.** An object stands at the bottom right of its footprint and is lifted 4 pixels up and
   left a level. What lies south, east or above is in front: `order_of()` in `core/engine.c`.
 - **Shapes** are read on demand into a ring that gives the oldest way; the movers' are kept apart.
@@ -82,7 +84,7 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
 ## Measured (2026-11-26, timing core, `-DENGINE_TOUR`: Britain, 12 walkers)
 
 The walk at Trinsic (into the stables and out, about 10 NPCs in view) runs at 41-59 frames a
-second, but for the pause at the roof.
+second, the worst frame 4-6 blanks.
 
 Frames a second, averaged over 64 frames; the view scrolls a cell every frame (60 cells a second,
 many times walking pace) or every fourth frame (15 cells a second):
@@ -159,8 +161,6 @@ call chains (`tools/jag-profile.py --frames`).
 - **Translucency**; **NPCs** from a save (it holds them as the game's memory, `U7NBUF.DAT` and
   `U7IBUF.DAT`, not as `NPC.DAT`), their schedules and walking; **doors** opened; steps and
   stairs (the avatar keeps its level).
-- **The pause at a roof**: the areas could be drawn again a few a frame, nearest the avatar
-  first.
 - **Order.** `order_of()` is a simple rule. It still needs checking against the original's frames
   at the same places (the PC reference can draw them). The ring version already draws doors and
   benches that the first version lost.

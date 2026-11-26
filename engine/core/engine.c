@@ -837,6 +837,7 @@ static void draw_static(struct ESurface *dst, const int16_t clip[4], const struc
 static struct ESurface ring;
 static int16_t ring_ax[RING_AX * RING_AY], ring_ay[RING_AX * RING_AY];
 static uint8_t ring_top[RING_AX * RING_AY];   /* the highest level among an area's statics */
+static uint8_t ring_stale[RING_AX * RING_AY]; /* drawn for another ceiling: to be drawn again */
 /* read by the GPU in longs: 4-byte aligned (the 68000's compiler gives 2) */
 static struct EFlat flat_table[E_FLAT_TYPES] __attribute__((aligned(8)));
 
@@ -984,6 +985,7 @@ static void draw_area(int ax, int ay)
 	ring_ax[slot] = (int16_t) ax;
 	ring_ay[slot] = (int16_t) ay;
 	ring_top[slot] = top;
+	ring_stale[slot] = 0;
 }
 
 static int in_ring(int ax, int ay)
@@ -1053,12 +1055,13 @@ int e_follow(int i)
 	if (taken != 0)
 		top--;
 	if (top != ceiling) {
-		/* the areas with statics between the two drawn again, and the fronts found again */
+		/* the areas with statics between the two drawn again (e_draw: one a frame, nearest the
+		 * middle of the view first, so there is no pause), and the fronts found again */
 		int low = top < ceiling ? top : ceiling;
 		ceiling = (uint8_t) top;
 		for (int a = 0; a < RING_AX * RING_AY; a++)
 			if (ring_top[a] > low)
-				ring_ax[a] = ring_ay[a] = -1;
+				ring_stale[a] = 1;
 		for (uint8_t m = 0; m < nmovers; m++)
 			movers[m].cached = 0;
 	}
@@ -1572,8 +1575,10 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 	if ((ring.pixels = take(RING_W * RING_H)) == NULL || (ring.rows = take(RING_H * 4)) == NULL)
 		return -7;
 	e_surface_rows(&ring);
-	for (int i = 0; i < RING_AX * RING_AY; i++)
+	for (int i = 0; i < RING_AX * RING_AY; i++) {
 		ring_ax[i] = ring_ay[i] = -1;
+		ring_stale[i] = 0;
+	}
 	if ((loc = take((AREA_OBJECTS + 1) * sizeof *loc)) == NULL
 		|| (loc_pairs = take(AREA_EDGES * 4)) == NULL || (loc_preds = take(AREA_EDGES * 2)) == NULL
 		|| (loc_order = take(AREA_OBJECTS * 2)) == NULL)
@@ -1737,6 +1742,29 @@ void e_draw(struct ESurface *frame)
 				draw_area(ax, ay);
 				drew = 1;
 			}
+	/* areas drawn for another ceiling: out of view, given up; in view, the one nearest the middle
+	 * drawn again */
+	int best = -1, best_d = 0;
+	for (int a = 0; a < RING_AX * RING_AY; a++) {
+		if (!ring_stale[a])
+			continue;
+		if (ring_ax[a] < ax0 || ring_ax[a] > ax1 || ring_ay[a] < ay0 || ring_ay[a] > ay1) {
+			ring_ax[a] = ring_ay[a] = -1;
+			ring_stale[a] = 0;
+			continue;
+		}
+		int dx = ring_ax[a] * 128 + 64 - (vx + E_VIEW_W / 2);
+		int dy = ring_ay[a] * 128 + 64 - (vy + E_VIEW_H / 2);
+		int d = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
+		if (best < 0 || d < best_d) {
+			best = a;
+			best_d = d;
+		}
+	}
+	if (!drew && best >= 0) {
+		draw_area(ring_ax[best], ring_ay[best]);
+		drew = 1;
+	}
 	if (!drew && next_ahead(vx, vy, ax0, ay0, ax1, ay1, &ax, &ay))
 		draw_area(ax, ay);
 	t1 = eb_clock();
