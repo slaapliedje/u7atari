@@ -13,7 +13,7 @@
 #include "gd.h"
 
 extern const uint8_t gpu_tiles[], gpu_tiles_end[], gpu_shapes[], gpu_shapes_end[];
-extern const uint8_t gpu_convert[], gpu_convert_end[];
+extern const uint8_t gpu_convert[], gpu_convert_end[], gpu_movers[], gpu_movers_end[];
 #define G_FLAGS (*(volatile uint32_t *) 0xF02100)
 #define G_PC (*(volatile uint32_t *) 0xF02110)
 #define G_CTRL (*(volatile uint32_t *) 0xF02114)
@@ -23,6 +23,8 @@ extern const uint8_t gpu_convert[], gpu_convert_end[];
 #define SHAPE_CODE ((volatile uint32_t *) 0xF03000)
 #define CONVERT_PARAMS ((volatile uint32_t *) 0xF03F00)
 #define CONVERT_CODE ((volatile uint32_t *) 0xF03500)
+#define MOVER_PARAMS ((volatile uint32_t *) 0xF03F40)
+#define MOVER_CODE ((volatile uint32_t *) 0xF03860)
 #define GPUGO 1
 
 static void gpu_finish(void);
@@ -265,6 +267,8 @@ static void gpu_load(void)
 		TILE_CODE[i] = ((const uint32_t *) gpu_tiles)[i];
 	for (uint32_t i = 0; i < (uint32_t) (gpu_convert_end - gpu_convert + 3) / 4; i++)
 		CONVERT_CODE[i] = ((const uint32_t *) gpu_convert)[i];
+	for (uint32_t i = 0; i < (uint32_t) (gpu_movers_end - gpu_movers + 3) / 4; i++)
+		MOVER_CODE[i] = ((const uint32_t *) gpu_movers)[i];
 	gpu_loaded = 1;
 }
 
@@ -372,6 +376,39 @@ void eb_finish(void)
 {
 	gpu_finish();
 	blit_wait();
+}
+
+/* The movers by the GPU (movers_gpu.s): their pictures, their order, and the list for them and
+ * their fronts, then drawn (shapes_gpu.s); the 68000 goes on. ENGINE_C_MOVERS: the core does it. */
+#ifndef ENGINE_C_MOVERS
+#define MOVER_LIST 256
+static struct GpuShape mover_list[MOVER_LIST] __attribute__((aligned(8)));
+static uint32_t mover_seen[E_MOVERS * 16] __attribute__((aligned(8)));
+#endif
+
+int eb_movers(struct ESurface *frame, const struct EMoverDraw *list, int n, int16_t vx,
+	int16_t vy, const void *const *shapes)
+{
+#ifdef ENGINE_C_MOVERS
+	(void) frame; (void) list; (void) n; (void) vx; (void) vy; (void) shapes;
+	return 0;
+#else
+	gpu_load();
+	gpu_finish();
+	MOVER_PARAMS[0] = (uint32_t) list;
+	MOVER_PARAMS[1] = (uint32_t) n;
+	MOVER_PARAMS[2] = (uint32_t) shapes;
+	MOVER_PARAMS[3] = (uint32_t) (int32_t) vx;
+	MOVER_PARAMS[4] = (uint32_t) (int32_t) vy;
+	MOVER_PARAMS[5] = (uint32_t) frame->pixels;
+	MOVER_PARAMS[6] = frame->pitch;
+	MOVER_PARAMS[7] = (uint32_t) mover_list;
+	MOVER_PARAMS[8] = MOVER_LIST;
+	MOVER_PARAMS[9] = (uint32_t) mover_seen;
+	MOVER_PARAMS[10] = blit_shortest;
+	gpu_start((uint32_t) MOVER_CODE);
+	return 1;
+#endif
 }
 
 /* A shape converted by the GPU (convert_gpu.s), waited for: what is drawn next may use it. Built
@@ -808,6 +845,19 @@ void jag_main(void)
 		struct ESurface *drawing = &surfaces[(frame + 1) % FRAMES];
 		e_set_view(x, y);
 		e_draw(drawing);
+#ifdef ENGINE_FRAME_SUMS
+		/* each frame's pixels summed, to compare builds (the frames hang on the frame count
+		 * alone, not on time) */
+		if (frame < 400) {
+			const uint32_t *p = (const uint32_t *) drawing->pixels;
+			uint32_t sum = 0;
+			for (int i = 0; i < W * H / 4; i++)
+				sum = (sum << 1 | sum >> 31) ^ p[i];
+			snprintf(text, sizeof text, "sum %lu %08lx\n", (unsigned long) frame,
+				(unsigned long) sum);
+			GD_DebugString(text);
+		}
+#endif
 		show(drawing->pixels);
 		frame++;
 		if (jag_ticks - last_shown > worst && frame > 1)

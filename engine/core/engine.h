@@ -45,6 +45,21 @@ void eb_copy(struct ESurface *dst, int16_t dx, int16_t dy, const struct ESurface
 int eb_view(struct ESurface *frame, const struct ESurface *ring, int16_t sx, int16_t sy);
 /* w by h pixels at (x, y) of dst set to 0; x and w multiples of 8. */
 void eb_clear(struct ESurface *dst, int16_t x, int16_t y, int16_t w, int16_t h);
+/* The movers drawn by the backend's own means, when it has them (else 0, and the core draws
+ * them): each its static (s, NULL when not in view) and those in front of it in drawing order,
+ * clipped to its picture. A static (20 bytes): type-frame word (bits 0-9 type, 10-14 frame,
+ * 15 turned), x, y (cells), z, a byte, its picture's rectangle (4 words), its footprint west,
+ * north and up (bytes), a byte. shapes: the core's table of shapes by type (each the size, the
+ * frames' offsets, the frames as eb_shape's runs follow their box; NULL when not read in: all a
+ * mover and its fronts use are in). The movers go behind ones first: order_of() in the core. */
+struct EMoverDraw {
+	const void *s;
+	uint32_t nfront;
+	const void *const *fronts;
+	uint32_t pad;
+};
+int eb_movers(struct ESurface *frame, const struct EMoverDraw *list, int n, int16_t vx,
+	int16_t vy, const void *const *shapes);
 /* A shape frame from its first run (E_RUN_ below), hot spot at (x, y) of dst, clipped to clip
  * (x0, y0, x1, y1, inclusive); flipped: mirrored across the diagonal, as the original. */
 void eb_shape(struct ESurface *dst, const int16_t clip[4], const uint32_t *runs, int16_t x,

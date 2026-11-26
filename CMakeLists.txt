@@ -162,9 +162,12 @@ if(U7_JAGUAR)
     add_custom_command(OUTPUT convert_gpu.o
         COMMAND "${U7_RMAC}" -fe -o convert_gpu.o "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/convert_gpu.s"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/convert_gpu.s" VERBATIM)
+    add_custom_command(OUTPUT movers_gpu.o
+        COMMAND "${U7_RMAC}" -fe -o movers_gpu.o "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/movers_gpu.s"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/movers_gpu.s" VERBATIM)
     add_executable(u7engine_jag EXCLUDE_FROM_ALL platform/jaguar/startup.S engine/jaguar/main.c
         "${CMAKE_CURRENT_BINARY_DIR}/tiles_gpu.o" "${CMAKE_CURRENT_BINARY_DIR}/shapes_gpu.o"
-        "${CMAKE_CURRENT_BINARY_DIR}/convert_gpu.o"
+        "${CMAKE_CURRENT_BINARY_DIR}/convert_gpu.o" "${CMAKE_CURRENT_BINARY_DIR}/movers_gpu.o"
         engine/jaguar/stubs.c engine/core/engine.c engine/core/shapes.c
         "${CMAKE_CURRENT_BINARY_DIR}/gdbios.o")
     target_include_directories(u7engine_jag PRIVATE engine/core platform/jaguar)

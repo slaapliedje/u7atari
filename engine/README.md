@@ -26,7 +26,10 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   front of it, and those in front of them, clipped to it. A mover's front list is kept while it
   stands still: it is worked out over the box of all its shape's frames, so a new frame of the
   walk does not undo it. The statics near it (24 pixels round that box) are kept too, while it
-  walks within them and their chunks keep their slots, so a step only compares.
+  walks within them and their chunks keep their slots, so a step only compares. On the Jaguar
+  the GPU does the rest each frame (`jaguar/movers_gpu.s`): each mover's picture from its frame,
+  those in view put in order, and the shape list for them and their fronts; the 68000 only keeps
+  the fronts and the shapes they use in the cache.
 - **Depth.** An object stands at the bottom right of its footprint and is lifted 4 pixels up and
   left a level. What lies south, east or above is in front: `order_of()` in `core/engine.c`.
 - **Shapes** are read on demand into a ring that gives the oldest way; the movers' are kept apart.
@@ -80,6 +83,7 @@ many times walking pace) or every fourth frame (15 cells a second):
 | Three frames, so the 68000 does not wait for a blank | 25-39 | 35-44 with the walkers in view, 49-56 without |
 | Chunks' fixed objects from the PC, area order without calls | 28-46 | 33-43 with the walkers in view, 44-56 without |
 | Statics near a mover kept, footprints in the records | 29-49 | 40-50 with the walkers in view, 45-57 without |
+| The movers' pictures, order and list on the GPU | 29-49 | 47-53 with the walkers in view, 45-57 without |
 
 There is no stall at the crossings any more. The converted shapes draw faster (a walker's frame,
 200 times: 6 blanks against 9 the original's way, flipped 9 against 11). Converted as read, they
@@ -108,7 +112,9 @@ A mover's fronts were worked out anew at each step it took, finding the statics 
 to nine chunks; and whenever any chunk was read, for every mover. Now the statics near it are
 kept, each chunk slot counts the chunks it is given, and a chunk's box round all its pictures
 lets a search pass over the chunks that do not reach. The fronts fell from 27 to 4-12 blanks in
-64 frames at 15 cells a second; 6 of them were my own clock, read for every mover.
+64 frames at 15 cells a second; 6 of them were my own clock, read for every mover. What was left
+of the movers was spread thin over every statement run for each mover each frame; on the GPU
+the 68000's share fell from 58 to 22 blanks in 64 frames.
 
 A larger ring (4 by 4, 5 by 4: `-DRING_AX= -DRING_AY= -DCHUNK_SLOTS=`) changes nothing; getting
 chunks ready in the frames before cost more than it saved (region files read again); binning
@@ -118,7 +124,10 @@ Built with `-DENGINE_BENCH_SHAPES` the Jaguar build logs those timings at the st
 `-DENGINE_CHECK_CONVERT` converts the first 24 shapes in C too and logs any difference;
 `-DENGINE_NO_FRAME_SHAPES` leaves the movers and what is in front of them undrawn;
 `-DENGINE_DOUBLE_BUFFER` uses two frames, waiting for the blank; `-DENGINE_BENCH_CPU` logs the
-68000's speed; `-DENGINE_LAYERS` shows the ring by the object processor (above). With
+68000's speed; `-DENGINE_LAYERS` shows the ring by the object processor (above);
+`-DENGINE_C_MOVERS` draws the movers by the core's C; `-DENGINE_FRAME_SUMS` logs a sum of each
+of the first 400 frames' pixels, which hang on the frame count alone: the GPU's movers and the
+C's give the same 400. With
 `U7_JAG_FRAME_POINTERS` (or `-fno-omit-frame-pointer -DJAG_PROF_FRAMES`) the profile has whole
 call chains (`tools/jag-profile.py --frames`).
 
@@ -126,9 +135,8 @@ call chains (`tools/jag-profile.py --frames`).
 
 - **An area's order from the PC.** The order among its fixed objects (the pairs that matter)
   could be in the dataset, leaving only the movable items to compare at run time.
-- **The movers on the GPU.** What is left of them is the 68000's work for each mover each frame
-  (its picture, its place in the order, its fronts handed to the GPU): spread thin, no one place
-  to make faster. The GPU could take it.
+- **The 68000 free while the GPU draws the movers.** It waits for them at the frame's end
+  (finish: about 23 blanks in 64 frames with 12 walkers in view); a game would run then.
 - **The shape cache** in the GameDrive's 16 MB of cartridge RAM (words and longs only): the
   whole dataset (7.1 MB) would fit, read once at the start.
 - **Animation.** Animated statics and terrain (water, fire, clocks) belong with the movers, not in

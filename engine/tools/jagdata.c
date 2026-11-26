@@ -78,6 +78,13 @@ int eb_view(struct ESurface *frame, const struct ESurface *ring, int16_t sx, int
 	return 1;
 }
 
+int eb_movers(struct ESurface *frame, const struct EMoverDraw *list, int n, int16_t vx,
+	int16_t vy, const void *const *shapes)
+{
+	(void) frame; (void) list; (void) n; (void) vx; (void) vy; (void) shapes;
+	return 0;
+}
+
 void eb_clear(struct ESurface *dst, int16_t x, int16_t y, int16_t w, int16_t h)
 {
 	(void) dst; (void) x; (void) y; (void) w; (void) h;

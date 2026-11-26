@@ -120,7 +120,7 @@ static int16_t chunk_data = -1;  /* the dataset's chunks (engine.h), or -1 */
 /* ---- the shape cache: a ring, the oldest shapes giving way; the movers' kept below it ---- */
 
 #define SHAPE_QUEUE 1024
-static const uint8_t *shape_at[1024];
+static const uint8_t *shape_at[1024] __attribute__((aligned(8)));  /* the GPU reads it */
 static uint8_t *pool, *pool_next, *pool_pinned, *pool_end;
 static struct Resident {
 	uint16_t type;
@@ -128,8 +128,11 @@ static struct Resident {
 } queue[SHAPE_QUEUE];
 static uint16_t queue_head, queue_count;
 
+static uint16_t evictions;      /* counts shapes given way */
+
 static void evict_oldest(void)
 {
+	evictions++;
 	shape_at[queue[queue_head].type] = NULL;
 	queue_head = (uint16_t) ((queue_head + 1) % SHAPE_QUEUE);
 	queue_count--;
@@ -994,15 +997,16 @@ static struct Mover {
 	/* the statics in front of it, in drawing order, worked out for it as it is (s); valid, or
 	 * not yet */
 	uint8_t cached, nfront;
-	const struct Static *fronts[MOVER_FRONTS];
+	const struct Static *fronts[MOVER_FRONTS] __attribute__((aligned(4)));  /* a GPU reads them */
 	/* the standing statics over its box and MOVER_MARGIN round it (near), from the chunks in
 	 * slots (each still given the chunk it was: gens); kept while it moves within that box */
 	int16_t near_box[4];
 	uint8_t near_ok, nnear, nslot;
+	uint16_t evictions;         /* the count when its fronts' shapes were last all read in */
 	uint8_t slots[MOVER_SLOTS];
 	uint16_t gens[MOVER_SLOTS];
 	const struct Static **near;
-} movers[E_MOVERS];
+} movers[E_MOVERS] __attribute__((aligned(8)));
 static uint8_t nmovers;
 
 int e_mover_add(uint16_t tf, int16_t x, int16_t y, uint8_t z)
@@ -1090,48 +1094,11 @@ static void find_near(struct Mover *v, const int16_t box[4])
 }
 
 static void note_drawn(const struct ESurface *frame, const int16_t clip[4]);
+static uint8_t ring_shown;      /* the last eb_view showed the ring itself */
 
-static void draw_movers(struct ESurface *frame, int16_t vx, int16_t vy)
+/* A mover's fronts worked out anew (it moved, or a chunk they came from gave its slot up). */
+static void find_fronts(struct Mover *v)
 {
-	uint8_t sorted[E_MOVERS], n = 0;
-
-	for (uint8_t m = 0; m < nmovers; m++) {
-		struct Mover *v = &movers[m];
-		/* what is in front of it depends on where it stands and its shape, not on which frame it
-		 * shows: the statics over the box of all its frames are found once it stands somewhere */
-		int reshaped = ((v->s.tf ^ v->tf) & 0x83ff) != 0;
-		if (v->s.x != v->x || v->s.y != v->y || v->s.z != v->z || reshaped)
-			v->cached = 0;
-		v->s.tf = v->tf;
-		v->s.x = v->x;
-		v->s.y = v->y;
-		v->s.z = v->z;
-		if (reshaped)
-			set_footprint(&v->s);
-		v->ok = picture_rect(v->tf, v->x, v->y, v->z, v->s.r);
-		if (!v->ok || v->s.r[2] < vx || v->s.r[0] >= vx + E_VIEW_W || v->s.r[3] < vy
-			|| v->s.r[1] >= vy + E_VIEW_H)
-			continue;
-		uint8_t k = n++;
-		while (k > 0 && order_of(&v->s, &movers[sorted[k - 1]].s) < 0) {
-			sorted[k] = sorted[k - 1];
-			k--;
-		}
-		sorted[k] = m;
-	}
-	for (uint8_t i = 0; i < n; i++) {
-		struct Mover *v = &movers[sorted[i]];
-		const int16_t *r = v->s.r;
-		int16_t clip[4] = {
-			(int16_t) (r[0] - vx), (int16_t) (r[1] - vy), (int16_t) (r[2] - vx), (int16_t) (r[3] - vy),
-		};
-		static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
-
-		draw_static(frame, whole, &v->s, vx, vy);
-		e_stats.drawn++;
-		if (v->cached && !near_valid(v))
-			v->cached = 0;
-		if (!v->cached) {
 		uint32_t f0 = eb_clock();
 		e_stats.front_misses++;
 		const int16_t *b = box_of(v->tf & 0x3ff);
@@ -1203,7 +1170,91 @@ static void draw_movers(struct ESurface *frame, int16_t vx, int16_t vy)
 			v->fronts[f] = front[draw[f]];
 		v->cached = 1;
 		e_stats.front_time += eb_clock() - f0;
+}
+
+/* Each mover: where it is, and its fronts as they are there, their shapes read in (for a
+ * backend that draws them from the shape table, eb_movers). Its picture: v->s.r, v->ok. */
+static void ready_movers(int16_t vx, int16_t vy)
+{
+	for (uint8_t m = 0; m < nmovers; m++) {
+		struct Mover *v = &movers[m];
+		/* what is in front of it depends on where it stands and its shape, not on which frame it
+		 * shows: the statics over the box of all its frames are found once it stands somewhere */
+		int reshaped = ((v->s.tf ^ v->tf) & 0x83ff) != 0;
+		if (v->s.x != v->x || v->s.y != v->y || v->s.z != v->z || reshaped)
+			v->cached = 0;
+		v->s.tf = v->tf;
+		v->s.x = v->x;
+		v->s.y = v->y;
+		v->s.z = v->z;
+		if (reshaped)
+			set_footprint(&v->s);
+		v->ok = picture_rect(v->tf, v->x, v->y, v->z, v->s.r);
+		if (!v->ok || v->s.r[2] < vx || v->s.r[0] >= vx + E_VIEW_W || v->s.r[3] < vy
+			|| v->s.r[1] >= vy + E_VIEW_H) {
+			v->ok = 0;
+			continue;
 		}
+		if (v->cached && !near_valid(v))
+			v->cached = 0;
+		if (!v->cached) {
+			find_fronts(v);
+			v->evictions = (uint16_t) (evictions - 1);
+		}
+	}
+	/* the fronts' shapes, in; reading one in may put out another's, so until none goes */
+	for (int round = 0; round < 4; round++) {
+		uint16_t before = evictions;
+		for (uint8_t m = 0; m < nmovers; m++) {
+			struct Mover *v = &movers[m];
+			if (!v->ok || v->evictions == evictions)
+				continue;
+			for (uint8_t f = 0; f < v->nfront; f++)
+				shape(v->fronts[f]->tf & 0x3ff);
+			v->evictions = before;
+		}
+		if (evictions == before)
+			break;
+	}
+}
+
+static void draw_movers(struct ESurface *frame, int16_t vx, int16_t vy)
+{
+	uint8_t sorted[E_MOVERS], n = 0;
+
+	ready_movers(vx, vy);
+	if (!ring_shown) {
+		/* the backend's own way, from the shape table */
+		static struct EMoverDraw list[E_MOVERS] __attribute__((aligned(8)));
+		for (uint8_t m = 0; m < nmovers; m++) {
+			list[m].s = movers[m].ok ? &movers[m].s : NULL;
+			list[m].nfront = movers[m].ok ? movers[m].nfront : 0;
+			list[m].fronts = (const void *const *) movers[m].fronts;
+		}
+		if (eb_movers(frame, list, nmovers, vx, vy, (const void *const *) shape_at))
+			return;
+	}
+	for (uint8_t m = 0; m < nmovers; m++) {
+		struct Mover *v = &movers[m];
+		if (!v->ok)
+			continue;
+		uint8_t k = n++;
+		while (k > 0 && order_of(&v->s, &movers[sorted[k - 1]].s) < 0) {
+			sorted[k] = sorted[k - 1];
+			k--;
+		}
+		sorted[k] = m;
+	}
+	for (uint8_t i = 0; i < n; i++) {
+		struct Mover *v = &movers[sorted[i]];
+		const int16_t *r = v->s.r;
+		int16_t clip[4] = {
+			(int16_t) (r[0] - vx), (int16_t) (r[1] - vy), (int16_t) (r[2] - vx), (int16_t) (r[3] - vy),
+		};
+		static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
+
+		draw_static(frame, whole, &v->s, vx, vy);
+		e_stats.drawn++;
 		if (clip[0] < 0) clip[0] = 0;
 		if (clip[1] < 0) clip[1] = 0;
 		if (clip[2] > E_VIEW_W - 1) clip[2] = E_VIEW_W - 1;
@@ -1431,7 +1482,6 @@ static void note_drawn(const struct ESurface *frame, const int16_t clip[4])
  * backend shows the ring itself (eb_view gave 0), the area left behind is only given up a little
  * way past (RING_TRAIL pixels): it may still be on the screen for a frame or two. */
 #define RING_TRAIL 16
-static uint8_t ring_shown;      /* the last eb_view showed the ring itself */
 static int next_ahead(int16_t vx, int16_t vy, int ax0, int ay0, int ax1, int ay1, int *ax, int *ay)
 {
 	int trail = ring_shown ? RING_TRAIL : 0;
