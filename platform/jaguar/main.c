@@ -51,8 +51,9 @@ static void shutdown_all(void)
 	timer_shutdown();
 }
 
-/* --profile: the pc and the top of the stack at every 64th vertical blank (startup.S), saved to
- * PCPROF.BIN on the card at the end: records of 33 big-endian longs, for tools/jag-profile.py. */
+/* --profile: the pc and the top of the stack at every 64th vertical blank under --bench, every
+ * 16th otherwise (startup.S), saved to PCPROF.BIN on the card at the end: records of 33
+ * big-endian longs, for tools/jag-profile.py. */
 #define PROFILE_SAMPLES 1024
 #define PROFILE_RECORD 132
 extern uint8_t *volatile jag_prof_next;
@@ -251,7 +252,6 @@ void jag_main(void)
 		else if (strcmp(argv[i], "--profile") == 0) {
 			profile_buffer = malloc(PROFILE_SAMPLES * PROFILE_RECORD);
 			if (profile_buffer != NULL) {
-				jag_prof_mask = 63;
 				jag_prof_end = profile_buffer + PROFILE_SAMPLES * PROFILE_RECORD;
 				jag_prof_next = profile_buffer;
 			}
@@ -267,6 +267,8 @@ void jag_main(void)
 	argc = kept;
 	argv[argc] = NULL;
 	argv[0] = self_name;
+	/* every 64th blank in a bench (one runs about 10 minutes), every 16th in real time */
+	jag_prof_mask = jag_bench ? 63 : 15;
 
 	if (use_lockstep)
 		lockstep_start();

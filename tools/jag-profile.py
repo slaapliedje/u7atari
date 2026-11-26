@@ -3,10 +3,10 @@
 
     tools/jag-profile.py <PCPROF.BIN> <program.elf> [rows]
 
-PCPROF.BIN holds a record for every 64th vertical blank (platform/jaguar/startup.S): the program
-counter interrupted and the 64 words of stack above it, as 33 big-endian longs. Each pc is put
-down to the function it lies in, by the program's symbols (m68k-elf-nm, from $NM or the PATH), and
-the functions are listed by their share of the samples.
+PCPROF.BIN holds a record for every 64th vertical blank under --bench, every 16th otherwise
+(platform/jaguar/startup.S): the program counter interrupted and the 64 words of stack above it,
+as 33 big-endian longs. Each pc is put down to the function it lies in, by the program's symbols
+(m68k-elf-nm, from $NM or the PATH), and the functions are listed by their share of the samples.
 
 A sample in a helper (libgcc's arithmetic, the memory copies) is also put down to the function
 that called it: the first long on the stack that points into the code just after a call

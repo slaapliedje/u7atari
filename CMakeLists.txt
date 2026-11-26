@@ -60,6 +60,9 @@ if(U7_JAGUAR)
     target_compile_definitions(u7_game PRIVATE U7_PLAT_COPY_RECT)
     # Copy-mode shape spans are drawn by the GPU (platform/jaguar/spans.c and spans_gpu.s).
     target_compile_definitions(u7_game PRIVATE U7_SHAPE_SPANS_68K)
+    # Without the original's re-summing of the flags and item lookups at every read and write, a
+    # check against stray writes that only ever finds memory gone bad.
+    target_compile_definitions(u7_game PRIVATE U7_NO_STRAY_WRITE_CHECKS)
     # RetroHQ's GameDrive BIOS bindings and the cartridge boot header are not in this repository
     # (no licence; an Atari-signed stub): name copies of them.
     set(U7_GDBIOS_DIR "$ENV{HOME}/dev/etjag/third_party/JagGD" CACHE PATH
