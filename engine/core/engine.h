@@ -79,6 +79,8 @@ struct EStats {
 	uint32_t copy_time;         /* ... copying it to the frame */
 	uint32_t object_time;       /* ... placing movers and handing out their shapes */
 	uint32_t finish_time;       /* ... waiting for the drawing to finish */
+	uint32_t front_time;        /* of object_time, working out what is in front of movers */
+	uint32_t front_misses;      /* movers whose fronts were worked out anew */
 };
 extern struct EStats e_stats;
 

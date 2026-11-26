@@ -7,21 +7,27 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
 
 ## How it draws
 
-- **The window.** It covers the 5 by 4 chunks from the view's first chunk. When the view crosses
-  into another chunk, the static objects of the window are gathered. These are the chunks' own
-  object shapes, the fixed items (`U7IFIX`) and the movable items (`U7IREG`). They are then put in
-  drawing order once, by a depth-first walk over "drawn before" pairs. Pairs are tested only
-  between objects whose pictures overlap, found through 64-pixel screen bins.
-- **The static layer.** The terrain and the statics are drawn once, in that order, into a 448 by
-  328 picture: as far as the view can scroll before the next crossing. The terrain goes in by the
-  GPU (`jaguar/tiles_gpu.s`, a phrase a row) and the shapes by the GPU span drawer
+- **Chunks.** Each chunk in use keeps its cell words and its static objects once read. The
+  objects are the chunk's own object shapes, the fixed items (`U7IFIX`) and the movable items
+  (`U7IREG`). Each object keeps its picture's rectangle, binned 8 by 8 by where it lies.
+- **The ring.** The static layer is a ring of 4 by 3 chunk areas (512 by 384 pixels). An area holds
+  its chunk's terrain and every static over it, drawn once. A shape reaches at most 123 pixels left
+  or up from its hot spot and 8 right or down, so only the chunk's own objects and those of the 8
+  around it can draw over it. They are put in order among themselves alone: a depth-first walk
+  over the "drawn before" pairs of overlapping pictures. The terrain is drawn by the GPU
+  (`jaguar/tiles_gpu.s`, a phrase a row) and the shapes by the GPU span drawer
   (`platform/jaguar/spans_gpu.s`).
-- **Each frame.** One blitter copy puts the layer's part under the view into the frame. The movers
-  (NPCs) are then fitted into the order: each goes after the last static that must stand behind
-  it. Each static drawn after that point and overlapping a mover is drawn again, clipped to the
-  movers it covers.
+- **Ahead of the view.** The areas under the view are drawn when it reaches them (at the start,
+  or on a jump). One area ahead of it, the way it last moved, is drawn each frame while the ring
+  has room beside the view: 7 or 8 cells of travel per column or row.
+- **Each frame.** One to four blitter copies (where the ring wraps) put the ring under the view
+  into the frame. The movers (NPCs) follow, behind ones first, each followed by the statics in
+  front of it, and those in front of them, clipped to it. A mover's front list is kept while it
+  stands still: it is worked out over the box of all its shape's frames, so a new frame of the
+  walk does not undo it.
 - **Depth.** An object stands at the bottom right of its footprint and is lifted 4 pixels up and
   left a level. What lies south, east or above is in front: `compare()` in `core/engine.c`.
+- **Shapes** are read on demand into a ring that gives the oldest way; the movers' are kept apart.
 
 ## Layout
 
@@ -34,31 +40,35 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
 - `jaguar/` — the Jaguar: GameDrive files, a double-buffered 8-bit bitmap object, the blitter,
   the GPU. Build: `cmake --build <jaguar build> --target u7engine_jag`, which gives `U7ENGINE.rom`.
   It uses the same card as the game (`U7/STATIC`, `U7/GAMEDAT`). The pad scrolls the view;
-  untouched, it tours Britain with 12 walkers. Every 64 frames the frame rate and timings go to
-  `GD_DebugString`, and once a profile of 900 samples to `U7/PCPROF.BIN` (`tools/jag-profile.py`).
+  untouched, it tours Britain with 12 walkers (a cell every `SCROLL_FRAMES` frames, default 1).
+  Every 64 frames the frame rate and timings go to `GD_DebugString`, and once a profile of 900
+  samples to `U7/PCPROF.BIN` (`tools/jag-profile.py`).
 
-## Measured (2026-11-26, timing core, Britain, 12 walkers, scrolling a cell a frame)
+## Measured (2026-11-26, timing core, Britain, 12 walkers)
 
-| Version | Frames a second (64-frame averages) |
-|---|---|
-| Straight port of the game (for comparison) | 0.4-0.6 |
-| Every object drawn every frame by the GPU | 5-8 |
-| Static layer, terrain by the 68000 | 7-18 |
-| Static layer, terrain by the GPU | 13-31 |
+Frames a second, averaged over 64 frames; the view scrolls a cell every frame (60 cells a second,
+many times walking pace) or every fourth frame (15 cells a second):
 
-Between chunk crossings, a frame takes under one vertical blank: one copy, a dozen walkers and the
-statics in front of them. It runs at the 60 Hz cap, idle about a fifth of the time. All the cost
-is in the crossings, every 16 cells, at 0.2-0.8 s each. About a third of that is the GPU drawing
-the layer's statics; the rest is gathering, ordering and loading.
+| Version | 60 cells/s | 15 cells/s |
+|---|---|---|
+| Straight port of the game (for comparison) | 0.4-0.6 | |
+| Every object drawn every frame by the GPU | 5-8 | |
+| Whole static layer redrawn at each chunk crossing | 13-31 | |
+| Ring of areas drawn ahead of the view | 18-31 | 23-28 with the walkers in view, 44-51 without |
+
+There is no stall at the crossings any more. Two costs are left, and both are the GPU drawing
+shapes a byte at a time through main RAM (about 1.3 million pixels a second):
+- a new area takes about 4 blanks;
+- a 30 by 40 walker takes about 1 ms.
 
 ## Not done yet
 
-- **Crossings without a stall.** Build the next layer a little each frame (the idle time is
-  there), or keep the layer as a ring and draw only the new strip.
-- **The shape cache.** It empties when three quarters full and reloads; it should keep what is in
-  use. The GameDrive's 16 MB of cartridge RAM could hold every shape (words and longs only).
+- **A faster span drawer.** Long raw spans and fills could go through the blitter, set up by the
+  GPU span by span, instead of byte loads and stores.
+- **The shape cache** in the GameDrive's 16 MB of cartridge RAM (words and longs only).
 - **Animation.** Animated statics and terrain (water, fire, clocks) belong with the movers, not in
-  the layer.
+  the ring.
 - **Translucency, roofs** (hidden when inside), **NPCs** from the save, and the avatar.
 - **Order.** `compare()` is a simple rule. It still needs checking against the original's frames
-  at the same places (the PC reference can draw them).
+  at the same places (the PC reference can draw them). The ring version already draws doors and
+  benches that the first version lost.

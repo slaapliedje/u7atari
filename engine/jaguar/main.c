@@ -61,6 +61,11 @@ extern volatile uint32_t jag_prof_mask;
 static uint8_t profile[PROFILE_SAMPLES * PROFILE_RECORD] __attribute__((aligned(4)));
 static int profile_saved;
 
+/* The tour scrolls a cell every SCROLL_FRAMES frames (1: 60 cells a second, far past walking) */
+#ifndef SCROLL_FRAMES
+#define SCROLL_FRAMES 1
+#endif
+
 static uint32_t gd_bios[1024];
 static uint32_t object_list[12] __attribute__((aligned(16)));
 static uint8_t frames[2][W * H] __attribute__((aligned(16)));
@@ -370,7 +375,7 @@ void jag_main(void)
 		if (held) {
 			x = (int16_t) (x + (held & (1UL << 23) ? 1 : 0) - (held & (1UL << 22) ? 1 : 0));
 			y = (int16_t) (y + (held & (1UL << 21) ? 1 : 0) - (held & (1UL << 20) ? 1 : 0));
-		} else {
+		} else if (frame % SCROLL_FRAMES == 0) {
 			x = (int16_t) (x + tour[leg].dx);
 			y = (int16_t) (y + tour[leg].dy);
 			if (++step >= tour[leg].n) {
@@ -380,10 +385,13 @@ void jag_main(void)
 		}
 		for (int m = 0; m < nm; m++) {
 			static const int8_t ddx[4] = { 0, 1, 0, -1 }, ddy[4] = { -1, 0, 1, 0 };
-			if (rnd(8) == 0)
-				walker[m].dir = rnd(4);
-			walker[m].x = (int16_t) (walker[m].x + ddx[walker[m].dir] + tour[leg].dx);
-			walker[m].y = (int16_t) (walker[m].y + ddy[walker[m].dir] + tour[leg].dy);
+			/* a step every SCROLL_FRAMES frames, carried along with the view */
+			if (frame % SCROLL_FRAMES == 0) {
+				if (rnd(8) == 0)
+					walker[m].dir = rnd(4);
+				walker[m].x = (int16_t) (walker[m].x + ddx[walker[m].dir] + tour[leg].dx);
+				walker[m].y = (int16_t) (walker[m].y + ddy[walker[m].dir] + tour[leg].dy);
+			}
 			e_mover_set(m, e_walk_frame(721, walker[m].dir, (int) frame), walker[m].x,
 				walker[m].y, 0);
 		}
@@ -405,13 +413,15 @@ void jag_main(void)
 			uint32_t now = jag_ticks, tenths = (frame - mark_frame) * 600 / (now - mark_ticks);
 			snprintf(text, sizeof text, "fps %lu.%lu (frame %lu, blank %lu) rebuilds %lu statics %lu "
 				"edges %lu drawn %lu shapes %luK loads %lu; blanks: build %lu copy %lu objects %lu "
-				"finish %lu\n", (unsigned long) tenths / 10,
+				"finish %lu fronts %lu misses %lu\n", (unsigned long) tenths / 10,
 				(unsigned long) tenths % 10, (unsigned long) frame, (unsigned long) now,
 				(unsigned long) e_stats.rebuilds, (unsigned long) e_stats.statics,
 				(unsigned long) e_stats.edges, (unsigned long) e_stats.drawn,
 				(unsigned long) e_stats.shape_bytes / 1024, (unsigned long) e_stats.shape_loads,
 				(unsigned long) e_stats.build_time, (unsigned long) e_stats.copy_time,
-				(unsigned long) e_stats.object_time, (unsigned long) e_stats.finish_time);
+				(unsigned long) e_stats.object_time, (unsigned long) e_stats.finish_time,
+				(unsigned long) e_stats.front_time, (unsigned long) e_stats.front_misses);
+			e_stats.front_time = e_stats.front_misses = 0;
 			e_stats.build_time = e_stats.copy_time = e_stats.object_time = e_stats.finish_time = 0;
 			GD_DebugString(text);
 			mark_ticks = now;
