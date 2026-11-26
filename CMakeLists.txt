@@ -63,6 +63,13 @@ if(U7_JAGUAR)
     # Without the original's re-summing of the flags and item lookups at every read and write, a
     # check against stray writes that only ever finds memory gone bad.
     target_compile_definitions(u7_game PRIVATE U7_NO_STRAY_WRITE_CHECKS)
+    # -O2, which inlines the game's small accessors (at -Os GCC calls them), about 40% faster than
+    # -Os; without strict aliasing, which the game's code does not keep to. The usecode interpreter
+    # goes wrong under GCC's global CSE at -O2 (bg-tour diverges), so it is built without it.
+    target_compile_options(u7_game PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:-O2>
+        $<$<COMPILE_LANGUAGE:C,CXX>:-fno-strict-aliasing>)
+    set_source_files_properties("${U7_UPSTREAM_DIR}/game/inter/inter.cpp" TARGET_DIRECTORY u7_game
+        PROPERTIES COMPILE_OPTIONS -fno-gcse)
     # RetroHQ's GameDrive BIOS bindings and the cartridge boot header are not in this repository
     # (no licence; an Atari-signed stub): name copies of them.
     set(U7_GDBIOS_DIR "$ENV{HOME}/dev/etjag/third_party/JagGD" CACHE PATH
