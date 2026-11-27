@@ -261,6 +261,8 @@ static int route_step(uint16_t tf, int16_t *ax, int16_t *ay, uint8_t *az, int *d
 	return 1;
 }
 
+static int list_npcs;           /* --npcs: those in view listed with each picture */
+
 static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 {
 	int me = -1, leg_dx = dx, leg_dy = dy, leg_n = path ? 0 : n / 2;
@@ -356,6 +358,12 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 			snprintf(name, sizeof name, "%s.%04d.ppm", out, f);
 			save(name);
 			printf("frame %d: avatar %d,%d,%d ceiling %d\n", f, ax, ay, az, ceiling);
+			/* the NPCs in view: number, place, frame (10 sitting, 13 lying) */
+			for (int i = 0; i < nnpcs && list_npcs; i++)
+				if (i != me && npcs[i].x >= ax - 20 && npcs[i].x < ax + 20 && npcs[i].y >= ay - 13
+					&& npcs[i].y < ay + 13)
+					printf("  npc %d at %d,%d,%d frame %d\n", npcs[i].number, npcs[i].x,
+						npcs[i].y, npcs[i].z, npcs[i].tf >> 10 & 31);
 		}
 	}
 }
@@ -403,6 +411,8 @@ int main(int argc, char **argv)
 			sscanf(argv[++i], "%d,%d,%d", &from_x, &from_y, &from_z);
 		else if (!strcmp(argv[i], "--route") && i + 1 < argc)
 			sscanf(argv[++i], "%d,%d,%d", &route_x, &route_y, &route_z);
+		else if (!strcmp(argv[i], "--npcs"))
+			list_npcs = 1;
 		else if (!strcmp(argv[i], "--time") && i + 1 < argc)
 			start_minutes = atoi(argv[++i]);
 	}

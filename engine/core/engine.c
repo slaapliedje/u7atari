@@ -1402,11 +1402,11 @@ int e_door_ahead(uint16_t tf, int16_t x, int16_t y, uint8_t z, int dx, int dy)
 	return -1;
 }
 
-/* ---- doors: movable items whose type and place the game changes. Each one touched is kept
- * here (where it began, where and what it is now, the chunk whose list has it), and put back so
- * when its region is read again ---- */
+/* ---- doors, and the other movable items the game changes (a bed's cover, food eaten): each
+ * one touched is kept here (where it began, where and what it is now, the chunk whose list has
+ * it, whether it is gone), and put back so when its region is read again ---- */
 
-#define MOST_DOORS 96
+#define MOST_DOORS 256
 
 static struct Door {
 	int16_t x0, y0;             /* where it began, as its region's file has it */
@@ -1414,6 +1414,7 @@ static struct Door {
 	int16_t x, y;               /* now */
 	uint16_t tf;
 	uint8_t z;
+	uint8_t gone;               /* taken out of the world */
 	int16_t lcx, lcy;           /* the chunk whose list holds it */
 } doors[MOST_DOORS];
 static int ndoors;
@@ -1447,6 +1448,14 @@ static void move_item(struct Region *r, int i, int a, int b)
 		r->start[c]++;
 }
 
+/* Item i of region r, in chunk list c, taken out. */
+static void remove_item(struct Region *r, int i, int c)
+{
+	memmove(&r->items[i], &r->items[i + 1], (size_t) (r->start[256] - i - 1) * sizeof r->items[0]);
+	for (int k = c + 1; k <= 256; k++)
+		r->start[k]--;
+}
+
 static int region_of(int x, int y) { return (y >> 8) * 12 + (x >> 8); }
 static int list_of(int x, int y) { return (y >> 4 & 15) * 16 + (x >> 4 & 15); }
 
@@ -1456,11 +1465,15 @@ static void doors_into(struct Region *r)
 	for (int d = 0; d < ndoors; d++) {
 		const struct Door *o = &doors[d];
 		if (region_of(o->x0, o->y0) != r->id
-			|| (o->x == o->x0 && o->y == o->y0 && o->tf == o->tf0))
+			|| (o->x == o->x0 && o->y == o->y0 && o->tf == o->tf0 && !o->gone))
 			continue;
 		int c = list_of(o->x0, o->y0), i = find_item(r, c, o->tf0, o->x0, o->y0, o->z);
 		if (i < 0)
 			continue;
+		if (o->gone) {
+			remove_item(r, i, c);
+			continue;
+		}
 		r->items[i].tf = o->tf;
 		r->items[i].x = (uint8_t) o->x;
 		r->items[i].y = (uint8_t) o->y;
@@ -1474,24 +1487,34 @@ static int door_of(const struct Static *s, int cx, int cy)
 {
 	for (int d = 0; d < ndoors; d++)
 		if (doors[d].x == s->x && doors[d].y == s->y && doors[d].tf == s->tf
-			&& doors[d].z == s->z)
+			&& doors[d].z == s->z && !doors[d].gone)
 			return d;
-	if (ndoors == MOST_DOORS)
-		return -1;
-	struct Door *o = &doors[ndoors];
+	int d = ndoors;
+	if (d == MOST_DOORS) {
+		/* full: one as it began given up (looked at, not changed) */
+		for (d = 0; d < ndoors; d++)
+			if (doors[d].x == doors[d].x0 && doors[d].y == doors[d].y0
+				&& doors[d].tf == doors[d].tf0 && !doors[d].gone)
+				break;
+		if (d == ndoors)
+			return -1;
+	} else
+		ndoors++;
+	struct Door *o = &doors[d];
 	o->x0 = o->x = s->x;
 	o->y0 = o->y = s->y;
 	o->tf0 = o->tf = s->tf;
 	o->z = s->z;
+	o->gone = 0;
 	o->lcx = (int16_t) cx;
 	o->lcy = (int16_t) cy;
-	return ndoors++;
+	return d;
 }
 
-int e_door_at(uint16_t tf, int16_t x, int16_t y, uint8_t z)
+/* The door a body (levels taken, cells west and north) at x, y would be in, and its chunk; NULL
+ * for none. */
+static const struct Static *door_in(uint16_t body, int fx, int fy, int x, int y, int *ocx, int *ocy)
 {
-	int fx, fy;
-	uint16_t body = body_of(tf, z, &fx, &fy);
 	int x0 = x - fx, y0 = y - fy;
 
 	for (int cy = y0 >> 4; cy <= (y + 7) >> 4; cy++)
@@ -1505,10 +1528,31 @@ int e_door_at(uint16_t tf, int16_t x, int16_t y, uint8_t z)
 					|| x0 > s->x || x < s->x - s->fx
 					|| !((((1u << (s->height ? s->height : 1)) - 1) << s->z) & body))
 					continue;
-				return door_of(s, cx, cy);
+				*ocx = cx;
+				*ocy = cy;
+				return s;
 			}
 		}
-	return -1;
+	return NULL;
+}
+
+int e_door_at(uint16_t tf, int16_t x, int16_t y, uint8_t z)
+{
+	int fx, fy, cx, cy;
+	uint16_t body = body_of(tf, z, &fx, &fy);
+	const struct Static *s = door_in(body, fx, fy, x, y, &cx, &cy);
+
+	return s != NULL ? door_of(s, cx, cy) : -1;
+}
+
+static int shut_at(uint16_t tf, int x, int y, uint8_t z);
+
+int e_open_door_at(const struct EBody *b, int16_t x, int16_t y, uint8_t z)
+{
+	int cx, cy;
+	const struct Static *s = door_in((uint16_t) (b->levels << z), b->fx, b->fy, x, y, &cx, &cy);
+
+	return s != NULL && !shut_at(s->tf, s->x, s->y, s->z);
 }
 
 /* The levels taken at cell x, y, solid or by a door. */
@@ -1519,18 +1563,24 @@ static uint16_t taken_at(int x, int y)
 	return (uint16_t) (levels_taken(x, y, x, y, &door) | door);
 }
 
+/* Whether a door tf at x, y, z is shut: in a wall, something past each end of it, along its
+ * length (a wall, or the other leaf of a double door). */
+static int shut_at(uint16_t tf, int x, int y, uint8_t z)
+{
+	const struct Info *in = &info[tf & 0x3ff];
+	int fx = tf & 0x8000 ? in->fy : in->fx, fy = tf & 0x8000 ? in->fx : in->fy;
+	uint16_t levels = (uint16_t) (((1u << (in->height ? in->height : 1)) - 1) << z);
+
+	if (fx >= fy)
+		return (taken_at(x - fx - 1, y) & levels) && (taken_at(x + 1, y) & levels);
+	return (taken_at(x, y - fy - 1) & levels) && (taken_at(x, y + 1) & levels);
+}
+
 int e_door_shut(int door)
 {
 	const struct Door *o = &doors[door];
-	const struct Info *in = &info[o->tf & 0x3ff];
-	int fx = o->tf & 0x8000 ? in->fy : in->fx, fy = o->tf & 0x8000 ? in->fx : in->fy;
-	uint16_t levels = (uint16_t) (((1u << (in->height ? in->height : 1)) - 1) << o->z);
 
-	/* shut when in a wall: something past each end of it, along its length (a wall, or the other
-	 * leaf of a double door) */
-	if (fx >= fy)
-		return (taken_at(o->x - fx - 1, o->y) & levels) && (taken_at(o->x + 1, o->y) & levels);
-	return (taken_at(o->x, o->y - fy - 1) & levels) && (taken_at(o->x, o->y + 1) & levels);
+	return shut_at(o->tf, o->x, o->y, o->z);
 }
 
 void e_door_place(int door, int16_t *x, int16_t *y)
@@ -1565,6 +1615,39 @@ static void static_changed(uint16_t tf, int x, int y, int z, int cx, int cy)
 		movers[m].cached = 0;
 }
 
+/* Kept item d made tf at x, y (in its region), or taken out (gone): its region's item too. 0 when
+ * it is not there, or x, y is past its region's edge (left as it is). */
+static int keep_set(int d, uint16_t tf, int x, int y, int gone)
+{
+	struct Door *o = &doors[d];
+	struct Region *r = region(region_of(o->x, o->y));
+	int c = list_of(o->lcx * 16, o->lcy * 16), i = -1;
+
+	if (o->gone)
+		return 0;
+	if (region_of(o->lcx * 16, o->lcy * 16) == r->id)
+		i = find_item(r, c, o->tf, o->x, o->y, o->z);
+	if (i < 0 || region_of(x, y) != r->id)
+		return 0;
+	static_changed(o->tf, o->x, o->y, o->z, o->lcx, o->lcy);
+	if (gone) {
+		remove_item(r, i, c);
+		o->gone = 1;
+		return 1;
+	}
+	r->items[i].tf = tf;
+	r->items[i].x = (uint8_t) x;
+	r->items[i].y = (uint8_t) y;
+	move_item(r, i, c, list_of(x, y));
+	o->tf = tf;
+	o->x = (int16_t) x;
+	o->y = (int16_t) y;
+	o->lcx = (int16_t) (x >> 4);
+	o->lcy = (int16_t) (y >> 4);
+	static_changed(tf, x, y, o->z, o->lcx, o->lcy);
+	return 1;
+}
+
 /* One leaf opened or shut, as its usecode does it; 0 if it can't be. */
 static int door_turn(int door)
 {
@@ -1597,28 +1680,10 @@ static int door_turn(int door)
 	default:
 		return 0;
 	}
-	struct Region *r = region(region_of(o->x, o->y));
-	int c = list_of(o->lcx * 16, o->lcy * 16), i = -1;
-	if (region_of(o->lcx * 16, o->lcy * 16) == r->id)
-		i = find_item(r, c, o->tf, o->x, o->y, o->z);
-	if (i < 0)
-		return 0;
 	uint16_t tf = (uint16_t) ((o->tf & ~(3u << 10)) | (uint16_t) (state ^ 1) << 10);
 	tf = (uint16_t) ((tf & ~0x3ffu) | to);
-	int x = o->x + mx, y = o->y + my;
-	if (region_of(x, y) != r->id)
-		return 0;               /* past its region's edge: left as it is */
-	static_changed(o->tf, o->x, o->y, o->z, o->lcx, o->lcy);
-	r->items[i].tf = tf;
-	r->items[i].x = (uint8_t) x;
-	r->items[i].y = (uint8_t) y;
-	move_item(r, i, c, list_of(x, y));
-	o->tf = tf;
-	o->x = (int16_t) x;
-	o->y = (int16_t) y;
-	o->lcx = (int16_t) (x >> 4);
-	o->lcy = (int16_t) (y >> 4);
-	static_changed(tf, x, y, o->z, o->lcx, o->lcy);
+	if (!keep_set(door, tf, o->x + mx, o->y + my, 0))
+		return 0;
 	e_stats.doors_turned++;
 	return 1;
 }
@@ -1670,6 +1735,71 @@ int e_door_toggle(int door)
 	if (other >= 0 && other != door)
 		door_turn(other);
 	return 1;
+}
+
+int e_things(uint16_t type, int16_t x0, int16_t y0, int16_t x1, int16_t y1, struct EThing *out,
+	int most)
+{
+	int16_t wx0, wy0, wx1, wy1;
+	int n = 0;
+
+	e_near_window(&wx0, &wy0, &wx1, &wy1);
+	x0 = x0 < wx0 ? wx0 : x0 < 0 ? 0 : x0;
+	y0 = y0 < wy0 ? wy0 : y0 < 0 ? 0 : y0;
+	x1 = x1 > wx1 ? wx1 : x1 > E_WORLD_CELLS - 1 ? E_WORLD_CELLS - 1 : x1;
+	y1 = y1 > wy1 ? wy1 : y1 > E_WORLD_CELLS - 1 ? E_WORLD_CELLS - 1 : y1;
+	for (int cy = y0 >> 4; cy <= y1 >> 4 && y0 <= y1; cy++)
+		for (int cx = x0 >> 4; cx <= x1 >> 4 && x0 <= x1; cx++) {
+			const struct Chunk *k = chunk_statics(cx, cy);
+			for (uint16_t j = 0; j < k->nstatic && n < most; j++) {
+				const struct Static *s = &k->statics[j];
+				if ((s->tf & 0x3ff) != type || s->x < x0 || s->x > x1 || s->y < y0 || s->y > y1)
+					continue;
+				out[n].tf = s->tf;
+				out[n].x = s->x;
+				out[n].y = s->y;
+				out[n].z = s->z;
+				n++;
+			}
+		}
+	return n;
+}
+
+/* The kept handle of thing t, a movable item (as e_things gave it) still there; or -1. */
+static int thing_handle(const struct EThing *t)
+{
+	if (t->x < 0 || t->y < 0 || t->x >= E_WORLD_CELLS || t->y >= E_WORLD_CELLS)
+		return -1;
+	/* one kept already (its region read in as need be, its chunk not) */
+	for (int d = 0; d < ndoors; d++)
+		if (doors[d].x == t->x && doors[d].y == t->y && doors[d].tf == t->tf
+			&& doors[d].z == t->z && !doors[d].gone)
+			return d;
+	int cx = t->x >> 4, cy = t->y >> 4;
+	const struct Chunk *k = chunk_statics(cx, cy);
+	for (uint16_t j = 0; j < k->nstatic; j++) {
+		const struct Static *s = &k->statics[j];
+		if (s->tf == t->tf && s->x == t->x && s->y == t->y && s->z == t->z)
+			return door_of(s, cx, cy);
+	}
+	return -1;
+}
+
+int e_thing_set(struct EThing *t, uint16_t tf)
+{
+	int d = thing_handle(t);
+
+	if (d < 0 || !keep_set(d, tf, t->x, t->y, 0))
+		return 0;
+	t->tf = tf;
+	return 1;
+}
+
+int e_thing_remove(const struct EThing *t)
+{
+	int d = thing_handle(t);
+
+	return d >= 0 && keep_set(d, t->tf, t->x, t->y, 1);
 }
 
 int32_t e_read_file(const char *dir, const char *name, uint8_t *to, uint32_t most)
@@ -1803,8 +1933,11 @@ static inline int order_of(const struct Static *a, const struct Static *b)
 	int yc = a->y < by0 ? -1 : ay0 > b->y ? 1 : 0;
 	int zc = az1 <= b->z ? -1 : a->z >= bz1 ? 1 : 0;
 
+	/* overlapping every way: as the original's sort, the higher in front, at one level the
+	 * shorter (a bed's cover over its sleeper) */
 	if (xc == 0 && yc == 0)
-		return zc;
+		return zc != 0 ? zc : a->z != b->z ? (a->z > b->z ? 1 : -1)
+			: a->height != b->height ? (a->height < b->height ? 1 : -1) : 0;
 	if (zc != 0 && (xc == 0 || xc == zc) && (yc == 0 || yc == zc))
 		return zc;
 	if (xc == 0)

@@ -64,6 +64,9 @@ static int try_step(struct Walker *w, int d)
 			return 0;
 		if (w->mode == E_ROUTE_STOP)
 			return 1;
+		/* through a shut door (it opens); an open one's leaf is in the way */
+		if (e_open_door_at(w->body, x, y, z))
+			return 0;
 	}
 	w->climbed = z != w->z;
 	w->x = x;

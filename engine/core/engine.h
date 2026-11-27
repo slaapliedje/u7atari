@@ -288,17 +288,47 @@ int e_door_at(uint16_t tf, int16_t x, int16_t y, uint8_t z);
 int e_door_toggle(int door);
 /* Whether the door is shut: in a wall, something solid past each end of it (as Exult tells). */
 int e_door_shut(int door);
+/* Whether a body at x, y, z would be in a door that is open (its leaf in the way: planned round,
+ * not through). */
+int e_open_door_at(const struct EBody *b, int16_t x, int16_t y, uint8_t z);
 /* Where the door is now (its hot spot). */
 void e_door_place(int door, int16_t *x, int16_t *y);
 
-/* An NPC shape's type-frame word walking in direction 0-3 (north, east, south, west), step n:
- * frames 0-15 face north, 16-31 south; east and west are those turned (0x8000). */
+/* Movable items (as doors) the game looks for and changes: a bed, a chair, food. */
+struct EThing {
+	uint16_t tf;                /* type-frame word */
+	int16_t x, y;               /* its hot spot's cell */
+	uint8_t z;
+};
+/* Up to most items and objects of type within cells x0, y0 to x1, y1 (inclusive; only those in
+ * e_near_window) into out: how many. */
+int e_things(uint16_t type, int16_t x0, int16_t y0, int16_t x1, int16_t y1, struct EThing *out,
+	int most);
+/* A movable item made tf where it is (t too), kept so when its region is read again: 1; 0 when
+ * it is not there (or not a movable item). */
+int e_thing_set(struct EThing *t, uint16_t tf);
+/* A movable item taken out of the world, as eaten: 1; 0 when it is not there. */
+int e_thing_remove(const struct EThing *t);
+
+/* An NPC shape's type-frame word in a pose (frames 0-15 as the original's: 0 standing, 1 and 2
+ * walking, 10 sitting, 11 bending, 13 lying) facing 0-3 (north, east, south, west): frames 0-15
+ * face north, 16-31 south; east and west are those turned (0x8000). */
+#define E_POSE_STAND 0
+#define E_POSE_SIT 10
+#define E_POSE_BEND 11
+#define E_POSE_LIE 13
+static inline uint16_t e_pose_frame(uint16_t type, int dir, int pose)
+{
+	uint16_t frame = (uint16_t) (pose + (dir == 2 || dir == 1 ? 16 : 0));
+
+	return (uint16_t) (type | frame << 10 | (dir & 1 ? 0x8000 : 0));
+}
+/* ... walking, step n. */
 static inline uint16_t e_walk_frame(uint16_t type, int dir, int n)
 {
 	static const uint8_t steps[4] = { 0, 1, 0, 2 };
-	uint16_t frame = (uint16_t) (steps[n & 3] + (dir == 2 || dir == 1 ? 16 : 0));
 
-	return (uint16_t) (type | frame << 10 | (dir & 1 ? 0x8000 : 0));
+	return e_pose_frame(type, dir, steps[n & 3]);
 }
 
 #endif

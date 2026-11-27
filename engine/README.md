@@ -2,7 +2,7 @@
 
 A test of a Jaguar-first engine for Ultima VII. It draws the world view from the original's own
 data files (`STATIC/` and a save's `GAMEDAT/`), and it is built so the 68000 does almost nothing
-per frame. This is not the game: there is no usecode, no schedules, no interface. It measures
+per frame. This is not the game: there is no usecode, no conversation, no interface. It measures
 whether the world can be shown fast enough on a Jaguar to be worth building a game around.
 
 ## How it draws
@@ -33,9 +33,30 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
 - **The NPCs** (`core/world.c`) keep the original's schedules (`SCHEDULE.DAT`): for each three
   hours of the day, what each takes up and where. As the original, an NPC goes on with what it
   is doing (its work type in `NPC.DAT`) until its next entry comes round. Then those near the
-  avatar walk to the place (a cell every 10 blanks) on a route, and the rest are put there. At
-  the place the roaming kinds (loiter, wander, pace, patrol, graze, ...) walk to places within 4
-  cells in turn; the others stand. A game hour is a real minute for now
+  avatar walk to the place (a cell every 10 blanks) on a route, and the rest are put there. No
+  route found, part way is tried (14, 10, then 6 cells along), and then, as the original, the
+  NPC is put there if the avatar is far from both, counts as there within 5 cells, or else
+  wanders. At the place each kind does what the original's schedule of that kind does, with
+  its ranges and waits (a tick is a step's 10 blanks here):
+  - *sleep*: the nearest bed within 25 cells (a futon for one wider than a cell), got into from
+    one of the spots the original lists for its type; in it lying along it, the cover (a bed
+    item a level up, an odd frame) turned to the next frame, which the original's sort draws
+    over the sleeper. No bed: it lies down where it is. At its next entry it gets up where it
+    got in, the cover put back.
+  - *sit*, *eat at the inn*: a chair (else a seat) within 12 cells picked at random; it walks
+    in front of it, faces the chair's way (its frame's low bits), stands, bends and sits, 2
+    ticks each. At the inn it now and then eats the food a cell or two ahead (taken out of the
+    world). *Eat*: a chair by the nearest plate, the food ahead eaten once, after a while.
+    *Desk work*: a chair by the nearer desk.
+  - *tend shop*: walks within 8 cells of where it got to, rests after a few walks not found,
+    and half the time goes to stand by the avatar when it is within 20 cells of there.
+  - *loiter* (patrol): walks within 15 (8) cells of where it got to, resting 20-40 ticks
+    between walks. *Wander*: to places within 15 cells of where it is.
+  - the other roaming kinds (pace, hound, graze, ...) walk within 4 cells; the rest stand.
+
+  A bed or chair that cannot be reached, or is taken, and the NPC loiters, as the original's.
+  What the original's schedules say (barks), check round them, put on a plate, or wake for (the
+  avatar near a sleeper) is not done yet. A game hour is a real minute for now
   (`E_WORLD_MINUTE`); `-DSTART_MINUTES=` sets the time to start at (535: five minutes before the
   9:00 change, to see them go).
 - **Roofs.** As the original works it out (`UpdateCeiling`): of the levels the solid statics (not
@@ -62,11 +83,13 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   walkers along the obstacle, one each way round, until one is nearer the goal than it has been
   and can step straight at it; waypoints where they turn and where the level changes; planned
   from the top when the goal is higher; then straightened, a waypoint either side of each door
-  walked through. Doors count as open while planning. The original's limits: 150 steps searched
-  to a schedule's place (at level 0), 45 roaming. Walking one is the original's too: a step at
+  walked through. A shut door counts as open while planning; an open one's leaf is in the way.
+  The original's limits: 150 steps searched to a schedule's place (at level 0), 100 to a bed or
+  chair, 45 wandering, 30 loitering, 15 about a shop. Walking one is the original's too: a step at
   the next waypoint, a shut door in the way opened, an open leaf walked round, planned again
-  after more than 3 steps not made, given up after half as many steps again as it is long (then
-  it walks straight at the goal). Routes are planned within the chunks held round the view, as
+  after more than 3 steps not made (three times with no step between, or a locked door in the
+  way: no way there), given up after half as many steps again as it is long (then it walks
+  straight at the goal). Routes are planned within the chunks held round the view, as
   the original's collision grid covers only the world near the avatar: a place beyond them is
   walked towards (to the nearest cell within them it could stand on, then on from there), or,
   the NPC off the screen, it is put there. One route is planned a world step; the rest wait.
@@ -80,8 +103,12 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   or shut, on the same row or column. A door is shut when something lies past each end of it (a
   wall, or the other leaf), as Exult tells. NPCs open a shut door in their way and shut it once 2
   cells further from it than they came, as the original's routes do. (The sounds are not done.)
+  Other movable items the game changes (a bed's cover, food eaten: `e_things`, `e_thing_set`,
+  `e_thing_remove`) are kept in the same table, an eaten one as gone.
 - **Depth.** An object stands at the bottom right of its footprint and is lifted 4 pixels up and
   left a level. What lies south, east or above is in front: `order_of()` in `core/engine.c`.
+  Two that overlap every way go as the original's sort has them: the higher in front, and at
+  one level the shorter (a bed's cover over its sleeper).
 - **Shapes** are read on demand into a ring that gives the oldest way; the movers' are kept apart.
   They are in the engine's own form (`engine.h`, `E_RUN_`): per run one long for where it is, how
   long, and whether it is a fill, then its pixels padded to a long; colour 0 kept as 255, black
@@ -101,7 +128,8 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   `eb_shape`) into 8-bit surfaces.
 - `host/` — the PC: draws views to PPM pictures (`u7engine <dir>/ <x> <y> [--walk dx dy n]
   [--movers n] [--out p] [--every k] [--sheet shape] [--layers] [--avatar [--path
-  "dx,dy,n;..."] [--time m]]`): `--avatar` walks the avatar as the Jaguar does. Build: `cmake --build build-host
+  "dx,dy,n;..."] [--time m] [--from x,y,z] [--route x,y,z] [--npcs]]`): `--avatar` walks the
+  avatar as the Jaguar does; `--npcs` lists the NPCs in view with each picture (place, frame). Build: `cmake --build build-host
   --target u7engine`.
 - `tools/jagdata.c` — `u7jagdata <data dir> <out dir>` (the data dir holding `STATIC/`) writes
   the dataset, in the Jaguar's byte order: `SHAPES.FLX` (7.1 MB), SHAPES.VGA with every object
@@ -210,8 +238,9 @@ call chains (`tools/jag-profile.py --frames`).
 - **Animation.** Animated statics and terrain (water, fire, clocks) belong with the movers, not in
   the ring.
 - **Translucency**; **NPCs** from a save (it holds them as the game's memory, `U7NBUF.DAT` and
-  `U7IBUF.DAT`, not as `NPC.DAT`); what their schedules' kinds do at the place (sleep, eat,
-  work, sell); door sounds; the party.
+  `U7IBUF.DAT`, not as `NPC.DAT`); the schedules' kinds not yet done at the place (the
+  waiter, the smith, baker, farmer, miner, preacher, duel, thieves, ...), barks, and usecode;
+  door sounds; the party.
 - **Order.** `order_of()` is a simple rule. It still needs checking against the original's frames
   at the same places (the PC reference can draw them). The ring version already draws doors and
   benches that the first version lost.
