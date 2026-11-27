@@ -247,6 +247,23 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   avatar's feet when asked; `--find a,b,..` lists items of those shapes about it; `--uc-trace`
   logs each intrinsic and call), `--use-all` runs each shape's function on an item made for
   it; `-DENGINE_USE_TEST=type` on the Jaguar uses the nearest of a type at the start.
+- **Containers** (`core/inv.c`). A on a chest, barrel, crate, bag, desk or body opens it as the
+  original does (no usecode: its `Item_canBeOpened` types), and Option the avatar's backpack
+  (over what is open; again, all shut). Each kind has the original's gump and contents area,
+  and its contents are laid out as its `ItemGrid` lays them out (row by row by picture size, a
+  full one starting again further in). A world container's contents are read from its region's
+  `U7IREG` the first time it is opened, into the held items (`E_HELD_WORLD`), and kept there;
+  the usecode finds them too. The gumps go in the faces' room (as books do), up to three, one
+  over another. The pad steps through the top gump's items, the gauntlet at the one picked and
+  its name under the gump (the original's naming: article, base, singular or plural, the count,
+  some by frame); A uses it (a container opens over it; else its usecode, food asking who eats),
+  C moves it across (from the world's container to the avatar's first container with room, or
+  from the avatar's into the world's container under it; a pile joins one of its kind, gold and
+  arrows showing their count by frame), B shuts the top gump. A refusal shows the original's
+  pointer for it (TOO HEAVY, WON'T FIT, the red X). The world waits meanwhile. Not yet: the
+  paperdoll (the slots each item is worn in), dropping items on the ground, dragging an item to
+  a place of one's own in a gump. On the PC `--inv keys` presses keys (`l r u d a b c`, `o` for
+  Option) in the container ahead, `--inv-avatar` opens the backpack.
 
 ## Layout
 

@@ -343,6 +343,8 @@ static int appear_frame;        /* --appear f: the avatar far off till frame f *
 static int use_dx, use_dy, use_ahead;     /* --use-ahead dx,dy: the item ahead used (as A does) */
 static int aim_dx, aim_dy, aim_given;  /* --aim dx,dy: pointed at, pixels from the avatar's feet */
 static int put_type = -1;
+static const char *inv_keys;    /* --inv k..: keys pressed in the container opened (l r u d a b c) */
+static int inv_avatar;          /* --inv-avatar: the avatar's backpack opened */
 static int find_types[4];       /* --find a,b,..: those shapes about the avatar listed */        /* --put type: an item of it put beside the avatar (to use) */
 static int use_near;             /* --use-near: each usable item about the avatar used */
 static int use_all;              /* --use-all: each shape's usecode run on an item of it */
@@ -445,12 +447,48 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 		if (use_ahead) {
 			/* the item ahead, as the Jaguar's A finds it */
 			struct EThing t;
-			if (!e_thing_ahead(ax, ay, az, use_dx, use_dy, e_usable, &t)) {
+			if (inv_avatar)
+				e_inv_open_avatar();
+			else if (!e_thing_ahead(ax, ay, az, use_dx, use_dy, e_inv_actionable, &t)) {
 				printf("nothing usable ahead\n");
 				return;
+			} else {
+				printf("== ahead: shape %d frame %d at %d,%d,%d\n", t.tf & 0x3ff, t.tf >> 10 & 31, t.x, t.y, t.z);
+				if (!e_inv_open_thing(&t))
+					e_talk_use(&t);
 			}
-			printf("== ahead: shape %d frame %d at %d,%d,%d\n", t.tf & 0x3ff, t.tf >> 10 & 31, t.x, t.y, t.z);
-			e_talk_use(&t);
+			for (const char *k = inv_keys; e_inv_active(); k = k && *k ? k + 1 : k) {
+				/* a container shown: its items, the keys pressed (then shut) */
+				static int pic;
+				int list[64], n = e_inv_items(list, 64);
+				printf("  gumps %d, %d items (avatar's gold %d, held %d):", e_inv_depth(), n,
+					e_held_count(E_HELD_ON(0), 644, -1, -1), e_held_used());
+				for (int j = 0; j < n; j++)
+					printf(" %s%d/%d", list[j] == e_inv_picked() ? "*" : "", e_held_tf(list[j]) & 0x3ff,
+						e_held_quantity(list[j]));
+				printf("%s\n", e_inv_refused() >= 0 ? " (refused)" : "");
+				if (out_pictures) {
+					char name[256];
+					e_draw(&frame);
+					e_inv_draw(&frame);
+					eb_finish();
+					snprintf(name, sizeof name, "%s.inv%02d.ppm", out, pic++);
+					save(name);
+				}
+				char c = k && *k ? *k : 'b';
+				printf("  key %c\n", c);
+				if (c == 'o')
+					e_inv_avatar_key();
+				else
+				e_inv_key(c == 'l' ? E_KEY_LEFT : c == 'r' ? E_KEY_RIGHT : c == 'u' ? E_KEY_UP
+					: c == 'd' ? E_KEY_DOWN : c == 'a' ? E_KEY_NEXT : c == 'c' ? E_KEY_TAKE : E_KEY_BACK);
+				for (int turns = 0; e_talk_active() && turns < 50; turns++) {
+					for (int pl = 0; pl < 2; pl++)
+						for (int l = 0; e_talk_line(pl, l); l++)
+							printf("  %d| %s\n", pl, e_talk_line(pl, l));
+					e_talk_key(E_KEY_NEXT);
+				}
+			}
 			for (int turns = 0; e_talk_active() && turns < 50; turns++) {
 				int16_t px, py;
 				for (int pl = 0; pl < 2; pl++)
@@ -750,6 +788,10 @@ int main(int argc, char **argv)
 		} else if (!strcmp(argv[i], "--find") && i + 1 < argc) {
 			sscanf(argv[++i], "%d,%d,%d,%d", &find_types[0], &find_types[1], &find_types[2], &find_types[3]);
 			use_near = 1;
+		} else if (!strcmp(argv[i], "--inv") && i + 1 < argc)
+			inv_keys = argv[++i];
+		else if (!strcmp(argv[i], "--inv-avatar")) {
+			inv_avatar = use_near = use_ahead = 1;
 		} else if (!strcmp(argv[i], "--put") && i + 1 < argc)
 			put_type = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--uc-trace"))

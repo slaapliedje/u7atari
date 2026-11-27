@@ -1461,6 +1461,7 @@ static struct Door {
 	uint8_t z;
 	uint8_t gone;               /* taken out of the world */
 	uint8_t added;              /* put into the world (not in its region's file) */
+	uint8_t filled;             /* a container whose contents are read in (e_container_fill) */
 	int16_t lcx, lcy;           /* the chunk whose list holds it */
 } doors[MOST_DOORS];
 static int ndoors;
@@ -1557,7 +1558,7 @@ static int new_kept(void)
 		return ndoors++;
 	for (int d = 0; d < ndoors; d++)
 		if (doors[d].x == doors[d].x0 && doors[d].y == doors[d].y0 && doors[d].tf == doors[d].tf0
-			&& !doors[d].gone && !doors[d].added)
+			&& !doors[d].gone && !doors[d].added && !doors[d].filled)
 			return d;
 	return -1;
 }
@@ -1579,6 +1580,7 @@ static int door_of(const struct Static *s, int cx, int cy)
 	o->z = s->z;
 	o->gone = 0;
 	o->added = 0;
+	o->filled = 0;
 	o->lcx = (int16_t) cx;
 	o->lcy = (int16_t) cy;
 	return d;
@@ -1926,6 +1928,7 @@ int e_thing_add(uint16_t tf, int16_t x, int16_t y, uint8_t z, struct EThing *out
 	o->z = z;
 	o->gone = 0;
 	o->added = 1;
+	o->filled = 1;              /* (none in its region's file: empty) */
 	o->lcx = (int16_t) (x >> 4);
 	o->lcy = (int16_t) (y >> 4);
 	static_changed(tf, x, y, z, o->lcx, o->lcy);
@@ -1936,6 +1939,59 @@ int e_thing_add(uint16_t tf, int16_t x, int16_t y, uint8_t z, struct EThing *out
 		out->z = z;
 	}
 	return 1;
+}
+
+int e_container_fill(const struct EThing *t)
+{
+	int d = thing_handle(t);
+
+	if (d < 0 || doors[d].filled)
+		return d;
+	doors[d].filled = 1;
+	/* its record in its region's movable items (where it began), then its contents a level down
+	 * (and theirs further), each kept as held items, in it or the one they are in */
+	struct Door *o = &doors[d];
+	char name[16];
+	int16_t f;
+	snprintf(name, sizeof name, "U7IREG%02X", region_of(o->x0, o->y0));
+	if ((f = open_file("ENGINE", name)) < 0 && (f = open_file("GAMEDAT", name)) < 0)
+		return d;
+	int32_t len = plat_file_length(f);
+	int ok = len > 0 && len <= SCRATCH && read_at(f, 0, scratch, (uint32_t) len);
+	plat_file_close(f);
+	if (!ok)
+		return d;
+	int depth = 0, found = 0, in[8];
+	for (int32_t i = 0; i < len;) {
+		uint8_t l = scratch[i++];
+		if (l == 0 || l == 1) {
+			if (depth > 0 && --depth == 0 && found)
+				break;
+			continue;
+		}
+		const uint8_t *r = scratch + i;
+		i += l;
+		if (i > len)
+			break;
+		uint16_t tf = rd16(r + 2);
+		uint8_t cls = info[tf & 0x3ff].cls;
+		int opens = l >= 12 && rd16(r + 4) != 0 && (cls == 6 || cls == 12 || cls == 13);
+		if (depth == 0) {
+			if (!found && opens && r[0] == (uint8_t) o->x0 && r[1] == (uint8_t) o->y0 && tf == o->tf0
+				&& (r[9] >> 4) == o->z) {
+				found = 1;
+				in[1] = E_HELD_WORLD(d);
+			}
+		} else if (found) {
+			/* its quality: a plain one's sixth byte, a container's eighth */
+			int k = e_held_add(tf, l == 6 ? r[5] : l == 12 ? r[7] : 0, in[depth < 8 ? depth : 7]);
+			if (opens && depth + 1 < 8)
+				in[depth + 1] = k >= 0 ? k : in[depth];
+		}
+		if (opens)
+			depth++;
+	}
+	return d;
 }
 
 int e_shape_frames(uint16_t type)
@@ -2293,6 +2349,7 @@ static uint32_t convert_size(const uint8_t *raw, uint32_t size)
 }
 
 static uint8_t *read_room;      /* the faces' slots, one block: a book's room while it is read */
+static uint8_t panels_in_room;  /* the containers' gumps are in it (e_panels_load) */
 
 static void open_faces(void)
 {
@@ -2332,6 +2389,12 @@ static const uint8_t *face_shape(int n)
 	}
 	if (faces[old].s == NULL)
 		return NULL;
+	if (panels_in_room) {
+		/* the containers' gumps give way */
+		panels_in_room = 0;
+		for (k = 0; k < FACE_SLOTS; k++)
+			faces[k].face = -1;
+	}
 	int16_t f = open_file("STATIC", "FACES.VGA");
 	if (f < 0)
 		return NULL;
@@ -2630,6 +2693,7 @@ int e_reading_open(int gump, int fontn)
 
 	for (int k = 0; k < FACE_SLOTS; k++)
 		faces[k].face = -1;     /* (their room taken) */
+	panels_in_room = 0;
 	reading.parts = 0;
 	reading_font = NULL;
 	reading_font_n = -1;
@@ -2669,6 +2733,80 @@ void e_reading_close(void)
 void e_draw_reading(struct ESurface *frame, int16_t x, int16_t y)
 {
 	draw_gump(frame, read_room, &reading, x, y);
+}
+
+/* The containers' gumps (E_PANELS), one after another in the faces' room. */
+static struct Gump panels[E_PANELS];
+static int npanels;
+
+int e_panels_load(const int16_t *gumps, int n)
+{
+	if (n > E_PANELS)
+		n = E_PANELS;
+	if (panels_in_room && n <= npanels) {
+		int same = 1;
+		for (int k = 0; k < n; k++)
+			same = same && panels[k].n == gumps[k] && panels[k].parts > 0;
+		if (same)
+			return 1;
+	}
+	if (read_room == NULL)
+		return 0;
+	for (int k = 0; k < FACE_SLOTS; k++)
+		faces[k].face = -1;     /* (their room taken) */
+	reading.parts = 0;
+	panels_in_room = 1;
+	npanels = 0;
+	uint32_t used = 0;
+	for (int k = 0; k < n; k++) {
+		if (used >= READ_ROOM || !load_gump(gumps[k], read_room + used, READ_ROOM - used, &panels[k]))
+			return 0;
+		uint32_t end = used;
+		for (int j = 0; j < panels[k].parts; j++) {
+			panels[k].at[j] += used;
+			uint32_t e = panels[k].at[j] + ((const uint32_t *) (read_room + panels[k].at[j]))[0];
+			if (e > end)
+				end = e;
+		}
+		used = (end + E_CONVERT_SLACK + 7) & ~7u;
+		npanels = k + 1;
+	}
+	return 1;
+}
+
+int e_panel_size(int k, int16_t *w, int16_t *h)
+{
+	if (!panels_in_room || k < 0 || k >= npanels)
+		return 0;
+	*w = panels[k].w;
+	*h = panels[k].h;
+	return 1;
+}
+
+void e_draw_panel(struct ESurface *frame, int k, int16_t x, int16_t y)
+{
+	if (panels_in_room && k >= 0 && k < npanels)
+		draw_gump(frame, read_room, &panels[k], x, y);
+}
+
+int e_item_box(uint16_t tf, int16_t box[4])
+{
+	const int16_t *f = frame_of(tf & 0x3ff, (tf >> 10) & 31);
+
+	if (f == NULL)
+		return 0;
+	for (int k = 0; k < 4; k++)
+		box[k] = f[k];
+	return 1;
+}
+
+void e_draw_item(struct ESurface *frame, uint16_t tf, int16_t x, int16_t y)
+{
+	static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
+	const int16_t *f = frame_of(tf & 0x3ff, (tf >> 10) & 31);
+
+	if (f != NULL)
+		eb_shape(frame, whole, (const uint32_t *) (f + 4), x, y, 0);
 }
 
 void e_draw_small(struct ESurface *frame, int16_t x, int16_t y, const char *s)

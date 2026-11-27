@@ -615,18 +615,33 @@ static int in_of_ref(int ref)
 {
 	int k = npc_of_ref(ref), i = held_of(ref);
 
-	return k >= 0 ? E_HELD_ON(npc[k].number) : i >= 0 ? i : NOWHERE;
+	struct EThing t;
+	int d;
+
+	if (k >= 0)
+		return E_HELD_ON(npc[k].number);
+	if (i >= 0)
+		return i;
+	/* a container in the world: its contents read in */
+	if (thing_of(ref, &t) && e_shape_class(t.tf & 0x3ff) == 6 && (d = e_container_fill(&t)) >= 0)
+		return E_HELD_WORLD(d);
+	return NOWHERE;
 }
 
 /* The strength of the NPC that what is put in "in" comes to (0: none). */
 static int strength_for(int in)
 {
-	int owner = in <= E_HELD_ON(0) ? E_HELD_ON(0) - in : e_held_owner(in);
+	int owner = E_HELD_IS_NPC(in) ? E_HELD_ON(0) - in : in >= 0 ? e_held_owner(in) : -1;
 
 	for (int k = 0; k < nnpc && owner >= 0; k++)
 		if (npc[k].number == owner)
 			return npc[k].strength;
 	return 0;
+}
+
+int e_uc_strength(int number)
+{
+	return strength_for(E_HELD_ON(number));
 }
 
 /* Where what ref refers to is (an NPC, the avatar where the world step has it; an item, a held
@@ -1350,6 +1365,7 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 	case 0x6e: {                /* GetContainer: what a held item is in (an NPC, a container) */
 		int i = held_of(arg_int(args, 1)), in = e_held_in(i);
 		*ret = val_int(i < 0 || in == E_HELD_LOOSE ? 0 : in >= 0 ? ref_of_held(in)
+			: E_HELD_IS_WORLD(in) ? E_HELD_WORLD(0) - in + 1
 			: E_HELD_ON(0) - in == 0 ? UC_AVATAR : -(E_HELD_ON(0) - in));
 		return 0;
 	}

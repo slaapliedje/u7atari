@@ -377,6 +377,20 @@ int e_talk_use(const struct EThing *t)
 	return status != E_UC_DONE;
 }
 
+int e_talk_use_held(int i)
+{
+	int type = e_held_tf(i) & 0x3ff, function = type;
+
+	if (!e_held_ok(i) || !e_uc_has(type))
+		return 0;
+	if (type == BOOK && e_held_quality(i) >= 100)
+		function = BOOK_FUNCTION;
+	close_reading();
+	nlines[0] = nlines[1] = 0;
+	took(e_uc_start(function, E_HELD_REF + i, 1));
+	return status != E_UC_DONE;
+}
+
 int e_talk_active(void)
 {
 	return status != E_UC_DONE;

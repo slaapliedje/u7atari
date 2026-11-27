@@ -235,6 +235,9 @@ int e_npcs(struct ENpc *out, int max);
 #define E_HELD_LOOSE (-1)
 #define E_HELD_REF 0x4000       /* held item i is E_HELD_REF + i to the usecode */
 #define E_HELD_ON(n) (-2 - (n))
+#define E_HELD_WORLD(d) (-1000 - (d))   /* in the world's container whose number is d + 1 */
+#define E_HELD_IS_NPC(in) ((in) <= E_HELD_ON(0) && (in) > E_HELD_WORLD(0))
+#define E_HELD_IS_WORLD(in) ((in) <= E_HELD_WORLD(0) && (in) > E_HELD_WORLD(4000))
 void e_held_clear(void);
 int e_held_add(uint16_t tf, uint8_t quality, int in);   /* its index, or -1: no room */
 int e_held_ok(int i);
@@ -244,8 +247,11 @@ void e_held_set_tf(int i, uint16_t tf);
 int e_held_quality(int i);
 int e_held_set_quality(int i, int q);   /* 0: it has none */
 int e_held_quantity(int i);             /* (1 for those not counted) */
-int e_held_set_quantity(int i, int n);
+int e_held_set_quantity(int i, int n);  /* (the frame too, of those that show it) */
+int e_held_frame_counts(int type);      /* those: the frame their count starts at, else -1 */
 int e_held_owner(int i);                /* the NPC (number) it is on, deep, or -1 */
+int e_held_root(int i);                 /* the "in" outside all its containers (an NPC, the
+                                         * world's container, loose) */
 /* The next held item after "after" (deep) in "in" of type, quality, frame (< 0: any) and
  * counted (none locked between), or -1; and the sum of their counts. */
 int e_held_find(int in, int type, int quality, int frame, int after);
@@ -254,6 +260,10 @@ int e_held_count(int in, int type, int quality, int frame);
  * of the strength given: 0, or the original's errors: 1 too heavy, 2 into itself, 3 no place
  * (locked), 4 no room. */
 int e_held_place(int i, int in, int strength);
+struct EThing;
+/* The world's container t's contents read in (from its region's movable items, the first time):
+ * its number less one (held items in it are in E_HELD_WORLD of it), or -1. */
+int e_container_fill(const struct EThing *t);
 void e_held_remove(int i);              /* and what it holds */
 int e_held_used(void);
 int e_shape_class(int type);            /* a type's class (TFA.DAT) */
@@ -285,6 +295,7 @@ int e_uc_resume(const char *answer);
 /* The number asked for: its range, step and first value (1), or 0 when none is. */
 int e_uc_number(int *low, int *high, int *step, int *initial);
 int e_uc_resume_number(int value);
+int e_uc_strength(int number);          /* NPC number's strength (0: none) */
 /* What was pointed at (picked 0: nothing, let go): its usecode number (an item's, -an NPC's; 0
  * the ground) and cell. */
 int e_uc_resume_target(int picked, int ref, int x, int y, int z);
@@ -323,7 +334,8 @@ void e_uc_memory(void *code_room, void *heap_room);
 #define E_KEY_UP 4              /* ... on the line above */
 #define E_KEY_DOWN 5            /* ... below */
 #define E_KEY_CLEAR 6           /* a number typed cleared (the Jaguar's * key) */
-#define E_KEY_BACK 7            /* let go: nothing pointed at (the Jaguar's B) */
+#define E_KEY_BACK 7            /* let go: nothing pointed at, a gump shut (the Jaguar's B) */
+#define E_KEY_TAKE 8            /* an item moved across (the Jaguar's C) */
 #define E_KEY_DIGIT 10          /* E_KEY_DIGIT + d: digit d typed (the Jaguar's keypad) */
 /* NPC number's conversation begun (its usecode as spoken to): 1 when there is one. */
 int e_talk_start(int number);
@@ -344,6 +356,17 @@ void e_draw_small(struct ESurface *frame, int16_t x, int16_t y, const char *s);
 /* A book's, scroll's or sign's gump and font read in to be read (the faces' room taken: none is
  * shown meanwhile): 1 when both are; drawn with its hot spot at x, y; given up. */
 int e_reading_open(int gump, int font);
+/* The containers' gumps (GUMPS.VGA entries, up to E_PANELS) read in to the faces' room (none is
+ * shown meanwhile; a face or a book read in takes it back, and they are read again): 1 when all
+ * are. Panel k's size; drawn with its corner (its hot spot) at x, y. */
+#define E_PANELS 3
+int e_panels_load(const int16_t *gumps, int n);
+int e_panel_size(int k, int16_t *w, int16_t *h);
+void e_draw_panel(struct ESurface *frame, int k, int16_t x, int16_t y);
+/* A world shape's frame (type-frame word): its box from the hot spot (right, left, above,
+ * below): 1; drawn with its hot spot at x, y of the view. */
+int e_item_box(uint16_t tf, int16_t box[4]);
+void e_draw_item(struct ESurface *frame, uint16_t tf, int16_t x, int16_t y);
 void e_draw_reading(struct ESurface *frame, int16_t x, int16_t y);
 void e_reading_close(void);
 /* The font the text functions (e_letter_width, e_text_width, e_line_height, e_draw_text) use:
@@ -354,7 +377,29 @@ int e_text_font(int n);
  * goes on. And whether an item's type has usecode to run. */
 struct EThing;
 int e_talk_use(const struct EThing *t);
+int e_talk_use_held(int i);             /* (a held item: the same) */
 int e_usable(uint16_t tf);
+
+/* ---- containers shown (core/inv.c), as the original's gumps: the top one's items stepped
+ * through (E_KEY_LEFT..DOWN), used (E_KEY_NEXT), moved across (E_KEY_TAKE), it shut
+ * (E_KEY_BACK) ---- */
+int e_inv_opens(uint16_t tf);           /* whether the type opens as a container */
+int e_inv_actionable(uint16_t tf);      /* it opens, or has usecode: what A finds ahead */
+/* For tests: the top gump's items (held), the one picked (or -1), how many gumps are open, the
+ * last refusal (a pointer frame, or -1). */
+int e_inv_items(int *out, int most);
+int e_inv_picked(void);
+int e_inv_depth(void);
+int e_inv_refused(void);
+int e_inv_open_thing(const struct EThing *t);   /* the world's container opened: 1 */
+int e_inv_open_held(int i);
+int e_inv_open_avatar(void);            /* the avatar's backpack */
+void e_inv_avatar_key(void);            /* (Option) it opened over the rest, or (open) all shut */
+int e_inv_active(void);
+void e_inv_close(void);
+void e_inv_key(int key);
+void e_inv_draw(struct ESurface *frame);
+uint32_t e_inv_changes(void);           /* (as e_talk_changes) */
 /* Counts the changes to what the conversation shows (while it is the same, so is the
  * picture: the world waits). */
 uint32_t e_talk_changes(void);

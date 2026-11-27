@@ -9,6 +9,8 @@
  * stack its count times its type's, a tenth of that for coins and reagents, from WGTVOL.DAT);
  * a container takes what its bulk leaves room for (the bulks of what it holds, without nesting).
  *
+ * Also in the world's containers (E_HELD_WORLD), read in when first opened (engine.c).
+ *
  * Not the original's: an item given to an NPC goes in its first container with room, else on
  * the NPC (the original fills its hands and slots first, as READY.DAT says); on the NPC itself
  * at most HELD_ON items. Nothing shows where (no paperdoll yet), so only that is changed.
@@ -105,23 +107,47 @@ int e_held_quantity(int i)
 	return !e_held_ok(i) ? 0 : cls(i) == 3 ? held[i].quality & 0x7f : 1;
 }
 
+int e_held_frame_counts(int type)
+{
+	switch (type) {
+	case 417: case 554: case 556: case 558: case 560: case 568: case 722: case 723: case 948:
+		return 24;              /* arrows, bolts: from frame 24 */
+	case 581: case 627: case 644:
+		return 0;               /* ammunition, lockpicks, gold */
+	}
+	return -1;
+}
+
 int e_held_set_quantity(int i, int n)
 {
 	if (!e_held_ok(i) || cls(i) != 3)
 		return 0;
 	held[i].quality = (uint8_t) ((held[i].quality & 0x80) | (n & 0x7f));
+	/* (as the original's Item_setQuantity: some show how many by their frame) */
+	int f = e_held_frame_counts(held[i].tf & 0x3ff);
+	if (f >= 0 && n > 0) {
+		f += n <= 6 ? n - 1 : n <= 12 ? 6 : 7;
+		held[i].tf = (uint16_t) ((held[i].tf & ~(31u << 10)) | (uint16_t) f << 10);
+	}
 	return 1;
 }
 
 int e_held_owner(int i)
 {
+	int in = e_held_root(i);
+
+	return E_HELD_IS_NPC(in) ? E_HELD_ON(0) - in : -1;
+}
+
+int e_held_root(int i)
+{
 	for (int n = 0; e_held_ok(i) && n < E_HELD_MOST; n++) {
 		int in = held[i].in;
-		if (in <= E_HELD_ON(0))
-			return E_HELD_ON(0) - in;
+		if (in < 0)
+			return in;
 		i = in;
 	}
-	return -1;
+	return HELD_FREE;
 }
 
 /* Whether i is (deep) in "in" and counted: no locked chest or sealed box between. */
@@ -209,19 +235,30 @@ static int bulk_in(int in)
 	return b;
 }
 
-static int holds_bulk(int container, int i)
+/* Whether container "in" (of type) has room for i's bulk. */
+static int holds_bulk(int type, int in, int i)
 {
-	int room = wgtvol[(held[container].tf & 0x3ff) * 2 + 1];
+	int room = wgtvol[type * 2 + 1];
 
-	return room == 0 || wgtvol[(held[i].tf & 0x3ff) * 2 + 1] + bulk_in(container) < room;
+	return room == 0 || wgtvol[(held[i].tf & 0x3ff) * 2 + 1] + bulk_in(in) < room;
 }
 
 int e_held_place(int i, int in, int strength)
 {
 	if (!e_held_ok(i) || i == in)
 		return 2;
-	int owner = in <= E_HELD_ON(0) ? E_HELD_ON(0) - in : e_held_owner(in);
-	if (in > E_HELD_LOOSE) {
+	int owner = E_HELD_IS_NPC(in) ? E_HELD_ON(0) - in : in >= 0 ? e_held_owner(in) : -1;
+	if (E_HELD_IS_WORLD(in)) {
+		/* into the world's container: not locked, with room */
+		struct EThing t;
+		if (!e_ref_thing(E_HELD_WORLD(0) - in + 1, &t))
+			return 3;
+		int type = t.tf & 0x3ff;
+		if (type == LOCKED_CHEST || type == SEALED_BOX)
+			return 3;
+		if (!holds_bulk(type, in, i))
+			return 4;
+	} else if (in > E_HELD_LOOSE) {
 		/* into a container: not one it holds, not locked, with room */
 		if (!e_held_ok(in))
 			return 3;
@@ -231,9 +268,9 @@ int e_held_place(int i, int in, int strength)
 		int type = held[in].tf & 0x3ff;
 		if (type == LOCKED_CHEST || type == SEALED_BOX)
 			return 3;
-		if (!holds_bulk(in, i))
+		if (!holds_bulk(type, in, i))
 			return 4;
-	} else if (in <= E_HELD_ON(0)) {
+	} else if (E_HELD_IS_NPC(in)) {
 		/* to an NPC: its first container with room, else on it */
 		int bag = -1, on = 0;
 		for (int k = 0; k < nheld; k++)
@@ -241,7 +278,7 @@ int e_held_place(int i, int in, int strength)
 				int type = held[k].tf & 0x3ff;
 				on++;
 				if (bag < 0 && e_shape_class(type) == 6 && type != LOCKED_CHEST
-					&& type != SEALED_BOX && holds_bulk(k, i))
+					&& type != SEALED_BOX && holds_bulk(type, k, i))
 					bag = k;
 			}
 		if (bag < 0 && on >= HELD_ON)

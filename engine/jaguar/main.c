@@ -734,14 +734,21 @@ static void set_palette(const uint8_t *rgb)
  * platform/jaguar/input.c has them. */
 #define PAD_A (1UL << 29)
 #define PAD_B (1UL << 25)
+#define PAD_C (1UL << 26)
+#define PAD_OPTION (1UL << 27)
 static uint32_t pad(void)
 {
 	JOY_WRITE = 0x81FE;
 	uint32_t v = JOY_READ;
 	JOY_WRITE = 0x81FD;         /* the row with B (and keys 1 4 7 *) */
 	uint32_t w = JOY_READ;
+	JOY_WRITE = 0x81FB;         /* C (0 8 5 2) */
+	uint32_t c = JOY_READ;
+	JOY_WRITE = 0x81F7;         /* Option (# 9 6 3) */
+	uint32_t o = JOY_READ;
 	JOY_WRITE = 0x81FE;
-	return (~(v >> 4) & 0x00F00000UL) | (v & 2 ? 0 : PAD_A) | (w & 2 ? 0 : PAD_B);
+	return (~(v >> 4) & 0x00F00000UL) | (v & 2 ? 0 : PAD_A) | (w & 2 ? 0 : PAD_B)
+		| (c & 2 ? 0 : PAD_C) | (o & 2 ? 0 : PAD_OPTION);
 }
 
 /* The keypad, port 1's other three rows (bits 24-27 of each: * 7 4 1, 0 8 5 2, # 9 6 3): bit d
@@ -996,6 +1003,19 @@ static void walk_update(void)
 				aiming = 0;
 			touched = 1;
 			a_held = 1;
+		} else if (!e_talk_active() && e_inv_active()) {
+			/* containers open: the pad steps through the top one's items; A uses one, C moves
+			 * it across, B shuts it, Option all; the world waits */
+			static const uint32_t bit[7] = { 1UL << 20, 1UL << 21, 1UL << 22, 1UL << 23, PAD_A, PAD_B, PAD_C };
+			static const int key[7] = { E_KEY_UP, E_KEY_DOWN, E_KEY_LEFT, E_KEY_RIGHT, E_KEY_NEXT,
+				E_KEY_BACK, E_KEY_TAKE };
+			for (int k = 0; k < 7; k++)
+				if (pressed & bit[k])
+					e_inv_key(key[k]);
+			if (pressed & PAD_OPTION)
+				e_inv_avatar_key();
+			touched = 1;
+			a_held = 1;
 		} else if (e_talk_active()) {
 			/* talking: A on (or the answer picked), the pad moves the pointer; the world waits */
 			if (pressed & PAD_A)
@@ -1035,8 +1055,13 @@ static void walk_update(void)
 				/* (locked: its usecode says so) */
 				if (!e_door_toggle(door) && e_ref_thing(door + 1, &t) && e_usable(t.tf))
 					e_talk_use(&t);
-			} else if (e_thing_ahead(ax, ay, az, face_x[walk_dir], face_y[walk_dir], e_usable, &t))
+			} else if (e_thing_ahead(ax, ay, az, face_x[walk_dir], face_y[walk_dir], e_inv_actionable, &t)
+				&& !e_inv_open_thing(&t))
 				e_talk_use(&t);
+		} else if (pressed & PAD_OPTION) {
+			/* Option: the avatar's backpack opened */
+			touched = 1;
+			e_inv_open_avatar();
 		} else if (pressed & PAD_B) {
 			/* B: the NPC ahead (or the nearest within 2 cells) spoken to */
 			static const int8_t face_x[4] = { 0, 1, 0, -1 }, face_y[4] = { -1, 0, 1, 0 };
@@ -1059,7 +1084,7 @@ static void walk_update(void)
 		walk_tick += WALK_BLANKS;
 		if (held)
 			touched = 1;
-		if (e_talk_active()) {
+		if (e_talk_active() || e_inv_active()) {
 			a_held = (held & PAD_A) != 0;
 			continue;
 		}
@@ -1089,7 +1114,7 @@ static void walk_update(void)
 	}
 	if (walking || moved)
 		e_mover_set(0, e_walk_frame(type, walk_dir, walk_steps), ax, ay, az);
-	if (!e_talk_active())
+	if (!e_talk_active() && !e_inv_active())
 		e_world_step(world_clock(), ax, ay);
 #ifdef ENGINE_BARK_TEST
 	/* a line over mover 1 every two seconds, to see barks drawn */
@@ -1230,9 +1255,9 @@ void jag_main(void)
 		/* talking, the world waits: once each frame holds what it shows, nothing is drawn
 		 * till it changes (the letters, a shape each, would halve the frame rate) */
 		static uint32_t talk_seen, talk_drawn;
-		if (e_talk_active()) {
-			if (e_talk_changes() != talk_seen) {
-				talk_seen = e_talk_changes();
+		if (e_talk_active() || e_inv_active()) {
+			if (e_talk_changes() + e_inv_changes() != talk_seen) {
+				talk_seen = e_talk_changes() + e_inv_changes();
 				talk_drawn = 0;
 			} else if (talk_drawn >= FRAMES) {
 				uint32_t t = jag_ticks;
@@ -1247,6 +1272,9 @@ void jag_main(void)
 		e_draw(drawing);
 		if (e_talk_active()) {
 			e_talk_draw(drawing);
+			eb_finish();
+		} else if (e_inv_active()) {
+			e_inv_draw(drawing);
 			eb_finish();
 		}
 #ifdef ENGINE_FRAME_SUMS
