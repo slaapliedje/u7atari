@@ -501,6 +501,11 @@ static struct Run {
 	int face[2], face_frame[2], speaking;      /* the two places faces are shown in */
 } run;
 
+static int avatar_work = -1;    /* the work SetWorkType gave the avatar (14: sleep), till NapTime */
+static uint8_t faded;           /* FadePalette's: the screen faded out */
+static void request(int function, int item, int event);
+static void script_post(int ref, const struct Val *list, int delay);
+
 static const char *answers[UC_ANSWERS];
 static int nanswers;
 static const char *saved[UC_SAVED][UC_ANSWERS];
@@ -717,10 +722,17 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 
 	*ret = val_empty();
 	if (e_uc_trace) {
-		char text[96];
+		char text[200];
 		int at = snprintf(text, sizeof text, "uc: 0x%02x(", num);
-		for (int a = 1; a <= argc && at < 80; a++)
-			at += snprintf(text + at, sizeof text - (size_t) at, "%s%d", a > 1 ? "," : "", arg_int(args, a));
+		for (int a = 1; a <= argc && at < 150; a++) {
+			const struct Val *v = &args[-a];
+			if (v->len <= 1)
+				at += snprintf(text + at, sizeof text - (size_t) at, "%s%d", a > 1 ? "," : "", arg_int(args, a));
+			else
+				for (int e = 0; e < v->len && at < 150; e++)
+					at += snprintf(text + at, sizeof text - (size_t) at, "%s%s%d%s", a > 1 && e == 0 ? "," : "",
+						e == 0 ? "[" : " ", atom(v, e)->n, e == v->len - 1 ? "]" : "");
+		}
 		snprintf(text + at, sizeof text - (size_t) at, ")\n");
 		eb_log(text);
 	}
@@ -810,10 +822,12 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 		k = npc_of_ref(arg_int(args, 1));
 		*ret = val_int(k >= 0 && doing[k].depth ? doing[k].level[0].kind : 0);
 		return 0;
-	case 0x1d:                  /* SetWorkType: work, npc */
-		k = npc_of_ref(arg_int(args, 2));
-		if (k >= 0)
-			kind_period(k, arg_int(args, 1));
+	case 0x1d:                  /* SetWorkType: npc, work (the avatar's: the bed NapTime gives, 14) */
+		k = npc_of_ref(arg_int(args, 1));
+		if (k >= 0 && k == avatar_index())
+			avatar_work = arg_int(args, 2);
+		else if (k >= 0)
+			kind_period(k, arg_int(args, 2));
 		return 0;
 	case 0x1e:                  /* JoinParty */
 		party_add(npc_of_ref(arg_int(args, 1)));
@@ -1403,7 +1417,6 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 	case 0x4b:
 	case 0x4c:
 	case 0x54:
-	case 0x46:                  /* SitDown: (party members: not yet) */
 	case 0x4f:                  /* DisplayArea, WizardEye, SpriteEffect, SetOrrery, FlashMouse,
 	                             * CloseGumps, SetLight, SetTimePalette, ViewTile: not yet */
 	case 0x50:
@@ -1415,10 +1428,33 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 	case 0x84:
 	case 0x94:
 	case 0x7a:                  /* CallGuards: no crimes yet */
-	case 0x77:                  /* NapTime: (sleeping not yet) */
 		return 0;
-	case 0x01:                  /* Post, PostInFuture: scripts on items (not yet: done) */
-	case 0x02:
+	case 0x46:                  /* SitDown: npc, chair (the avatar's: sat in it; the party's not yet) */
+		k = npc_of_ref(arg_int(args, 1));
+		{
+			struct EThing t;
+			if (k >= 0 && k == avatar_index() && thing_of(arg_int(args, 2), &t))
+				kind_avatar_sit(&t);
+		}
+		return 0;
+	case 0x77: {                /* NapTime: the bed the avatar sleeps in: into it, then the bed's
+	                             * sleep (0x622) run for it, as the original's sleep schedule does */
+		struct EThing t;
+		if (avatar_work == 14 && thing_of(arg_int(args, 1), &t) && kind_avatar_bed(&t))
+			request(0x622, arg_int(args, 1), 1);
+		avatar_work = -1;
+		return 0;
+	}
+	case 0x8c:                  /* FadePalette: ticks, -, in */
+		faded = !arg_int(args, 3);
+		return 0;
+	case 0x78:                  /* AdvanceTime: game ticks (1500 an hour) at once */
+		e_world_advance(arg_int(args, 1) / 25);
+		return 0;
+	case 0x01:                  /* Post: item, script */
+	case 0x02:                  /* PostInFuture: item, script, ticks */
+		script_post(arg_int(args, 1), &args[-2], num == 0x02 ? arg_int(args, 3) : 0);
+		return 0;
 	case 0x2e:                  /* PlayMusic */
 	case 0x5c:                  /* HaltScheduled */
 		*ret = val_int(0);
@@ -1432,6 +1468,154 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 	}
 	*ret = val_int(0);
 	return 0;
+}
+
+/* ---- scripts on items (the original's Post: its action queue's scripts), and the functions
+ * asked to be run (by them, by the schedules) ---- */
+
+#define SCRIPTS 16
+#define SCRIPT_WORDS 24
+static struct Script {
+	int16_t ref;                /* the item (0: none) */
+	int16_t delay;              /* ticks till its next step */
+	uint8_t n, pc;
+	int16_t op[SCRIPT_WORDS];
+} scripts[SCRIPTS];
+#define REQUESTS 8
+static struct { int16_t function, item, event; } requests[REQUESTS];
+static int nrequests;
+
+static void request(int function, int item, int event)
+{
+	if (nrequests < REQUESTS) {
+		requests[nrequests].function = (int16_t) function;
+		requests[nrequests].item = (int16_t) item;
+		requests[nrequests].event = (int16_t) event;
+		nrequests++;
+	}
+}
+
+int e_uc_request(int *function, int *item, int *event)
+{
+	if (nrequests == 0)
+		return 0;
+	*function = requests[0].function;
+	*item = requests[0].item;
+	*event = requests[0].event;
+	memmove(&requests[0], &requests[1], (size_t) (--nrequests) * sizeof requests[0]);
+	return 1;
+}
+
+int e_uc_faded(void)
+{
+	return faded;
+}
+
+static void script_post(int ref, const struct Val *list, int delay)
+{
+	struct Script *sc = NULL;
+
+	for (int k = 0; k < SCRIPTS && sc == NULL; k++)
+		if (scripts[k].ref == ref)
+			sc = &scripts[k];   /* (its last one given up) */
+	for (int k = 0; k < SCRIPTS && sc == NULL; k++)
+		if (scripts[k].ref == 0)
+			sc = &scripts[k];
+	if (sc == NULL || ref == 0)
+		return;
+	sc->ref = (int16_t) ref;
+	sc->delay = (int16_t) (delay > 0 ? delay : 0);
+	sc->pc = 0;
+	sc->n = 0;
+	for (int k = 0; k < list->len && sc->n < SCRIPT_WORDS; k++)
+		if (atom(list, k)->type == A_INT)
+			sc->op[sc->n++] = atom(list, k)->n;
+}
+
+/* A script's item's frame set (an item in the world, a held one). */
+static void script_frame(int ref, int frame, int step, int wrap)
+{
+	struct EThing t;
+	int i = held_of(ref), tf, frames;
+
+	if (i >= 0)
+		tf = e_held_tf(i);
+	else if (thing_of(ref, &t))
+		tf = t.tf;
+	else
+		return;
+	frames = e_shape_frames((uint16_t) (tf & 0x3ff));
+	if (step != 0) {
+		frame = (tf >> 10 & 31) + step;
+		if (frame < 0 || frame >= frames)
+			frame = !wrap ? (frame < 0 ? 0 : frames - 1) : frame < 0 ? frames - 1 : 0;
+	}
+	if (frame < 0 || frame >= frames || frame > 31)
+		return;
+	tf = (tf & ~(31 << 10)) | frame << 10;
+	if (i >= 0)
+		e_held_set_tf(i, (uint16_t) tf);
+	else
+		e_thing_set(&t, (uint16_t) tf);
+}
+
+/* The original's script steps (script.h's numbers): those the usecode posts that the engine
+ * does; the rest passed over. */
+void e_uc_scripts_step(void)
+{
+	for (int k = 0; k < SCRIPTS; k++) {
+		struct Script *sc = &scripts[k];
+		if (sc->ref == 0)
+			continue;
+		if (sc->delay > 0) {
+			sc->delay--;
+			continue;
+		}
+		while (sc->ref != 0 && sc->delay == 0) {
+			if (sc->pc >= sc->n) {
+				sc->ref = 0;
+				break;
+			}
+			int op = sc->op[sc->pc++], arg = sc->pc < sc->n ? sc->op[sc->pc] : 0;
+			switch (op) {
+			case 39:            /* wait: ticks */
+				sc->delay = (int16_t) (arg > 0 ? arg : 1);
+				sc->pc++;
+				break;
+			case 85:            /* usecode: the function run for the item (event 2) */
+				request(arg, sc->ref, 2);
+				sc->pc++;
+				sc->delay = 1;
+				break;
+			case 70:            /* frame */
+				script_frame(sc->ref, arg, 0, 0);
+				sc->pc++;
+				break;
+			case 77: case 78:   /* next frame (at the last: stays; wraps) */
+				script_frame(sc->ref, 0, 1, op == 78);
+				break;
+			case 79: case 80:   /* previous frame */
+				script_frame(sc->ref, 0, -1, op == 80);
+				break;
+			case 88: {          /* sound: its number */
+				int x, y, z;
+				if (place_of_ref(sc->ref, &x, &y, &z))
+					e_sound(arg, (int16_t) x, (int16_t) y);
+				sc->pc++;
+				break;
+			}
+			case 45:            /* removed */
+			case 44:            /* finished */
+				sc->ref = 0;
+				break;
+			case 81: case 83: case 84: case 86: case 89: case 90:  /* (with an argument) */
+				sc->pc++;
+				break;
+			default:            /* continue, no halt, the poses: passed over */
+				break;
+			}
+		}
+	}
 }
 
 /* ---- the interpreter ---- */

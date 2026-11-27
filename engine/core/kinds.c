@@ -1743,6 +1743,90 @@ static void wake_up(int i)
 	show(i);
 }
 
+/* ---- the avatar put in a chair or a bed by the usecode ---- */
+
+static uint8_t avatar_moved, avatar_posed;
+static int avatar_kind = -1;    /* its work before (what GetWorkType says meanwhile: sitting, asleep) */
+
+static void avatar_work(int kind)
+{
+	struct Doing *d = &doing[avatar];
+
+	if (avatar_kind < 0)
+		avatar_kind = d->depth ? d->level[0].kind : K_STAND;
+	set_kind(avatar, kind);
+}
+
+int kind_avatar_sit(const struct EThing *chair)
+{
+	int i = avatar, x, y, z, way;
+
+	if (i < 0 || !use_spot(i, chair, &x, &y, &z, &way, 0))
+		return 0;
+	npc[i].x = (int16_t) x;
+	npc[i].y = (int16_t) y;
+	npc[i].z = (uint8_t) z;
+	face(i, way);
+	doing[i].pose = F_SIT;
+	show(i);
+	avatar_work(K_MAJOR_SIT);
+	avatar_moved = avatar_posed = 1;
+	return 1;
+}
+
+int kind_avatar_bed(const struct EThing *bed)
+{
+	int i = avatar, x, y, z, way;
+
+	if (i < 0 || !use_spot(i, bed, &x, &y, &z, &way, 0))
+		return 0;
+	int16_t ox = npc[i].x, oy = npc[i].y;
+	uint8_t oz = npc[i].z;
+	npc[i].x = (int16_t) x;
+	npc[i].y = (int16_t) y;
+	npc[i].z = (uint8_t) z;
+	doing[i].use = *bed;
+	if (!into_bed(i)) {
+		npc[i].x = ox;
+		npc[i].y = oy;
+		npc[i].z = oz;
+		return 0;
+	}
+	avatar_work(K_SLEEP);
+	avatar_moved = avatar_posed = 1;
+	return 1;
+}
+
+void kind_avatar_stand(void)
+{
+	int i = avatar;
+
+	if (i < 0 || !avatar_posed)
+		return;
+	if (doing[i].pose == F_LIE)
+		wake_up(i);
+	doing[i].pose = F_STAND;
+	show(i);
+	if (avatar_kind >= 0)
+		set_kind(i, avatar_kind);
+	avatar_kind = -1;
+	avatar_posed = 0;
+	avatar_moved = 1;
+}
+
+int kind_avatar_posed(void)
+{
+	return avatar_posed;
+}
+
+int kind_avatar_moved(void)
+{
+	int m = avatar_moved;
+
+	avatar_moved = 0;
+	return m;
+}
+
 static int sleep_kind(int i)
 {
 	struct Doing *d = &doing[i];

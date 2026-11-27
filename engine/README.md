@@ -241,11 +241,21 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   frontmost (`e_pick`: each static's and mover's picture tested pixel by pixel, ordered as they
   are drawn), goes to the usecode as `[item, x, y, z]` (an NPC by its number, the ground as its
   cell). A key locks and unlocks doors this way; A on a locked door runs the door's usecode.
-  Not yet: sitting, sleeping in a bed, the map, combat. On the PC
+  Chairs and beds as the original: a chair's usecode sits the avatar in it (`SitDown`: the sit
+  schedule's use spot and pose), a bed's puts it to bed (`SetWorkType` 14 then `NapTime`: the
+  sleep schedule's use spot, into the bed along it, its cover over it) and runs the bed's sleep
+  (0x622) for it: the screen fades out (`FadePalette`), the clock goes on the hours it chooses at
+  once (`AdvanceTime`, 1500 ticks an hour), and the script it posts on the bed wakes the avatar
+  33 ticks later (0x636 fades in, 0x623 "Arise..."). The walk there is not walked (the item is at
+  hand); the pad stands it up again (out of bed, the cover back). The items' scripts (`Post`,
+  `PostInFuture`) run a tick each walk step: waits, frames, sounds, the usecode functions they
+  call (event 2); the functions asked for run through the conversation screen when it is free.
+  Not yet: the map, combat. On the PC
   `--use-near` uses every usable item about the avatar (`--put type` puts one beside it first),
   `--use-ahead dx,dy` the one ahead (`--aim dx,dy`: pointed at that many pixels from the
   avatar's feet when asked; `--find a,b,..` lists items of those shapes about it; `--uc-trace`
-  logs each intrinsic and call), `--use-all` runs each shape's function on an item made for
+  logs each intrinsic and call), `--ticks n` runs the scripts
+  n ticks after, `--uc-function n` runs function n on the item ahead instead, `--use-all` runs each shape's function on an item made for
   it; `-DENGINE_USE_TEST=type` on the Jaguar uses the nearest of a type at the start.
 - **Containers** (`core/inv.c`). A on a chest, barrel, crate, bag, desk or body opens it as the
   original does (no usecode: its `Item_canBeOpened` types), and Option the avatar's backpack

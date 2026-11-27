@@ -942,6 +942,17 @@ static void walk_update(void)
 {
 	uint16_t type = npcs[me].tf & 0x3ff;
 	int moved = 0, walking = 0;
+	static int posed;           /* the usecode has the avatar sitting or in bed */
+
+	/* the avatar as the usecode has put it (sat down, into bed, stood up) */
+	{
+		uint16_t tf;
+		if (e_world_avatar_pose(&ax, &ay, &az, &tf)) {
+			int f = tf >> 10 & 15;
+			posed = f == 10 || f == 13;
+			e_mover_set(0, tf, ax, ay, az);
+		}
+	}
 
 	/* presses, every frame (a short one may fall between the walk's ticks) */
 	{
@@ -961,7 +972,7 @@ static void walk_update(void)
 		e_uc_trace = 1;
 		if (++use_in == 40) {
 			static struct EThing found[16];
-			int n = e_things(ENGINE_USE_TEST, (int16_t) (ax - 20), (int16_t) (ay - 20), (int16_t) (ax + 20),
+			int n = e_things(ENGINE_USE_TEST, (int16_t) (ax - 20), (int16_t) (ay - 40), (int16_t) (ax + 20),
 				(int16_t) (ay + 48), found, 16), best = -1, bd = 0;
 			for (int k = 0; k < n; k++) {
 				int d = (found[k].x > ax ? found[k].x - ax : ax - found[k].x)
@@ -979,7 +990,9 @@ static void walk_update(void)
 #endif
 		int16_t aim_x, aim_y;
 		static int aiming;      /* frames the cross-hairs have been out, the pad held */
-		if (e_talk_targeting(&aim_x, &aim_y)) {
+		if (e_uc_faded() && !e_talk_active()) {
+			/* asleep: the pad does nothing */
+		} else if (e_talk_targeting(&aim_x, &aim_y)) {
 			/* something to point at: the cross-hairs, first a cell ahead of the avatar, moved
 			 * by the pad (faster as it is held); A points, B lets go */
 			static const int8_t face_x[4] = { 0, 1, 0, -1 }, face_y[4] = { -1, 0, 1, 0 };
@@ -1088,6 +1101,18 @@ static void walk_update(void)
 			a_held = (held & PAD_A) != 0;
 			continue;
 		}
+		/* the items' scripts a tick on; a function they (or the schedules) ask for run; faded
+		 * out (asleep), nothing else */
+		e_uc_scripts_step();
+		{
+			int f, it, ev;
+			if (e_uc_request(&f, &it, &ev)) {
+				e_talk_start_ref(f, it, ev);
+				continue;
+			}
+		}
+		if (e_uc_faded())
+			continue;
 		a_held = (held & PAD_A) != 0;
 		if (touched) {
 			dx = (held & (1UL << 23) ? 1 : 0) - (held & (1UL << 22) ? 1 : 0);
@@ -1102,6 +1127,12 @@ static void walk_update(void)
 		}
 		if (dx == 0 && dy == 0)
 			continue;
+		if (posed) {
+			/* up out of the chair or the bed first */
+			e_world_avatar_stand();
+			posed = 0;
+			continue;
+		}
 		walking = 1;
 		walk_dir = (uint8_t) (dy < 0 ? 0 : dx > 0 ? 1 : dy > 0 ? 2 : 3);
 		e_mover_self(0);            /* the avatar out of its own way */
@@ -1115,7 +1146,11 @@ static void walk_update(void)
 	if (walking || moved)
 		e_mover_set(0, e_walk_frame(type, walk_dir, walk_steps), ax, ay, az);
 	if (!e_talk_active() && !e_inv_active())
+	{
+		if (!posed)
+			e_world_avatar_place(ax, ay, az, walk_dir);
 		e_world_step(world_clock(), ax, ay);
+	}
 #ifdef ENGINE_BARK_TEST
 	/* a line over mover 1 every two seconds, to see barks drawn */
 	{
@@ -1269,7 +1304,10 @@ void jag_main(void)
 		}
 		struct ESurface *drawing = &surfaces[(frame + 1) % FRAMES];
 		e_set_view(x, y);
-		e_draw(drawing);
+		if (e_uc_faded())
+			eb_clear(drawing, 0, 0, W, H);  /* (faded out: asleep) */
+		else
+			e_draw(drawing);
 		if (e_talk_active()) {
 			e_talk_draw(drawing);
 			eb_finish();

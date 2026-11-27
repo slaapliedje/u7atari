@@ -296,6 +296,12 @@ int e_uc_resume(const char *answer);
 int e_uc_number(int *low, int *high, int *step, int *initial);
 int e_uc_resume_number(int value);
 int e_uc_strength(int number);          /* NPC number's strength (0: none) */
+/* The items' scripts (Post) a tick on (the original's: about 8 a second); a function they or the
+ * schedules asked to be run, taken: 1 and it (run it through e_talk_start_ref); whether the
+ * usecode has faded the screen out (FadePalette). */
+void e_uc_scripts_step(void);
+int e_uc_request(int *function, int *item, int *event);
+int e_uc_faded(void);
 /* What was pointed at (picked 0: nothing, let go): its usecode number (an item's, -an NPC's; 0
  * the ground) and cell. */
 int e_uc_resume_target(int picked, int ref, int x, int y, int z);
@@ -378,6 +384,8 @@ int e_text_font(int n);
 struct EThing;
 int e_talk_use(const struct EThing *t);
 int e_talk_use_held(int i);             /* (a held item: the same) */
+int e_talk_run(int function, const struct EThing *t, int event);   /* a function for it */
+int e_talk_start_ref(int function, int ref, int event);    /* for a usecode number */
 int e_usable(uint16_t tf);
 
 /* ---- containers shown (core/inv.c), as the original's gumps: the top one's items stepped
@@ -423,6 +431,14 @@ extern int e_uc_trace;           /* nonzero: each intrinsic called logged */
 /* The NPC (its number) ahead of one at x, y facing dx, dy (1 or 2 cells), else the nearest
  * within 2 cells; -1 for none. */
 int e_world_npc_near(int16_t x, int16_t y, int dx, int dy);
+/* The game clock moved on m minutes at once (sleeping). */
+void e_world_advance(int m);
+/* The avatar where the backend has it (way 0-3: north, east, south, west); and, when the
+ * usecode has moved it (sat it down, put it to bed, stood it up), its place and look: 1 (once);
+ * stood up (the pad moves it on). */
+void e_world_avatar_place(int16_t x, int16_t y, uint8_t z, int dir);
+int e_world_avatar_pose(int16_t *x, int16_t *y, uint8_t *z, uint16_t *tf);
+void e_world_avatar_stand(void);
 /* The number of the NPC in mover slot s (0: the avatar), or -1. */
 int e_world_mover_npc(int s);
 /* The time of day, in minutes from midnight. */

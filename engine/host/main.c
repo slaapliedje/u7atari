@@ -343,6 +343,8 @@ static int appear_frame;        /* --appear f: the avatar far off till frame f *
 static int use_dx, use_dy, use_ahead;     /* --use-ahead dx,dy: the item ahead used (as A does) */
 static int aim_dx, aim_dy, aim_given;  /* --aim dx,dy: pointed at, pixels from the avatar's feet */
 static int put_type = -1;
+static int uc_function = -1;
+static int after_ticks;         /* --ticks n: the scripts run n ticks after (the functions they ask for) */    /* --uc-function n: run on the item ahead instead of its own */
 static const char *inv_keys;    /* --inv k..: keys pressed in the container opened (l r u d a b c) */
 static int inv_avatar;          /* --inv-avatar: the avatar's backpack opened */
 static int find_types[4];       /* --find a,b,..: those shapes about the avatar listed */        /* --put type: an item of it put beside the avatar (to use) */
@@ -454,7 +456,9 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 				return;
 			} else {
 				printf("== ahead: shape %d frame %d at %d,%d,%d\n", t.tf & 0x3ff, t.tf >> 10 & 31, t.x, t.y, t.z);
-				if (!e_inv_open_thing(&t))
+				if (uc_function >= 0)
+					e_talk_run(uc_function, &t, 1);
+				else if (!e_inv_open_thing(&t))
 					e_talk_use(&t);
 			}
 			for (const char *k = inv_keys; e_inv_active(); k = k && *k ? k + 1 : k) {
@@ -517,6 +521,41 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 				e_talk_key(E_KEY_NEXT);
 			}
 			printf("  (over)\n");
+			for (int tick = 0; tick <= after_ticks; tick++) {
+				/* then the scripts, the functions asked for (their questions: the first answer) */
+				int16_t px, py;
+				uint8_t pz;
+				uint16_t ptf;
+				int f, it, ev;
+				if (e_world_avatar_pose(&px, &py, &pz, &ptf)) {
+					printf("  tick %d: avatar at %d,%d,%d shape %d frame %d\n", tick, px, py, pz, ptf & 0x3ff,
+						ptf >> 10 & 31);
+					if (out_pictures) {
+						char name[256];
+						e_mover_set(0, ptf, px, py, pz);
+						e_set_view((int16_t) (px - E_VIEW_CELLS_X / 2), (int16_t) (py - E_VIEW_CELLS_Y / 2));
+						e_draw(&frame);
+						eb_finish();
+						snprintf(name, sizeof name, "%s.pose%03d.ppm", out, tick);
+						save(name);
+					}
+				}
+				static int was_faded;
+				if (e_uc_faded() != was_faded)
+					printf("  tick %d: %s, %02d:%02d\n", tick, (was_faded = e_uc_faded()) ? "faded out" : "faded in",
+						e_world_minutes() / 60 % 24, e_world_minutes() % 60);
+				if (!e_talk_active() && e_uc_request(&f, &it, &ev)) {
+					printf("  tick %d: function 0x%x for %d (event %d)\n", tick, f, it, ev);
+					e_talk_start_ref(f, it, ev);
+				}
+				for (int turns = 0; e_talk_active() && turns < 50; turns++) {
+					for (int pl = 0; pl < 2; pl++)
+						for (int l = 0; e_talk_line(pl, l); l++)
+							printf("  %d| %s\n", pl, e_talk_line(pl, l));
+					e_talk_key(E_KEY_NEXT);
+				}
+				e_uc_scripts_step();
+			}
 			return;
 		}
 		for (int type = 0; type < 1024; type++) {
@@ -792,7 +831,11 @@ int main(int argc, char **argv)
 			inv_keys = argv[++i];
 		else if (!strcmp(argv[i], "--inv-avatar")) {
 			inv_avatar = use_near = use_ahead = 1;
-		} else if (!strcmp(argv[i], "--put") && i + 1 < argc)
+		} else if (!strcmp(argv[i], "--ticks") && i + 1 < argc)
+			after_ticks = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--uc-function") && i + 1 < argc)
+			uc_function = (int) strtol(argv[++i], NULL, 0);
+		else if (!strcmp(argv[i], "--put") && i + 1 < argc)
 			put_type = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--uc-trace"))
 			e_uc_trace = 1;

@@ -365,15 +365,28 @@ int e_usable(uint16_t tf)
 
 int e_talk_use(const struct EThing *t)
 {
-	int type = t->tf & 0x3ff, function = type, ref = e_thing_ref(t);
+	int type = t->tf & 0x3ff;
 
-	if (type == BOOK && e_thing_quality(t) >= 100)
-		function = BOOK_FUNCTION;
+	return e_talk_run(type == BOOK && e_thing_quality(t) >= 100 ? BOOK_FUNCTION : type, t, 1);
+}
+
+int e_talk_run(int function, const struct EThing *t, int event)
+{
+	int ref = e_thing_ref(t);
+
 	if (ref == 0)
 		return 0;
 	close_reading();
 	nlines[0] = nlines[1] = 0;
-	took(e_uc_start(function, ref, 1));
+	took(e_uc_start(function, ref, event));
+	return status != E_UC_DONE;
+}
+
+int e_talk_start_ref(int function, int ref, int event)
+{
+	close_reading();
+	nlines[0] = nlines[1] = 0;
+	took(e_uc_start(function, ref, event));
 	return status != E_UC_DONE;
 }
 

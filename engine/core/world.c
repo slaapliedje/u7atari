@@ -644,3 +644,39 @@ int e_world_mover_npc(int s)
 {
 	return s == 0 ? 0 : s > 0 && s < E_MOVERS && slot_npc[s] >= 0 ? npc[slot_npc[s]].number : -1;
 }
+
+void e_world_advance(int m)
+{
+	start_minutes += m;
+	minutes += m;
+}
+
+void e_world_avatar_place(int16_t x, int16_t y, uint8_t z, int dir)
+{
+	int i = avatar_index();
+
+	if (i >= 0 && !kind_avatar_posed()) {
+		npc[i].x = x;
+		npc[i].y = y;
+		npc[i].z = z;
+		doing[i].dir = (uint8_t) dir;
+	}
+}
+
+int e_world_avatar_pose(int16_t *x, int16_t *y, uint8_t *z, uint16_t *tf)
+{
+	int i = avatar_index();
+
+	if (i < 0 || !kind_avatar_moved())
+		return 0;
+	*x = npc[i].x;
+	*y = npc[i].y;
+	*z = npc[i].z;
+	*tf = npc[i].tf;
+	return 1;
+}
+
+void e_world_avatar_stand(void)
+{
+	kind_avatar_stand();
+}

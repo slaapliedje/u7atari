@@ -131,6 +131,14 @@ void kind_period(int i, int kind);      /* its next entry has come round */
 void kind_init(int i);          /* as the game was left */
 void kind_things(int blanks);   /* the items' scripts (a bellows, a loom), blanks on */
 int avatar_index(void);         /* the avatar's NPC index, or -1 */
+/* The avatar sat in a chair (SitDown), into a bed (the sleep schedule's NapTime: the walk there
+ * not walked, it being at hand): 1 when it is; stood up again (out of bed, its cover back); and
+ * whether it has been moved so since last asked (its place and look in npc[]). */
+int kind_avatar_sit(const struct EThing *chair);
+int kind_avatar_bed(const struct EThing *bed);
+void kind_avatar_stand(void);
+int kind_avatar_moved(void);
+int kind_avatar_posed(void);    /* sitting or in bed (its place the usecode's, not the pad's) */
 
 /* usecode.c */
 void uc_world_init(void);       /* the party: the avatar alone */
