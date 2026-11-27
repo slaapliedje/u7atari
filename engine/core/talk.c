@@ -34,6 +34,7 @@ static const int16_t box_bottom[2] = { 70, 202 };
 #define MOST_ANSWERS 40
 
 static int status;              /* E_UC_ the usecode stopped with, or E_UC_DONE: none */
+static uint32_t changes;        /* counts what changes the picture */
 static char said[2048];         /* what is being shown (a copy) */
 static int said_place;          /* the face place it is shown by */
 static int page_at, page_next;  /* this page's start in it, the next's (-1: the last) */
@@ -164,6 +165,7 @@ static void lay_out(void)
 /* What the usecode stopped with, taken up. */
 static void took(int r)
 {
+	changes++;
 	status = r;
 	if (r == E_UC_SAY) {
 		snprintf(said, sizeof said, "%s", e_uc_text());
@@ -201,8 +203,14 @@ int e_talk_choose(const char *answer)
 	return 1;
 }
 
+uint32_t e_talk_changes(void)
+{
+	return changes;
+}
+
 void e_talk_key(int key)
 {
+	changes++;
 	if (status == E_UC_SAY) {
 		if (key != E_KEY_NEXT)
 			return;

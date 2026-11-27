@@ -280,6 +280,9 @@ void e_talk_key(int key);
 int e_talk_choose(const char *answer);
 /* Line n of what face place p shows now (for tests), or NULL. */
 const char *e_talk_line(int place, int line);
+/* Counts the changes to what the conversation shows (while it is the same, so is the
+ * picture: the world waits). */
+uint32_t e_talk_changes(void);
 /* The conversation drawn over the view (after e_draw). */
 void e_talk_draw(struct ESurface *frame);
 

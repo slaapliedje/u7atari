@@ -197,7 +197,9 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   break, sentence or comma), a page at a time; the answers are laid out as its answer pane
   (each after a bullet, along the line while it fits). On the Jaguar B speaks to the NPC ahead
   (or the nearest within 2 cells); A pages on and picks, the pad moves the original's pointer
-  (its gauntlet) from answer to answer; the world waits while they talk. On the PC `--talk n`
+  (its gauntlet) from answer to answer; the world waits while they talk, so once each of the
+  three frames holds the conversation nothing is drawn till a key changes it (drawn every
+  frame, its letters, a shape each, took the frame rate from 42 to 20). On the PC `--talk n`
   with `--out` saves a picture at each stop. `-DENGINE_TALK_TEST` opens Iolo's at the start.
   Not yet: using items, the conversations' item intrinsics.
 

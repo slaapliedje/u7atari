@@ -1126,6 +1126,21 @@ void jag_main(void)
 				GD_DebugString("profile saved\n");
 			}
 		}
+		/* talking, the world waits: once each frame holds what it shows, nothing is drawn
+		 * till it changes (the letters, a shape each, would halve the frame rate) */
+		static uint32_t talk_seen, talk_drawn;
+		if (e_talk_active()) {
+			if (e_talk_changes() != talk_seen) {
+				talk_seen = e_talk_changes();
+				talk_drawn = 0;
+			} else if (talk_drawn >= FRAMES) {
+				uint32_t t = jag_ticks;
+				while (jag_ticks == t)
+					;
+				continue;
+			}
+			talk_drawn++;
+		}
 		struct ESurface *drawing = &surfaces[(frame + 1) % FRAMES];
 		e_set_view(x, y);
 		e_draw(drawing);
