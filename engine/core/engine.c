@@ -2993,6 +2993,7 @@ int e_npcs(struct ENpc *out, int max)
 						in[depth] = k >= 0 ? k : in[depth - 1];
 				}
 			}
+			e_held_equip(i);    /* (worn where READY.DAT has each, as the original) */
 		}
 		if (ref == 0 || (tf & 0x3ff) == 0 || (status & 0x8000) || n >= max)
 			continue;

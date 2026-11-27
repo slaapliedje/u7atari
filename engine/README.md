@@ -275,6 +275,22 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   a place of one's own in a gump. On the PC `--inv keys` presses keys (`l r u d a b c`, `o` for
   Option) in the container ahead, `--inv-avatar` opens the backpack.
 
+- **Equipment and the paperdoll** (held.c, inv.c). Each held item on an NPC itself may be worn
+  in one of the original's twelve slots (0 the back, 1 and 2 the hands, 4 the neck, 5 the body,
+  6 and 7 the fingers, 8 ammunition, 9 the head, 10 the legs, 11 the feet), READY.DAT giving
+  each type its slot (20: both hands, 21: both of 6 and 7). Reading NPC.DAT wears what each
+  carries where its slot is free (the original's EquipCarriedItems); an item given to an NPC is
+  worn first if its slot is free, else goes in its first container. Option on the Jaguar opens
+  the avatar's paperdoll (the original's inventory gump: 57, the companions' 59-68), what is
+  worn drawn at the original's slot places, the load under it ("07/36": stones of twice the
+  strength); Option again, the next party member's, after the last all shut. A on the backpack
+  opens it over the paperdoll; C takes what is picked off (into what is worn on the back), and C
+  in a container over a paperdoll wears the item (refused, the red X, when its slot is taken).
+  Combat now takes the weapon from the weapon hand and the armour from what is worn. Not yet:
+  the female avatar's gump, two-handed marks, swapping an item for the one in its slot, the
+  stats gump and the paperdoll's buttons.
+- **The pad** on the Jaguar is read in the blank interrupt (its VBL hook), its presses gathered
+  till the game takes them: a short press during a slow frame (a gump read in) is not lost.
 - **The party** (kinds.c). `JoinParty` (Iolo's "join", or `e_uc_join`) puts an NPC in the
   party: it leaves its schedule, is always in a mover slot, and follows the avatar as the
   original's `MoveParty` has it: a place in the original's formation for the party's size, hung

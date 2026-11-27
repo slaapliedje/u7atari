@@ -695,6 +695,11 @@ static void party_add(int k)
 	}
 }
 
+int e_uc_party_number(int j)
+{
+	return j >= 0 && j < nparty ? npc[party[j]].number : -1;
+}
+
 int uc_party(int j)
 {
 	return j >= 0 && j < nparty ? party[j] : -1;

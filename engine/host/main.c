@@ -351,6 +351,7 @@ static int party_numbers[8], nparty_numbers;
 static int spawn_type = -1, spawn_n;    /* --spawn type,n: monsters put 6 cells south, fighting */
 static int combat_on;
 static int save_slot, load_slot;
+static int show_equipment;      /* --equipment: what the avatar and NPCs 1-4 wear */
 static int save_at = -1, load_at = -1;  /* --save-at f, --load-at f: slot 9 saved, loaded, mid-walk */        /* --save n: saved at the end; --load n: loaded at the start */           /* --combat: the party in combat mode */   /* --party a,b,..: NPCs joining at the start */
 static int uc_function = -1;
 static int after_ticks;         /* --ticks n: the scripts run n ticks after (the functions they ask for) */    /* --uc-function n: run on the item ahead instead of its own */
@@ -396,6 +397,15 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 	e_mover_set(0, npcs[me].tf, ax, ay, az);
 	e_world_init(npcs, nnpcs, start_minutes, 0);
 	e_world_step(0, ax, ay);
+	for (int n = 0; show_equipment && n <= 4; n++) {
+		printf("NPC %d wears:", n);
+		for (int sl = 0; sl <= 11; sl++) {
+			int k = e_held_in_slot(n, sl);
+			if (k >= 0)
+				printf(" [%d] %d", sl, e_held_tf(k) & 0x3ff);
+		}
+		printf("  (weight %d)\n", e_held_weight(E_HELD_ON(n)));
+	}
 	if (load_slot > 0) {
 		int ok = e_load_game(load_slot, 0);
 		nnpcs = (int) e_save_count("NPCS");
@@ -479,7 +489,7 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 			/* the item ahead, as the Jaguar's A finds it */
 			struct EThing t;
 			if (inv_avatar)
-				e_inv_open_avatar();
+				e_inv_open_paperdoll(0);
 			else if (!e_thing_ahead(ax, ay, az, use_dx, use_dy, e_inv_actionable, &t)) {
 				printf("nothing usable ahead\n");
 				return;
@@ -914,6 +924,8 @@ int main(int argc, char **argv)
 			sscanf(argv[++i], "%d,%d", &spawn_type, &spawn_n);
 		else if (!strcmp(argv[i], "--save") && i + 1 < argc)
 			save_slot = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--equipment"))
+			show_equipment = 1;
 		else if (!strcmp(argv[i], "--save-at") && i + 1 < argc)
 			save_at = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--load-at") && i + 1 < argc)

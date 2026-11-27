@@ -36,10 +36,11 @@ static const int16_t areas[11][4] = {
 
 static struct Open {
 	int in;                     /* e_held_'s in: a held container, or the world's */
+	int16_t npc;                /* a paperdoll: its NPC's number; else -1 */
 	int16_t kind, gump;
 	int16_t x, y;               /* its corner on the view */
 	int n;                      /* its items, laid out */
-	int16_t item[ITEMS], ix[ITEMS], iy[ITEMS];
+	int16_t item[ITEMS], ix[ITEMS], iy[ITEMS];     /* (its hot spot from the gump's corner) */
 	int16_t cx[ITEMS], cy[ITEMS];  /* the middle of each one's picture */
 } open[E_PANELS];
 static int nopen, picked, refused = -1;
@@ -77,8 +78,42 @@ static void kind_of(int type, int16_t *kind, int16_t *gump)
 }
 
 /* Its contents laid out (the original's ItemGrid::place, row by row). */
+/* where each slot sits on the paperdoll (the middle of what is worn there: the original's
+ * PaperdollSlotOffsets) */
+static const int16_t slot_at[12][2] = {
+	{ 116, 24 }, { 116, 55 }, { 36, 55 }, { 116, 37 }, { 36, 24 }, { 36, 37 },
+	{ 116, 70 }, { 36, 70 }, { 36, 10 }, { 116, 10 }, { 116, 85 }, { 77, 97 },
+};
+
+/* A paperdoll's: what is worn in each slot, in the middle of its place (one taking two slots
+ * shown in the first). */
+static void lay_out_worn(struct Open *o)
+{
+	o->n = 0;
+	for (int sl = 0; sl <= 11 && o->n < ITEMS; sl++) {
+		int i = e_held_in_slot(o->npc, sl);
+		int16_t box[4] = { 0, 0, 0, 0 };
+		if (i < 0 || (sl == 2 && e_held_slot(i) == E_SLOT_BOTH_HANDS)
+			|| (sl == 7 && e_held_slot(i) == E_SLOT_BOTH_GLOVES))
+			continue;
+		e_item_box(e_held_tf(i), box);
+		int w = box[0] + box[1] + 1, h = box[2] + box[3] + 1;
+		int x = slot_at[sl][0] + (w >> 1), y = slot_at[sl][1] + (h >> 1);    /* (the original's) */
+		o->item[o->n] = (int16_t) i;
+		o->ix[o->n] = (int16_t) x;
+		o->iy[o->n] = (int16_t) y;
+		o->cx[o->n] = slot_at[sl][0];
+		o->cy[o->n] = slot_at[sl][1];
+		o->n++;
+	}
+}
+
 static void lay_out(struct Open *o)
 {
+	if (o->npc >= 0) {
+		lay_out_worn(o);
+		return;
+	}
 	const int16_t *a = areas[o->kind];
 	int rw = a[2] - a[0], rh = a[3] - a[1];
 	int column = 0, row = 0, row_h = 0, inset = 0;
@@ -118,6 +153,8 @@ static void lay_out(struct Open *o)
 			row_h = y;
 		column = x;
 		o->item[o->n] = (int16_t) i;
+		x += a[0];
+		y += a[1];
 		o->ix[o->n] = (int16_t) x;
 		o->iy[o->n] = (int16_t) y;
 		o->cx[o->n] = (int16_t) (x + (w ? (box[0] - box[1]) / 2 : 0));
@@ -134,6 +171,7 @@ static int push(int in, int type)
 		return 0;
 	struct Open *o = &open[nopen];
 	o->in = in;
+	o->npc = -1;
 	kind_of(type, &o->kind, &o->gump);
 	o->x = (int16_t) (16 + nopen * 24);
 	o->y = (int16_t) (8 + nopen * 16);
@@ -157,15 +195,42 @@ int e_inv_open_held(int i)
 	return e_held_ok(i) && e_inv_opens(e_held_tf(i)) && push(i, e_held_tf(i) & 0x3ff);
 }
 
+int e_inv_open_paperdoll(int number)
+{
+	if (nopen == E_PANELS)
+		return 0;
+	struct Open *o = &open[nopen];
+	o->in = E_HELD_ON(number);
+	o->npc = (int16_t) number;
+	o->kind = 2;
+	/* the original's: the avatar's (male; the female's 58 not told apart yet), the companions'
+	 * own (1-10), anyone else's the avatar's */
+	o->gump = (int16_t) (number >= 1 && number <= 10 ? 58 + number : 57);
+	o->x = (int16_t) (16 + nopen * 24);
+	o->y = (int16_t) (8 + nopen * 16);
+	nopen++;
+	picked = 0;
+	refused = -1;
+	changes++;
+	return 1;
+}
+
 void e_inv_avatar_key(void)
 {
-	/* its backpack opened over what is open; open already, all shut */
-	for (int k = 0; k < nopen; k++)
-		if (open[k].in >= 0 && e_held_in(open[k].in) == E_HELD_ON(0) && (e_held_tf(open[k].in) & 0x3ff) == 801) {
+	/* the avatar's paperdoll; on one already, the next party member's; after the last, all shut */
+	if (nopen > 0 && open[nopen - 1].npc >= 0) {
+		int j = 0;
+		while (e_uc_party_number(j) >= 0 && e_uc_party_number(j) != open[nopen - 1].npc)
+			j++;
+		int next = e_uc_party_number(j) >= 0 ? e_uc_party_number(j + 1) : -1;
+		nopen--;
+		if (next < 0)
 			e_inv_close();
-			return;
-		}
-	e_inv_open_avatar();
+		else
+			e_inv_open_paperdoll(next);
+		return;
+	}
+	e_inv_open_paperdoll(0);
 }
 
 int e_inv_open_avatar(void)
@@ -230,7 +295,7 @@ static void check(void)
 {
 	for (int k = 0; k < nopen; k++) {
 		int in = open[k].in;
-		if (in >= 0 && (!e_held_ok(in) || e_held_root(in) == E_HELD_LOOSE)) {
+		if (open[k].npc < 0 && in >= 0 && (!e_held_ok(in) || e_held_root(in) == E_HELD_LOOSE)) {
 			nopen = k;
 			break;
 		}
@@ -247,12 +312,32 @@ static int root_of(const struct Open *o)
 	return o->in >= 0 ? e_held_root(o->in) : o->in;
 }
 
-/* Item i moved across (C): 0, or the pointer frame saying why not. */
+/* The nearest paperdoll under the top gump: its index, or -1. */
+static int doll_under(void)
+{
+	for (int k = nopen - 2; k >= 0; k--)
+		if (open[k].npc >= 0)
+			return k;
+	return -1;
+}
+
+/* Item i moved across (C): 0, or the pointer frame saying why not. On a paperdoll: taken off,
+ * into what is worn on the back. From a container with a paperdoll under it: worn (from the
+ * world's, first carried). From the world's container: to the avatar (its first container with
+ * room). From a carried one: into the world's container under it. */
 static int move_across(int i)
 {
-	int r;
+	struct Open *top = &open[nopen - 1];
+	int r, d = doll_under();
 
-	if (E_HELD_IS_WORLD(root_of(&open[nopen - 1])))
+	if (top->npc >= 0) {
+		int bag = e_held_in_slot(top->npc, 0);
+		if (bag < 0 || bag == i || !e_inv_opens(e_held_tf(bag)))
+			return POINTER_NO;
+		r = e_held_place(i, bag, 0);
+	} else if (d >= 0) {
+		r = e_held_wear(i, open[d].npc, e_uc_strength(open[d].npc));
+	} else if (E_HELD_IS_WORLD(root_of(top)))
 		r = e_held_place(i, E_HELD_ON(0), e_uc_strength(0));   /* to the avatar */
 	else {
 		/* into the world's container under it */
@@ -263,12 +348,13 @@ static int move_across(int i)
 			return POINTER_NO;
 		r = e_held_place(i, open[k].in, 0);
 	}
-	if (r == 0 && e_shape_class(e_held_tf(i) & 0x3ff) == 3) {
+	if (r == 0 && e_shape_class(e_held_tf(i) & 0x3ff) == 3 && e_held_slot(i) == E_SLOT_NONE) {
 		/* a counted one joins a pile of its kind there (as the original's stacking) */
 		int in = e_held_in(i), type = e_held_tf(i) & 0x3ff;
 		int frame = e_held_frame_counts(type) >= 0 ? -1 : e_held_tf(i) >> 10 & 31;
 		for (int k = e_held_find(in, type, -1, frame, -1); k >= 0; k = e_held_find(in, type, -1, frame, k))
-			if (k != i && e_held_in(k) == in && e_held_quantity(k) + e_held_quantity(i) <= STACK_MOST) {
+			if (k != i && e_held_in(k) == in && e_held_slot(k) == E_SLOT_NONE
+				&& e_held_quantity(k) + e_held_quantity(i) <= STACK_MOST) {
 				e_held_set_quantity(k, e_held_quantity(k) + e_held_quantity(i));
 				e_held_remove(i);
 				break;
@@ -394,17 +480,23 @@ void e_inv_draw(struct ESurface *frame)
 				o->y = (int16_t) (E_VIEW_H - h);
 		}
 		e_draw_panel(frame, k, o->x, o->y);
+		if (o->npc >= 0) {
+			/* its load: stones carried of twice its strength (the original's, font 2) */
+			char load[24];
+			int w = e_held_weight(E_HELD_ON(o->npc));
+			snprintf(load, sizeof load, "%02d/%02d", (w + 9) / 10, e_uc_strength(o->npc) * 2);
+			e_draw_small(frame, (int16_t) (o->x + 77 - 12), (int16_t) (o->y + 126), load);
+		}
 		for (int j = 0; j < o->n; j++)
-			e_draw_item(frame, e_held_tf(o->item[j]), (int16_t) (o->x + areas[o->kind][0] + o->ix[j]),
-				(int16_t) (o->y + areas[o->kind][1] + o->iy[j]));
+			e_draw_item(frame, e_held_tf(o->item[j]), (int16_t) (o->x + o->ix[j]), (int16_t) (o->y + o->iy[j]));
 	}
 	struct Open *top = &open[nopen - 1];
 	if (top->n > 0) {
 		/* the gauntlet on the item picked, its name under the gump */
 		int16_t box[4], w, h;
 		int i = top->item[picked];
-		int x = top->x + areas[top->kind][0] + top->ix[picked];
-		int y = top->y + areas[top->kind][1] + top->iy[picked];
+		int x = top->x + top->ix[picked];
+		int y = top->y + top->iy[picked];
 		if (e_item_box(e_held_tf(i), box)) {
 			/* (its finger at the picture's lower right, not over a small one) */
 			x += box[0];

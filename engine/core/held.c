@@ -29,11 +29,15 @@
 static struct Held {
 	uint16_t tf;
 	uint8_t quality;
+	uint8_t slot;               /* on an NPC itself: the slot it is worn in (E_SLOT_), or none */
 	int16_t in;                 /* a held item's index, E_HELD_ON(n), E_HELD_LOOSE or free */
 } held[E_HELD_MOST];
 static int nheld;               /* the table's use: none above it */
 static uint8_t wgtvol[2048];    /* each type's weight and bulk */
 static uint8_t wgtvol_ok;
+
+static int wear(int i, int n, int s);
+static int free_slot(int n, int s);
 
 static int cls(int i)
 {
@@ -60,6 +64,7 @@ int e_held_add(uint16_t tf, uint8_t quality, int in)
 		if (held[i].in == HELD_FREE) {
 			held[i].tf = tf;
 			held[i].quality = quality;
+			held[i].slot = E_SLOT_NONE;
 			held[i].in = (int16_t) in;
 			if (i >= nheld)
 				nheld = i + 1;
@@ -243,6 +248,92 @@ static int holds_bulk(int type, int in, int i)
 	return room == 0 || wgtvol[(held[i].tf & 0x3ff) * 2 + 1] + bulk_in(in) < room;
 }
 
+/* Whether slot s of NPC number n is taken (a two-handed item takes 1 and 2; gloves 6 and 7). */
+static int slot_taken(int n, int s)
+{
+	return e_held_in_slot(n, s) >= 0;
+}
+
+int e_held_in_slot(int n, int s)
+{
+	int in = E_HELD_ON(n);
+
+	for (int i = 0; i < nheld; i++)
+		if (held[i].in == in && held[i].slot != E_SLOT_NONE) {
+			int t = held[i].slot;
+			if (t == s || (t == E_SLOT_BOTH_HANDS && (s == 1 || s == 2))
+				|| (t == E_SLOT_BOTH_GLOVES && (s == 6 || s == 7)))
+				return i;
+		}
+	return -1;
+}
+
+/* The slot of NPC number n an item of READY.DAT's slot s would be worn in (20 both hands, 21
+ * both gloves' places; one-handed in either hand, a ring on either finger), or -1: taken. */
+static int free_slot(int n, int s)
+{
+	if (s == E_SLOT_BOTH_HANDS)
+		return slot_taken(n, 1) || slot_taken(n, 2) ? -1 : s;
+	if (s == E_SLOT_BOTH_GLOVES)
+		return slot_taken(n, 6) || slot_taken(n, 7) ? -1 : s;
+	if (s == 1 || s == 2)
+		return !slot_taken(n, 1) ? 1 : !slot_taken(n, 2) ? 2 : -1;
+	if (s == 6 || s == 7)
+		return !slot_taken(n, 6) ? 6 : !slot_taken(n, 7) ? 7 : -1;
+	return s < 0 || s > 11 || slot_taken(n, s) ? -1 : s;
+}
+
+/* i (on NPC number n) worn as READY.DAT's slot s has it, if free: 1. */
+static int wear(int i, int n, int s)
+{
+	int f = free_slot(n, s);
+
+	if (f < 0)
+		return 0;
+	held[i].slot = (uint8_t) f;
+	return 1;
+}
+
+int e_held_slot(int i)
+{
+	return e_held_ok(i) ? held[i].slot : E_SLOT_NONE;
+}
+
+void e_held_equip(int n)
+{
+	int in = E_HELD_ON(n);
+
+	for (int i = 0; i < nheld; i++)
+		if (held[i].in == in && held[i].slot == E_SLOT_NONE)
+			wear(i, n, e_ready_slot(held[i].tf & 0x3ff));
+}
+
+int e_held_wear(int i, int n, int strength)
+{
+	if (!e_held_ok(i))
+		return 2;
+	int s = e_ready_slot(held[i].tf & 0x3ff);
+	int was_in = held[i].in, was_slot = held[i].slot;
+	if (e_held_owner(i) != n) {
+		int adding = weight_of(i) + weight_in(i);
+		if (adding + weight_in(E_HELD_ON(n)) > strength * 2 * 10)
+			return 1;
+	}
+	held[i].in = (int16_t) E_HELD_ON(n);
+	held[i].slot = E_SLOT_NONE;
+	if (!wear(i, n, s)) {
+		held[i].in = (int16_t) was_in;
+		held[i].slot = (uint8_t) was_slot;
+		return 3;
+	}
+	return 0;
+}
+
+int e_held_weight(int in)
+{
+	return weight_in(in);
+}
+
 int e_held_place(int i, int in, int strength)
 {
 	if (!e_held_ok(i) || i == in)
@@ -281,7 +372,10 @@ int e_held_place(int i, int in, int strength)
 					&& type != SEALED_BOX && holds_bulk(type, k, i))
 					bag = k;
 			}
-		if (bag < 0 && on >= HELD_ON)
+		/* its slot free: worn (as the original fills the hands and slots first) */
+		if (free_slot(E_HELD_ON(0) - in, e_ready_slot(held[i].tf & 0x3ff)) >= 0 && on < HELD_ON)
+			bag = -1;
+		else if (bag < 0 && on >= HELD_ON)
 			return 3;
 		if (bag >= 0)
 			in = bag;
@@ -292,6 +386,9 @@ int e_held_place(int i, int in, int strength)
 			return 1;
 	}
 	held[i].in = (int16_t) in;
+	held[i].slot = E_SLOT_NONE;
+	if (E_HELD_IS_NPC(in))
+		wear(i, E_HELD_ON(0) - in, e_ready_slot(held[i].tf & 0x3ff));  /* (on it: worn, if its slot is free) */
 	return 0;
 }
 

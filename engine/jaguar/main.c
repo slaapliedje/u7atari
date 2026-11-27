@@ -780,7 +780,7 @@ static void set_palette(const uint8_t *rgb)
 #define PAD_C (1UL << 26)
 #define PAD_OPTION (1UL << 27)
 #define PAD_PAUSE (1UL << 28)
-static uint32_t pad(void)
+static uint32_t pad_read(void)
 {
 	JOY_WRITE = 0x81FE;
 	uint32_t v = JOY_READ;
@@ -799,7 +799,7 @@ static uint32_t pad(void)
  * for digit d, KEY_STAR, KEY_HASH. */
 #define KEY_STAR (1u << 10)
 #define KEY_HASH (1u << 11)
-static uint32_t keypad(void)
+static uint32_t keypad_read(void)
 {
 	static const uint16_t rows[3] = { 0x81FD, 0x81FB, 0x81F7 };
 	static const uint16_t keys[3][4] = {
@@ -817,6 +817,34 @@ static uint32_t keypad(void)
 				got |= keys[r][b];
 	}
 	JOY_WRITE = 0x81FE;
+	return got;
+}
+
+/* The pad read each blank (the VBL hook), its presses gathered: a press shorter than a slow
+ * frame is not lost, and the rows are only ever selected here (no read cut in two). */
+extern void (*jag_vbl_hook)(void);
+static volatile uint32_t vbl_held, vbl_pressed, vbl_keys, vbl_typed;
+
+static void pad_vbl(void)
+{
+	uint32_t h = pad_read(), k = keypad_read();
+
+	vbl_pressed |= h & ~vbl_held;
+	vbl_held = h;
+	vbl_typed |= k & ~vbl_keys;
+	vbl_keys = k;
+}
+
+static uint32_t pad(void)
+{
+	return vbl_held;
+}
+
+/* The presses gathered since last taken (cleared in one instruction: a blank may come between). */
+static uint32_t pad_take(volatile uint32_t *gathered)
+{
+	uint32_t got = *gathered;
+	__asm__ volatile ("and.l %1,%0" : "+m" (*gathered) : "d" (~got));
 	return got;
 }
 
@@ -1003,9 +1031,7 @@ static void walk_update(void)
 
 	/* presses, every frame (a short one may fall between the walk's ticks) */
 	{
-		static uint32_t was_held;
-		uint32_t held = pad(), pressed = held & ~was_held;
-		was_held = held;
+		uint32_t held = pad(), pressed = pad_take(&vbl_pressed);
 #ifdef ENGINE_TALK_TEST
 		/* NPC ENGINE_TALK_TEST's conversation (-DENGINE_TALK_TEST alone: Iolo's), two seconds in */
 		static int frames_in;
@@ -1120,9 +1146,7 @@ static void walk_update(void)
 			if (pressed & (1UL << 23))
 				e_talk_key(E_KEY_RIGHT);
 			/* the keypad: digits type a number asked for, * clears it, # takes it (as A) */
-			static uint32_t keys_was;
-			uint32_t keys = keypad(), typed = keys & ~keys_was;
-			keys_was = keys;
+			uint32_t typed = pad_take(&vbl_typed);
 			for (int d = 0; d < 10; d++)
 				if (typed & 1u << d)
 					e_talk_key(E_KEY_DIGIT + d);
@@ -1160,9 +1184,9 @@ static void walk_update(void)
 			touched = 1;
 			e_combat_mode(!e_combat_mode(-1));
 		} else if (pressed & PAD_OPTION) {
-			/* Option: the avatar's backpack opened */
+			/* Option: the avatar's paperdoll (again: the next party member's) */
 			touched = 1;
-			e_inv_open_avatar();
+			e_inv_avatar_key();
 		} else if (pressed & PAD_B) {
 			/* B: the NPC ahead (or the nearest within 2 cells) spoken to */
 			static const int8_t face_x[4] = { 0, 1, 0, -1 }, face_y[4] = { -1, 0, 1, 0 };
@@ -1298,6 +1322,7 @@ void jag_main(void)
 #ifdef ENGINE_FAULTS
 	faults_catch();
 #endif
+	jag_vbl_hook = pad_vbl;     /* (the pad read each blank from now on) */
 	if ((r = e_init("U7/", store, sizeof store)) != 0) {
 		snprintf(text, sizeof text, "e_init failed: %d\n", r);
 		GD_DebugString(text);

@@ -1955,7 +1955,7 @@ void kind_join(int i, int on)
  * those it carries itself, not in a bag (no slots kept yet); no missiles, spells, fleeing,
  * blood; the avatar is not killed (it stays at 1). ---- */
 
-static const uint8_t *weapons_dat, *armor_dat, *monsters_dat;
+static const uint8_t *weapons_dat, *armor_dat, *monsters_dat, *ready_dat;
 static uint8_t combat_mode;
 
 void e_combat_memory(void *room, uint32_t size)
@@ -1963,7 +1963,7 @@ void e_combat_memory(void *room, uint32_t size)
 	uint8_t *r = room;
 	int32_t n;
 
-	weapons_dat = armor_dat = monsters_dat = NULL;
+	weapons_dat = armor_dat = monsters_dat = ready_dat = NULL;
 	if (r == NULL)
 		return;
 	if ((n = e_read_file("STATIC", "WEAPONS.DAT", r, size)) > 0 && n == 1 + r[0] * 21) {
@@ -1976,8 +1976,13 @@ void e_combat_memory(void *room, uint32_t size)
 		r += n;
 		size -= (uint32_t) n;
 	}
-	if ((n = e_read_file("STATIC", "MONSTERS.DAT", r, size)) > 0 && n == 1 + r[0] * 25)
+	if ((n = e_read_file("STATIC", "MONSTERS.DAT", r, size)) > 0 && n == 1 + r[0] * 25) {
 		monsters_dat = r;
+		r += n;
+		size -= (uint32_t) n;
+	}
+	if ((n = e_read_file("STATIC", "READY.DAT", r, size)) > 0 && n == 1 + r[0] * 9)
+		ready_dat = r;
 }
 
 static const uint8_t *record(const uint8_t *dat, int size, int type)
@@ -2002,6 +2007,13 @@ static int16_t *weapon_cache(int i)
 
 static const uint8_t *weapon_held(int i);
 
+int e_ready_slot(int type)
+{
+	const uint8_t *r = record(ready_dat, 9, type);
+
+	return r != NULL ? r[2] >> 3 : 0;
+}
+
 /* The weapon it holds (on itself, melee), or NULL. */
 static const uint8_t *weapon_of(int i)
 {
@@ -2021,15 +2033,11 @@ static const uint8_t *weapon_of(int i)
 
 static const uint8_t *weapon_held(int i)
 {
-	int in = E_HELD_ON(npc[i].number);
+	/* what it holds in its weapon hand (the original's slot 1), if a melee weapon */
+	int k = e_held_in_slot(npc[i].number, 1);
+	const uint8_t *w = k >= 0 ? record(weapons_dat, 21, e_held_tf(k) & 0x3ff) : NULL;
 
-	for (int k = e_held_find(in, -1, -1, -1, -1); k >= 0; k = e_held_find(in, -1, -1, -1, k)) {
-		const uint8_t *w;
-		if (e_held_in(k) == in && (w = record(weapons_dat, 21, e_held_tf(k) & 0x3ff)) != NULL
-			&& (w[8] >> 1 & 3) == 0)
-			return w;
-	}
-	return NULL;
+	return w != NULL && (w[8] >> 1 & 3) == 0 ? w : NULL;
 }
 
 static int armour_held(int i);
@@ -2051,14 +2059,17 @@ static int armour_of(int i)
 
 static int armour_held(int i)
 {
-	int in = E_HELD_ON(npc[i].number), a = 0;
+	/* its kind's, and what it wears (every slot but 3, as the original) */
+	int a = 0;
 	const uint8_t *m = record(monsters_dat, 25, npc[i].tf & 0x3ff), *r;
 
 	if (m != NULL)
 		a += m[6] >> 4;
-	for (int k = e_held_find(in, -1, -1, -1, -1); k >= 0; k = e_held_find(in, -1, -1, -1, k))
-		if (e_held_in(k) == in && (r = record(armor_dat, 10, e_held_tf(k) & 0x3ff)) != NULL)
+	for (int s = 0; s <= 11; s++) {
+		int k = s == 3 ? -1 : e_held_in_slot(npc[i].number, s);
+		if (k >= 0 && e_held_slot(k) == s && (r = record(armor_dat, 10, e_held_tf(k) & 0x3ff)) != NULL)
 			a += (int8_t) r[2];
+	}
 	return a;
 }
 

@@ -262,6 +262,21 @@ int e_held_count(int in, int type, int quality, int frame);
  * of the strength given: 0, or the original's errors: 1 too heavy, 2 into itself, 3 no place
  * (locked), 4 no room. */
 int e_held_place(int i, int in, int strength);
+/* Worn (the original's equipment slots): 0 the back, 1 and 2 the hands, 4 the neck, 5 the body,
+ * 6 and 7 the fingers, 8 ammunition, 9 the head, 10 the legs, 11 the feet; READY.DAT gives each
+ * type its slot (20: both hands, 21: both of 6 and 7). An item put on an NPC itself is worn when
+ * its slot is free; e_npcs wears what each carries (the original's EquipCarriedItems). */
+#define E_SLOT_NONE 255
+#define E_SLOT_BOTH_HANDS 20
+#define E_SLOT_BOTH_GLOVES 21
+int e_held_slot(int i);                 /* the slot it is worn in, or E_SLOT_NONE */
+int e_held_in_slot(int n, int s);       /* what NPC number n wears in slot s (0-11), or -1 */
+void e_held_equip(int n);               /* what n carries on itself worn where free */
+/* i worn by NPC number n in its slot (of the strength given): 0, 1 too heavy, 2 none, 3 the
+ * slot taken. */
+int e_held_wear(int i, int n, int strength);
+int e_held_weight(int in);              /* (tenths of a stone) what is in it, deep */
+int e_ready_slot(int type);             /* READY.DAT's slot for the type (0 when not listed) */
 struct EThing;
 /* The world's container t's contents read in (from its region's movable items, the first time):
  * its number less one (held items in it are in E_HELD_WORLD of it), or -1. */
@@ -299,6 +314,7 @@ int e_uc_number(int *low, int *high, int *step, int *initial);
 int e_uc_resume_number(int value);
 int e_uc_strength(int number);          /* NPC number's strength (0: none) */
 int e_uc_join(int number);              /* NPC number into the party (as JoinParty): 1 */
+int e_uc_party_number(int j);           /* party member j's NPC number (0: the avatar), or -1 */
 /* The items' scripts (Post) a tick on (the original's: about 8 a second); a function they or the
  * schedules asked to be run, taken: 1 and it (run it through e_talk_start_ref); whether the
  * usecode has faded the screen out (FadePalette). */
@@ -405,7 +421,10 @@ int e_inv_refused(void);
 int e_inv_open_thing(const struct EThing *t);   /* the world's container opened: 1 */
 int e_inv_open_held(int i);
 int e_inv_open_avatar(void);            /* the avatar's backpack */
-void e_inv_avatar_key(void);            /* (Option) it opened over the rest, or (open) all shut */
+int e_inv_open_paperdoll(int number);   /* NPC number's paperdoll (what it wears) */
+/* (Option) the avatar's paperdoll opened over the rest; on a paperdoll, the next party
+ * member's; after the last, all shut. */
+void e_inv_avatar_key(void);
 int e_inv_active(void);
 void e_inv_close(void);
 void e_inv_key(int key);
@@ -446,7 +465,7 @@ void e_world_avatar_stand(void);
  * e_init; the party into combat mode or out of it (-1: only asked), whether it is; in combat,
  * the avatar's own turn when the pad leaves it be: 0 nothing, 1 a step (dx, dy), 2 a swing (tf
  * the frame to show); a monster of type put at x, y, z fighting (its NPC index, or -1). */
-#define E_COMBAT_ROOM (4608)
+#define E_COMBAT_ROOM (6144)          /* (and READY.DAT) */
 void e_combat_memory(void *room, uint32_t size);
 uint32_t e_pool_size(void);             /* the shapes' pool e_init left (bytes) */
 
