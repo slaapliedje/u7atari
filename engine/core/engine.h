@@ -241,6 +241,10 @@ int e_step_body(const struct EBody *b, int16_t *x, int16_t *y, uint8_t *z, int d
 /* Whether a shape could stand at x, y, z: clear of solid statics, doors and solid ground, and
  * stood on something. */
 int e_can_stand(uint16_t tf, int16_t x, int16_t y, uint8_t z);
+/* The solid movers stand in the walkers' way, as the original's NPCs in its collision grid; the
+ * walker stepping now (mover i, or -1 for none) is left out of its own way, as the original
+ * takes it out of the grid for its steps. */
+void e_mover_self(int i);
 /* The cells (inclusive) of the chunks under the view and one round them: as the original's
  * collision grid covers only the world near the avatar, routes are planned within these. */
 void e_near_window(int16_t *x0, int16_t *y0, int16_t *x1, int16_t *y1);

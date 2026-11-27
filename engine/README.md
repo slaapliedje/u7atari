@@ -53,7 +53,10 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   avatar, which otherwise veers an eighth either way round what is in its way. Solid ground
   (water, rock) stops a walker at level 0. What the statics take is kept as the original keeps
   it, a grid of levels per cell (here one per chunk held, made when first asked for, made again
-  where a door turns).
+  where a door turns). The solid movers (the avatar, NPCs) are in it too, as the original adds
+  NPCs to its grid: stamped again when one has moved, each walker left out of its own steps
+  (`e_mover_self`, the original's taking it out of the grid for them). So the avatar steps round
+  NPCs, and they round it and each other (a route blocked by one is planned again round it).
 - **Routes** (`core/route.c`), as the original plans them (`Route::plan`): a straight walk at the
   goal (straight, else along the longer axis, else the shorter); where that is blocked, two
   walkers along the obstacle, one each way round, until one is nearer the goal than it has been
@@ -208,8 +211,7 @@ call chains (`tools/jag-profile.py --frames`).
   the ring.
 - **Translucency**; **NPCs** from a save (it holds them as the game's memory, `U7NBUF.DAT` and
   `U7IBUF.DAT`, not as `NPC.DAT`); what their schedules' kinds do at the place (sleep, eat,
-  work, sell), and keeping out of each other's way (the movers are not in the collision grid);
-  door sounds; the party.
+  work, sell); door sounds; the party.
 - **Order.** `order_of()` is a simple rule. It still needs checking against the original's frames
   at the same places (the PC reference can draw them). The ring version already draws doors and
   benches that the first version lost.

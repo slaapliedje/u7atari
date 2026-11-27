@@ -293,7 +293,9 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 		n = 100000;
 	for (int f = 0; f < n; f++) {
 		if (f > 0 && (f & 1) == 0 && route_x >= 0) {
+			e_mover_self(0);
 			int r = route_step(e_walk_frame(type, 2, 0), &ax, &ay, &az, &dx, &dy, f);
+			e_mover_self(-1);
 			if (r < 0 || f > 4000) {
 				printf("end: avatar %d,%d,%d; doors opened or shut %u\n", ax, ay, az,
 					e_stats.doors_turned);
@@ -322,9 +324,11 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 			if (dx || dy)
 				dir = dy < 0 ? 0 : dx > 0 ? 1 : dy > 0 ? 2 : 3;
 			/* a step, veering round what is in the way, up or down stairs; a door opened */
+			e_mover_self(0);
 			if ((dx || dy) && e_walk(e_walk_frame(type, dir, 0), &ax, &ay, &az, dx, dy, 1)
 				== E_STEP_DOOR)
 				printf("frame %d: a door opened at %d,%d\n", f, ax + dx, ay + dy);
+			e_mover_self(-1);
 		}
 		e_mover_set(0, dx || dy ? e_walk_frame(type, dir, f / 2) : npcs[me].tf, ax, ay, az);
 		/* a frame here is 4 blanks (the avatar a cell every 2 frames, the Jaguar's 8 blanks) */

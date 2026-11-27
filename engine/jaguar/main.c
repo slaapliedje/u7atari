@@ -886,7 +886,10 @@ static void walk_update(void)
 			continue;
 		walking = 1;
 		walk_dir = (uint8_t) (dy < 0 ? 0 : dx > 0 ? 1 : dy > 0 ? 2 : 3);
-		if (e_walk(e_walk_frame(type, walk_dir, 0), &ax, &ay, &az, dx, dy, 1) != E_STEP_MADE)
+		e_mover_self(0);            /* the avatar out of its own way */
+		int step = e_walk(e_walk_frame(type, walk_dir, 0), &ax, &ay, &az, dx, dy, 1);
+		e_mover_self(-1);
+		if (step != E_STEP_MADE)
 			continue;
 		walk_steps++;
 		moved = 1;

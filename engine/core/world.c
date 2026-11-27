@@ -517,7 +517,9 @@ void e_world_step(uint32_t blanks, int16_t x, int16_t y)
 		doing[i].wait = (int16_t) (doing[i].wait - dt);
 		if (doing[i].wait > 0)
 			continue;
+		e_mover_self(s);
 		int changed = act(i);
+		e_mover_self(-1);
 		mind_door(i);
 		if (changed)
 			e_mover_set(s, npc[i].tf, npc[i].x, npc[i].y, npc[i].z);

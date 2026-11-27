@@ -447,11 +447,13 @@ struct Chunk {
 	 * take, and whether the ground is solid (water, rock); made when first asked for */
 	uint16_t *solid_at, *door_at;
 	uint16_t ground[16];        /* a row each, a bit a cell (x & 15) */
+	uint16_t *mover_at;         /* the levels solid movers take, per cell (stamped, below) */
 	uint8_t grid_ok;
 };
 
 static struct Chunk *chunks;
 static uint8_t *chunk_slot;     /* per chunk of the world, its slot + 1, or 0 */
+static uint8_t movers_dirty = 1; /* a mover has moved: their levels to be stamped again */
 static uint16_t chunk_gen[CHUNK_SLOTS]; /* per slot, counts the chunks given it: statics moved */
 
 static int chunk_record(struct Chunk *k);
@@ -481,6 +483,8 @@ static struct Chunk *chunk(int cx, int cy)
 	k->nobj = 0;
 	k->built = 0;
 	k->grid_ok = 0;
+	memset(k->mover_at, 0, 256 * 2);
+	movers_dirty = 1;
 	k->nstatic = 0;
 	memset(k->flats, 0, sizeof k->flats);
 	uint32_t t_cells = eb_clock();
@@ -1129,16 +1133,93 @@ static struct Chunk *grid(int cx, int cy)
 	return k;
 }
 
-/* Levels (a bit each) the solid statics take over the cells x0..x1, y0..y1, and apart (as the
- * original's collision grid keeps them) those the doors take; and whether any of the cells'
- * ground is solid. */
+/* The solid movers in the collision grid, as the original adds NPCs to it: each one's levels over
+ * its footprint, in the chunks held, stamped again (all) when one has moved. The cells stamped
+ * are kept to be cleared. A walker is left out of its own steps (e_mover_self), as the original
+ * takes it out of the grid for them. */
+#define MOVER_STAMPS 512
+static struct {
+	uint8_t slot, cell;
+} stamps[MOVER_STAMPS];
+static uint16_t nstamps;
+static int self_mover = -1;
+static int16_t self_box[4];
+static uint16_t self_levels;
+
+static uint16_t body_of(uint16_t tf, uint8_t z, int *fx, int *fy);
+
+static void restamp(void)
+{
+	for (uint16_t i = 0; i < nstamps; i++)
+		chunks[stamps[i].slot].mover_at[stamps[i].cell] = 0;
+	nstamps = 0;
+	for (uint8_t m = 0; m < nmovers; m++) {
+		const struct Mover *v = &movers[m];
+		int fx, fy;
+		if (v->tf == 0 || !(info[v->tf & 0x3ff].flags & INFO_SOLID))
+			continue;
+		uint16_t levels = body_of(v->tf, v->z, &fx, &fy);
+		for (int y = v->y - fy; y <= v->y; y++)
+			for (int x = v->x - fx; x <= v->x; x++) {
+				uint8_t slot = x >= 0 && y >= 0 && x < 192 * 16 && y < 192 * 16
+					? chunk_slot[(y >> 4) * 192 + (x >> 4)] : 0;
+				if (slot == 0 || nstamps == MOVER_STAMPS)
+					continue;
+				uint8_t c = (uint8_t) ((y & 15) * 16 + (x & 15));
+				chunks[slot - 1].mover_at[c] |= levels;
+				stamps[nstamps].slot = (uint8_t) (slot - 1);
+				stamps[nstamps++].cell = c;
+			}
+	}
+	movers_dirty = 0;
+}
+
+static void self_set(void)
+{
+	int fx, fy;
+	const struct Mover *v = &movers[self_mover];
+
+	self_levels = 0;
+	if (v->tf == 0 || !(info[v->tf & 0x3ff].flags & INFO_SOLID))
+		return;
+	self_levels = body_of(v->tf, v->z, &fx, &fy);
+	self_box[0] = (int16_t) (v->x - fx);
+	self_box[1] = (int16_t) (v->y - fy);
+	self_box[2] = v->x;
+	self_box[3] = v->y;
+}
+
+void e_mover_self(int i)
+{
+	self_mover = i;
+	self_levels = 0;
+	if (i >= 0 && i < nmovers)
+		self_set();
+}
+
+/* The levels the movers take at cell c (x, y) of chunk k, but the walker's own. */
+static inline uint16_t movers_at(const struct Chunk *k, int c, int x, int y)
+{
+	uint16_t v = k->mover_at[c];
+
+	if (v && self_levels && x >= self_box[0] && x <= self_box[2] && y >= self_box[1]
+		&& y <= self_box[3])
+		v &= (uint16_t) ~self_levels;
+	return v;
+}
+
+/* Levels (a bit each) the solid statics take over the cells x0..x1, y0..y1 (and the solid
+ * movers, with_movers), and apart (as the original's collision grid keeps them) those the doors
+ * take; and whether any of the cells' ground is solid. */
 static inline __attribute__((always_inline)) uint16_t cells_taken(int x0, int y0, int x1, int y1,
-	uint16_t *doors, int *ground)
+	uint16_t *doors, int *ground, int with_movers)
 {
 	static struct Chunk *last;
 	uint16_t taken = 0, door = 0;
 	int hard = 0;
 
+	if (with_movers && movers_dirty)
+		restamp();
 	/* most often all in one chunk, the one last asked about (routes ask a great deal) */
 	if (x0 >> 4 == x1 >> 4 && y0 >> 4 == y1 >> 4 && x0 >= 0 && y0 >= 0) {
 		const struct Chunk *k = last;
@@ -1154,6 +1235,8 @@ static inline __attribute__((always_inline)) uint16_t cells_taken(int x0, int y0
 			for (int x = x0 & 15; x <= (x1 & 15); x++) {
 				taken |= so[x];
 				door |= dr[x];
+				if (with_movers)
+					taken |= movers_at(k, (int) row + x, (x0 & ~15) + x, y);
 			}
 			hard |= k->ground[row >> 4] & bits;
 		}
@@ -1170,6 +1253,8 @@ static inline __attribute__((always_inline)) uint16_t cells_taken(int x0, int y0
 					taken |= k->solid_at[c];
 					door |= k->door_at[c];
 					hard |= k->ground[c >> 4] >> (c & 15) & 1;
+					if (with_movers)
+						taken |= movers_at(k, c, x, y);
 				}
 		}
 	goto done;
@@ -1185,7 +1270,7 @@ done:
 
 static uint16_t levels_taken(int x0, int y0, int x1, int y1, uint16_t *doors)
 {
-	return cells_taken(x0, y0, x1, y1, doors, NULL);
+	return cells_taken(x0, y0, x1, y1, doors, NULL, 0);
 }
 
 /* A shape's footprint (cells west and north of its hot spot) and the levels it takes at z. */
@@ -1221,7 +1306,7 @@ static int can_walk(uint16_t tf, int x, int y, int z, int *door)
 {
 	int fx, fy, ground;
 	uint16_t body0 = body_of(tf, 0, &fx, &fy), doors;
-	uint16_t taken = cells_taken(x - fx, y - fy, x, y, &doors, &ground);
+	uint16_t taken = cells_taken(x - fx, y - fy, x, y, &doors, &ground, 1);
 
 	*door = (doors & (uint16_t) (body0 << z)) != 0;
 	return walk_ok(body0, taken, ground, z);
@@ -1240,7 +1325,7 @@ int e_step_body(const struct EBody *b, int16_t *x, int16_t *y, uint8_t *z, int d
 {
 	int nx = *x + dx, ny = *y + dy, nz = *z, ground;
 	uint16_t body0 = b->levels, doors;
-	uint16_t taken = cells_taken(nx - b->fx, ny - b->fy, nx, ny, &doors, &ground);
+	uint16_t taken = cells_taken(nx - b->fx, ny - b->fy, nx, ny, &doors, &ground, 1);
 
 	/* as CheckMove for a walker: its level, else one up, else one down */
 	if (!walk_ok(body0, taken, ground, nz)) {
@@ -1696,10 +1781,14 @@ int e_mover_add(uint16_t tf, int16_t x, int16_t y, uint8_t z)
 
 void e_mover_set(int i, uint16_t tf, int16_t x, int16_t y, uint8_t z)
 {
+	if (movers[i].tf != tf || movers[i].x != x || movers[i].y != y || movers[i].z != z)
+		movers_dirty = 1;
 	movers[i].tf = tf;
 	movers[i].x = x;
 	movers[i].y = y;
 	movers[i].z = z;
+	if (i == self_mover)
+		self_set();
 }
 
 /* Draws the movers into frame, behind ones first, each followed by the statics in front of it
@@ -2037,7 +2126,8 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 		if ((chunks[i].statics = take(CHUNK_STATICS * sizeof(struct Static))) == NULL
 			|| (chunks[i].bin_list = take(CHUNK_BIN_ENTRIES)) == NULL
 			|| (chunks[i].solid_at = take(256 * 2)) == NULL
-			|| (chunks[i].door_at = take(256 * 2)) == NULL)
+			|| (chunks[i].door_at = take(256 * 2)) == NULL
+			|| (chunks[i].mover_at = take(256 * 2)) == NULL)
 			return -7;
 	}
 	ring.pitch = ring.w = RING_W;
