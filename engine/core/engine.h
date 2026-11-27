@@ -246,9 +246,42 @@ int e_uc_answers(const char **list, int most);
 int e_uc_speaker(int *frame);
 /* A game flag. */
 int e_uc_flag(int n);
+/* Faces shown: the speaker in each of the two places (an NPC's number, 0 the avatar; -1 none)
+ * and its frame; which speaks (0 or 1, or -1). */
+int e_uc_face(int place, int *frame);
+int e_uc_speaking(void);
+/* The conversation's pictures: face n (FACES.VGA) frame fr with its hot spot at x, y (its
+ * width and height into w, h unless NULL; frame NULL: only measured); the pointer's frame fr;
+ * text in the original's yellow font (font 0) with its letters' feet at y, n letters at most;
+ * a letter's and a text's width (as the original's printer measures them), the lines' height. */
+void e_draw_face(struct ESurface *frame, int face, int fr, int16_t x, int16_t y, int16_t *w, int16_t *h);
+void e_draw_pointer(struct ESurface *frame, int fr, int16_t x, int16_t y);
+void e_draw_text(struct ESurface *frame, int16_t x, int16_t y, const char *s, int n);
+int e_letter_width(uint8_t c);
+int e_text_width(const char *s);
+int e_line_height(void);
 /* The engine's own: a static file opened, or -1; the usecode's rooms given it. */
 int16_t e_open_static(const char *name);
 void e_uc_memory(void *code_room, void *heap_room);
+
+/* ---- a conversation shown (core/talk.c), as the original's: faces, what is said a page at a
+ * time, the answers with the pointer on the one picked ---- */
+
+#define E_KEY_NEXT 1            /* on: the next page, or the answer picked */
+#define E_KEY_LEFT 2            /* the answer before */
+#define E_KEY_RIGHT 3           /* ... after */
+#define E_KEY_UP 4              /* ... on the line above */
+#define E_KEY_DOWN 5            /* ... below */
+/* NPC number's conversation begun (its usecode as spoken to): 1 when there is one. */
+int e_talk_start(int number);
+int e_talk_active(void);
+void e_talk_key(int key);
+/* An answer picked by its words (for tests): 1 when answers were asked for. */
+int e_talk_choose(const char *answer);
+/* Line n of what face place p shows now (for tests), or NULL. */
+const char *e_talk_line(int place, int line);
+/* The conversation drawn over the view (after e_draw). */
+void e_talk_draw(struct ESurface *frame);
 
 /* ---- the world (core/world.c): a clock, and the NPCs on their schedules (SCHEDULE.DAT) ---- */
 
@@ -263,6 +296,9 @@ void e_world_step(uint32_t blanks, int16_t x, int16_t y);
 /* The NPC (by number) whose schedule's kinds and states are logged as they change (eb_log), or -1:
  * for tests. */
 extern int e_world_trace;
+/* The NPC (its number) ahead of one at x, y facing dx, dy (1 or 2 cells), else the nearest
+ * within 2 cells; -1 for none. */
+int e_world_npc_near(int16_t x, int16_t y, int dx, int dy);
 /* The time of day, in minutes from midnight. */
 int e_world_minutes(void);
 /* Blanks a game minute (the original's is slower: a game hour a real minute here, for now). */

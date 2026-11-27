@@ -340,7 +340,8 @@ static int route_step(uint16_t tf, int16_t *ax, int16_t *ay, uint8_t *az, int *d
 
 static int list_npcs;           /* --npcs: those in view listed with each picture */
 static int appear_frame;        /* --appear f: the avatar far off till frame f */
-static int talk_npc = -1;       /* --talk n: NPC n's conversation, printed */
+static int talk_npc = -1;       /* --talk n: NPC n's conversation, printed (or with --out shown) */
+static int out_pictures;        /* --out given */
 static const char *talk_answers; /* --answers a,b,...: the answers picked */
 
 static void walk_avatar(int dx, int dy, int n, const char *out, int every)
@@ -376,6 +377,46 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 	e_mover_set(0, npcs[me].tf, ax, ay, az);
 	e_world_init(npcs, nnpcs, start_minutes, 0);
 	e_world_step(0, ax, ay);
+	if (talk_npc >= 0 && out_pictures) {
+		/* the conversation shown: a picture at each stop, the answers picked from the list (then
+		 * bye, else the first offered) */
+		const char *next = talk_answers;
+		int pic = 0;
+		e_set_view((int16_t) (ax - E_VIEW_CELLS_X / 2), (int16_t) (ay - E_VIEW_CELLS_Y / 2));
+		e_follow(0);
+		if (!e_talk_start(talk_npc)) {
+			printf("no conversation\n");
+			return;
+		}
+		while (e_talk_active() && pic < 300) {
+			char name[256];
+			e_draw(&frame);
+			e_talk_draw(&frame);
+			eb_finish();
+			snprintf(name, sizeof name, "%s.talk%03d.ppm", out, pic++);
+			save(name);
+			printf("-- picture %d\n", pic - 1);
+			for (int pl = 0; pl < 2; pl++)
+				for (int l = 0; e_talk_line(pl, l); l++)
+					printf("%d| %s\n", pl, e_talk_line(pl, l));
+			char pick[64] = "";
+			if (next != NULL && *next) {
+				const char *c = strchr(next, ',');
+				size_t len = c ? (size_t) (c - next) : strlen(next);
+				snprintf(pick, sizeof pick, "%.*s", (int) len, next);
+			}
+			if (pick[0] && e_talk_choose(pick)) {
+				printf("> %s\n", pick);
+				const char *c = strchr(next, ',');
+				next = c ? c + 1 : NULL;
+			} else if (!pick[0] && e_talk_choose("bye"))
+				printf("> bye\n");
+			else
+				e_talk_key(E_KEY_NEXT);
+		}
+		printf("(conversation over, %d pictures)\n", pic);
+		return;
+	}
 	if (talk_npc >= 0) {
 		/* the NPC's conversation (its usecode, as spoken to), the answers picked from the list
 		 * (then "bye", else the first offered) */
@@ -538,8 +579,10 @@ int main(int argc, char **argv)
 			n = atoi(argv[++i]);
 		} else if (!strcmp(argv[i], "--movers") && i + 1 < argc)
 			nm = atoi(argv[++i]);
-		else if (!strcmp(argv[i], "--out") && i + 1 < argc)
+		else if (!strcmp(argv[i], "--out") && i + 1 < argc) {
 			out = argv[++i];
+			out_pictures = 1;
+		}
 		else if (!strcmp(argv[i], "--sheet") && i + 1 < argc)
 			sheet = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--every") && i + 1 < argc)

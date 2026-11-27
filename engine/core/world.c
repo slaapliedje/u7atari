@@ -619,3 +619,23 @@ void e_world_step(uint32_t blanks, int16_t x, int16_t y)
 			e_mover_set(s, npc[i].tf, npc[i].x, npc[i].y, npc[i].z);
 	}
 }
+
+int e_world_npc_near(int16_t x, int16_t y, int dx, int dy)
+{
+	int best = -1, best_far = 3;
+
+	for (int s = 1; s < E_MOVERS; s++) {
+		int i = slot_npc[s];
+		if (i < 0 || npc[i].number == 0)
+			continue;
+		/* ahead (1 or 2 cells) first, then the nearest within 2 */
+		int ahead = (npc[i].x == x + dx && npc[i].y == y + dy)
+			|| (npc[i].x == x + 2 * dx && npc[i].y == y + 2 * dy);
+		int far = ahead ? 0 : far_of(x, y, npc[i].x, npc[i].y);
+		if (far < best_far) {
+			best_far = far;
+			best = npc[i].number;
+		}
+	}
+	return best;
+}

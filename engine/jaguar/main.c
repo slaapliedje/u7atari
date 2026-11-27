@@ -728,11 +728,15 @@ static void set_palette(const uint8_t *rgb)
 /* The pad's directions (bits 20-23: up, down, left, right) and A (bit 29), as the port's
  * platform/jaguar/input.c has them. */
 #define PAD_A (1UL << 29)
+#define PAD_B (1UL << 25)
 static uint32_t pad(void)
 {
 	JOY_WRITE = 0x81FE;
 	uint32_t v = JOY_READ;
-	return (~(v >> 4) & 0x00F00000UL) | (v & 2 ? 0 : PAD_A);
+	JOY_WRITE = 0x81FD;         /* the row with B (and keys 1 4 7 *) */
+	uint32_t w = JOY_READ;
+	JOY_WRITE = 0x81FE;
+	return (~(v >> 4) & 0x00F00000UL) | (v & 2 ? 0 : PAD_A) | (w & 2 ? 0 : PAD_B);
 }
 
 
@@ -902,6 +906,43 @@ static void walk_update(void)
 	uint16_t type = npcs[me].tf & 0x3ff;
 	int moved = 0, walking = 0;
 
+	/* presses, every frame (a short one may fall between the walk's ticks) */
+	{
+		static uint32_t was_held;
+		uint32_t held = pad(), pressed = held & ~was_held;
+		was_held = held;
+#ifdef ENGINE_TALK_TEST
+		/* Iolo's conversation, two seconds in (to see one shown) */
+		static int frames_in;
+		if (++frames_in == 40)
+			e_talk_start(1);
+#endif
+		if (e_talk_active()) {
+			/* talking: A on (or the answer picked), the pad moves the pointer; the world waits */
+			if (pressed & PAD_A)
+				e_talk_key(E_KEY_NEXT);
+			if (pressed & (1UL << 20))
+				e_talk_key(E_KEY_UP);
+			if (pressed & (1UL << 21))
+				e_talk_key(E_KEY_DOWN);
+			if (pressed & (1UL << 22))
+				e_talk_key(E_KEY_LEFT);
+			if (pressed & (1UL << 23))
+				e_talk_key(E_KEY_RIGHT);
+			if (pressed)
+				touched = 1;
+			if (e_talk_active() || pressed & PAD_A)
+				a_held = 1;     /* (the A that ended it is not a door's) */
+		} else if (pressed & PAD_B) {
+			/* B: the NPC ahead (or the nearest within 2 cells) spoken to */
+			static const int8_t face_x[4] = { 0, 1, 0, -1 }, face_y[4] = { -1, 0, 1, 0 };
+			int number = e_world_npc_near(ax, ay, face_x[walk_dir], face_y[walk_dir]);
+			touched = 1;
+			if (number > 0)
+				e_talk_start(number);
+		}
+	}
+
 #ifdef ENGINE_FRAME_SUMS
 	/* by frames, not time, so the frames hang on the frame count alone */
 	uint32_t now = (sum_frames++ / 2) * WALK_BLANKS;
@@ -914,6 +955,10 @@ static void walk_update(void)
 		walk_tick += WALK_BLANKS;
 		if (held)
 			touched = 1;
+		if (e_talk_active()) {
+			a_held = (held & PAD_A) != 0;
+			continue;
+		}
 		if ((held & PAD_A) && !a_held) {
 			static const int8_t face_x[4] = { 0, 1, 0, -1 }, face_y[4] = { -1, 0, 1, 0 };
 			int door = e_door_ahead(e_walk_frame(type, walk_dir, 0), ax, ay, az,
@@ -947,7 +992,8 @@ static void walk_update(void)
 	}
 	if (walking || moved)
 		e_mover_set(0, e_walk_frame(type, walk_dir, walk_steps), ax, ay, az);
-	e_world_step(world_clock(), ax, ay);
+	if (!e_talk_active())
+		e_world_step(world_clock(), ax, ay);
 #ifdef ENGINE_BARK_TEST
 	/* a line over mover 1 every two seconds, to see barks drawn */
 	{
@@ -1083,6 +1129,10 @@ void jag_main(void)
 		struct ESurface *drawing = &surfaces[(frame + 1) % FRAMES];
 		e_set_view(x, y);
 		e_draw(drawing);
+		if (e_talk_active()) {
+			e_talk_draw(drawing);
+			eb_finish();
+		}
 #ifdef ENGINE_FRAME_SUMS
 		/* each frame's pixels summed, to compare builds (the frames hang on the frame count
 		 * alone, not on time) */

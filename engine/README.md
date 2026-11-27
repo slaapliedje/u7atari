@@ -188,8 +188,18 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   conversation (the 255, 5,765 answers picked in all) runs to its end without an intrinsic it
   needs missing, but those for items (finding them, their frames and qualities) and the
   avatar's belongings (gold counted: none yet). On the PC, `--talk n --answers a,b,...` (or
-  `auto`: the newest answer not yet asked) prints NPC n's conversation. Not yet: showing it
-  (faces, the text, picking an answer) and using items.
+  `auto`: the newest answer not yet asked) prints NPC n's conversation.
+- **Conversations shown** (`core/talk.c`, `e_talk_`), in Black Gate's layout: the speaker's face
+  (`FACES.VGA`, read in and converted as wanted) at the top left with what it says beside it,
+  a second speaker's below, the avatar's face and the answers between, in the original's
+  yellow font (letters stepped as its printer steps them). Text is broken as the original
+  breaks it (`~` a line, `*` a page, `^` a capital; a page that runs over cut at its last line
+  break, sentence or comma), a page at a time; the answers are laid out as its answer pane
+  (each after a bullet, along the line while it fits). On the Jaguar B speaks to the NPC ahead
+  (or the nearest within 2 cells); A pages on and picks, the pad moves the original's pointer
+  (its gauntlet) from answer to answer; the world waits while they talk. On the PC `--talk n`
+  with `--out` saves a picture at each stop. `-DENGINE_TALK_TEST` opens Iolo's at the start.
+  Not yet: using items, the conversations' item intrinsics.
 
 ## Layout
 

@@ -2113,7 +2113,7 @@ static int bark_box(const struct Bark *b, int16_t box[4])
 		if (f != NULL) {
 			if (f[2] + f[3] + 1 > height)
 				height = f[2] + f[3] + 1;
-			width += f[0] + f[1] + 1 + FONT_SPACING;
+			width += f[0] + f[1] + 1 + 2 * FONT_SPACING;
 		}
 	}
 	box[0] = r[0];
@@ -2144,7 +2144,7 @@ static void draw_barks(struct ESurface *frame, int16_t vx, int16_t vy)
 			if (f != NULL) {
 				if (f[2] + f[3] + 1 > height)
 					height = f[2] + f[3] + 1;
-				width += f[0] + f[1] + 1 + FONT_SPACING;
+				width += f[0] + f[1] + 1 + 2 * FONT_SPACING;
 			}
 		}
 		if (x + width < 0 || x >= E_VIEW_W || base < 0 || base - height >= E_VIEW_H)
@@ -2160,10 +2160,163 @@ static void draw_barks(struct ESurface *frame, int16_t vx, int16_t vy)
 			if (f == NULL)
 				continue;
 			eb_shape(frame, whole, (const uint32_t *) (f + 4), (int16_t) (x + f[1]), (int16_t) base, 0);
-			x += f[0] + f[1] + 1 + FONT_SPACING;
+			x += f[0] + f[1] + 1 + 2 * FONT_SPACING;   /* the printer's: spacing twice */
 		}
 		if (ring_shown)
 			note_drawn(frame, box);
+	}
+}
+
+/* ---- the conversation's pictures: faces (FACES.VGA), the pointer (POINTERS.SHP), text ---- */
+
+#define FACE_SLOTS 3
+#define FACE_ROOM (14 * 1024)
+static struct {
+	int16_t face;
+	uint16_t age;
+	uint8_t *s;
+} faces[FACE_SLOTS];
+static uint16_t face_age;
+static uint8_t *pointer_shape;
+
+/* A converted shape's frame, its box first, or NULL. */
+static const int16_t *shape_frame(const uint8_t *s, int frame)
+{
+	const uint32_t *f = (const uint32_t *) s;
+
+	if (s == NULL || frame < 0 || (frame + 1) * 4u >= f[1])
+		return NULL;
+	return (const int16_t *) (s + f[1 + frame]);
+}
+
+/* Shape bytes (raw, size) converted into room bytes at out: 1 when they fit. */
+static int convert_into(const uint8_t *raw, uint32_t size, uint8_t *out, uint32_t room)
+{
+	uint32_t made = e_convert_shape(raw, size, NULL, 0);
+
+	return made != 0 && made + E_CONVERT_SLACK <= room && e_convert_shape(raw, size, out, room) != 0;
+}
+
+static void open_faces(void)
+{
+	for (int k = 0; k < FACE_SLOTS; k++) {
+		faces[k].face = -1;
+		faces[k].s = take(FACE_ROOM);
+	}
+	int16_t f = open_file("STATIC", "POINTERS.SHP");
+	if (f < 0)
+		return;
+	int32_t len = plat_file_length(f);
+	if (len > 0 && len <= SCRATCH && read_at(f, 0, scratch, (uint32_t) len)) {
+		uint32_t made = e_convert_shape(scratch, (uint32_t) len, NULL, 0);
+		if (made != 0 && (pointer_shape = take(made + E_CONVERT_SLACK)) != NULL
+			&& !convert_into(scratch, (uint32_t) len, pointer_shape, made + E_CONVERT_SLACK))
+			pointer_shape = NULL;
+	}
+	plat_file_close(f);
+}
+
+/* Face n (FACES.VGA's entry), read in if need be (the oldest giving way). */
+static const uint8_t *face_shape(int n)
+{
+	int k, old = 0;
+	uint8_t head[8];
+
+	for (k = 0; k < FACE_SLOTS; k++) {
+		if (faces[k].face == n && faces[k].s != NULL) {
+			faces[k].age = ++face_age;
+			return faces[k].s;
+		}
+		if (faces[k].age < faces[old].age)
+			old = k;
+	}
+	if (faces[old].s == NULL)
+		return NULL;
+	int16_t f = open_file("STATIC", "FACES.VGA");
+	if (f < 0)
+		return NULL;
+	int ok = read_at(f, 0x80 + 8 * (uint32_t) n, head, 8);
+	uint32_t at = rd32(head), size = rd32(head + 4);
+	ok = ok && n >= 0 && n < 1024 && size > 0 && size <= SCRATCH && read_at(f, at, scratch, size);
+	plat_file_close(f);
+	faces[old].face = -1;
+	if (!ok || !convert_into(scratch, size, faces[old].s, FACE_ROOM))
+		return NULL;
+	faces[old].face = (int16_t) n;
+	faces[old].age = ++face_age;
+	return faces[old].s;
+}
+
+void e_draw_face(struct ESurface *frame, int face, int fr, int16_t x, int16_t y, int16_t *w, int16_t *h)
+{
+	static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
+	const int16_t *f = shape_frame(face_shape(face), fr);
+
+	if (w != NULL)
+		*w = f != NULL ? (int16_t) (f[0] + f[1] + 1) : 0;
+	if (h != NULL)
+		*h = f != NULL ? (int16_t) (f[2] + f[3] + 1) : 0;
+	if (f != NULL && frame != NULL)
+		eb_shape(frame, whole, (const uint32_t *) (f + 4), x, y, 0);
+}
+
+void e_draw_pointer(struct ESurface *frame, int fr, int16_t x, int16_t y)
+{
+	static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
+	const int16_t *f = shape_frame(pointer_shape, fr);
+
+	if (f != NULL)
+		eb_shape(frame, whole, (const uint32_t *) (f + 4), x, y, 0);
+	else {
+		static int told;
+		if (!told++)
+			eb_log(pointer_shape == NULL ? "no pointer shape\n" : "no pointer frame\n");
+	}
+}
+
+int e_letter_width(uint8_t c)
+{
+	const int16_t *f = letter(c);
+
+	/* as the original's: a letter's frame width, and the font's spacing */
+	return f != NULL ? f[0] + f[1] + 1 + FONT_SPACING : 0;
+}
+
+int e_text_width(const char *s)
+{
+	int w = 0;
+
+	for (; *s; s++)
+		w += e_letter_width((uint8_t) *s) + FONT_SPACING;      /* as its textWidth: twice */
+	return w;
+}
+
+int e_line_height(void)
+{
+	static int height;
+
+	if (height == 0 && font != NULL) {
+		/* the font's height over all its letters, and its leading */
+		for (int c = 0; c < 256; c++) {
+			const int16_t *f = letter((uint8_t) c);
+			if (f != NULL && f[2] + f[3] + 1 > height)
+				height = f[2] + f[3] + 1;
+		}
+		height += FONT_LEADING;
+	}
+	return height;
+}
+
+void e_draw_text(struct ESurface *frame, int16_t x, int16_t y, const char *s, int n)
+{
+	static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
+
+	for (int k = 0; k < n && s[k]; k++) {
+		const int16_t *f = letter((uint8_t) s[k]);
+		if (f == NULL)
+			continue;
+		eb_shape(frame, whole, (const uint32_t *) (f + 4), (int16_t) (x + f[1]), y, 0);
+		x = (int16_t) (x + e_letter_width((uint8_t) s[k]) + FONT_SPACING);      /* its printChar */
 	}
 }
 
@@ -2664,6 +2817,7 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 			return -7;
 	open_sounds();
 	open_text();
+	open_faces();
 	{
 		/* the usecode's rooms, when there is usecode to run */
 		int16_t f = open_file("STATIC", "USECODE");

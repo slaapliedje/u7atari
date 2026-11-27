@@ -495,6 +495,7 @@ static struct Run {
 	int wait_kind;              /* the intrinsic waiting (0x0a, 0x0b) or 0 for a converse */
 	char say[UC_SAY];
 	int speaker, speaker_frame;
+	int face[2], face_frame[2], speaking;      /* the two places faces are shown in */
 } run;
 
 static const char *answers[UC_ANSWERS];
@@ -647,13 +648,31 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 		k = arg_int(args, 1);
 		*ret = val_int(k > 0 ? rnd(k) + 1 : 1);
 		return 0;
-	case 0x03:                  /* SetSpeaker: npc's face, frame */
+	case 0x03: {                /* SetSpeaker: npc's face, frame */
 		k = arg_int(args, 1);
 		run.speaker = k == UC_AVATAR ? 0 : k < 0 ? -k : k;
 		run.speaker_frame = arg_int(args, 2);
+		/* its place: where it is shown already, else a free one, else the one not speaking */
+		int place = run.face[0] == run.speaker ? 0 : run.face[1] == run.speaker ? 1
+			: run.face[0] < 0 ? 0 : run.face[1] < 0 ? 1 : !run.speaking;
+		run.face[place] = run.speaker;
+		run.face_frame[place] = run.speaker_frame;
+		run.speaking = place;
 		return 0;
+	}
 	case 0x04:                  /* CloseSpeaker */
-		run.speaker = -1;
+		k = arg_int(args, 1);
+		k = k == UC_AVATAR ? 0 : k < 0 ? -k : k;
+		for (int j = 0; j < 2; j++)
+			if (run.face[j] == k)
+				run.face[j] = -1;
+		if (run.face[run.speaking] < 0)
+			run.speaking = run.face[!run.speaking] >= 0 ? !run.speaking : 0;
+		run.speaker = run.face[run.speaking];
+		return 0;
+	case 0x91:                  /* ResetConvFace: the first speaker back */
+		if (run.face[0] >= 0)
+			run.speaking = 0;
 		return 0;
 	case 0x05:                  /* TurnOn: answers offered */
 	case 0x06:                  /* TurnOff: answers withdrawn */
@@ -1246,6 +1265,7 @@ int e_uc_start(int function, int item, int event)
 	heap_full = 0;
 	memset(&run, 0, sizeof run);
 	run.speaker = -1;
+	run.face[0] = run.face[1] = -1;
 	run.event = (int16_t) event;
 	run.on = 1;
 	if (!enter(body_of((uint16_t) function), item)) {
@@ -1300,6 +1320,20 @@ int e_uc_speaker(int *frame)
 	if (frame != NULL)
 		*frame = run.speaker_frame;
 	return run.speaker;
+}
+
+int e_uc_face(int place, int *frame)
+{
+	if (place < 0 || place > 1)
+		return -1;
+	if (frame != NULL)
+		*frame = run.face_frame[place];
+	return run.face[place];
+}
+
+int e_uc_speaking(void)
+{
+	return run.face[run.speaking] >= 0 ? run.speaking : -1;
 }
 
 int e_uc_flag(int n)
