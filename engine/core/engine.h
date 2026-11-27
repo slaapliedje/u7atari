@@ -161,6 +161,11 @@ struct EStats {
 	uint32_t front_cands;       /* statics over movers tried for being in front */
 	uint32_t front_compares;    /* compares then */
 	uint32_t doors_turned;      /* doors opened or shut */
+	uint32_t routes_planned;    /* routes found */
+	uint32_t routes_failed;     /* routes looked for and not found */
+	uint32_t route_steps;       /* steps tried planning them */
+	uint32_t route_time;        /* eb_clock units planning routes (found or not) */
+	uint32_t route_worst;       /* the most one took */
 };
 extern struct EStats e_stats;
 
@@ -223,6 +228,22 @@ int e_blocked(uint16_t tf, int16_t x, int16_t y, uint8_t z);
 #define E_STEP_MADE 1
 #define E_STEP_DOOR 2
 int e_step(uint16_t tf, int16_t *x, int16_t *y, uint8_t *z, int dx, int dy);
+/* A walker's body, for its steps: its footprint (cells west and north of where it stands) and
+ * the levels it takes standing at 0. */
+struct EBody {
+	int8_t fx, fy;
+	uint16_t levels;
+};
+void e_body(uint16_t tf, struct EBody *b);
+/* e_step for a body; when through, into a door's cells as if it were open (E_STEP_DOOR, moved):
+ * routes are planned so, as the original's. */
+int e_step_body(const struct EBody *b, int16_t *x, int16_t *y, uint8_t *z, int dx, int dy, int through);
+/* Whether a shape could stand at x, y, z: clear of solid statics, doors and solid ground, and
+ * stood on something. */
+int e_can_stand(uint16_t tf, int16_t x, int16_t y, uint8_t z);
+/* The cells (inclusive) of the chunks under the view and one round them: as the original's
+ * collision grid covers only the world near the avatar, routes are planned within these. */
+void e_near_window(int16_t *x0, int16_t *y0, int16_t *x1, int16_t *y1);
 /* The avatar's step towards dx, dy (each -1 to 1), as the original's party step: that way, or
  * failing that an eighth to one side or the other. A shut door in the way opened when open_doors
  * (as if it were used): E_STEP_DOOR, not moved. */
@@ -230,6 +251,30 @@ int e_walk(uint16_t tf, int16_t *x, int16_t *y, uint8_t *z, int dx, int dy, int 
 /* The door just ahead of a shape at x, y, z facing dx, dy (or beside that, or one further), to
  * use; or -1. */
 int e_door_ahead(uint16_t tf, int16_t x, int16_t y, uint8_t z, int dx, int dy);
+
+/* Routes (route.c), as the original plans them: a straight walk, along obstacles where that is
+ * blocked (two walkers, one each way round), then straightened. Up to E_ROUTE_WAYS waypoints, the
+ * last the goal; planned within e_near_window. */
+#define E_ROUTE_WAYS 100
+struct EWay {
+	int16_t x, y;
+	uint8_t z;
+};
+/* Ways a walker takes a door: walks through it as if open (planning), turns from it, or stops
+ * at it (walking: the step is "taken" without moving, *door set, to open it). */
+#define E_ROUTE_THROUGH 0
+#define E_ROUTE_AVOID 1
+#define E_ROUTE_STOP 2
+/* A route for shape tf from x, y, z to tx, ty, tz, in at most limit steps searched: the count of
+ * waypoints put in way (E_ROUTE_WAYS of room), or 0 when there is none. */
+int e_route_plan(uint16_t tf, int16_t x, int16_t y, uint8_t z, int16_t tx, int16_t ty, uint8_t tz,
+	int limit, struct EWay *way);
+/* A walker's step at tx, ty, tz as the original's: straight, else along the longer axis, else
+ * the shorter. The way (0-7, north clockwise) taken, x, y, z moved; or -1. */
+int e_route_step(uint16_t tf, int16_t *x, int16_t *y, uint8_t *z, int16_t tx, int16_t ty, uint8_t tz,
+	int mode, int *door);
+/* The way (0-7, north clockwise) of a step dx, dy; -1 for none. */
+int e_way_of(int dx, int dy);
 
 /* Doors. The door a shape standing at x, y, z would be in, or -1: a handle, kept while the game
  * runs, as is what has been done to the door. */

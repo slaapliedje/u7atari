@@ -443,6 +443,11 @@ struct Chunk {
 	 * and above the chunk, as far as its objects reach (REACH_BEFORE, REACH_AFTER) */
 	uint16_t bin_start[CHUNK_BINS * CHUNK_BINS + 1];
 	uint8_t *bin_list;
+	/* collision, as the original's grid: per cell the levels solid statics take, those doors
+	 * take, and whether the ground is solid (water, rock); made when first asked for */
+	uint16_t *solid_at, *door_at;
+	uint16_t ground[16];        /* a row each, a bit a cell (x & 15) */
+	uint8_t grid_ok;
 };
 
 static struct Chunk *chunks;
@@ -475,6 +480,7 @@ static struct Chunk *chunk(int cx, int cy)
 	k->age = ++age_now;
 	k->nobj = 0;
 	k->built = 0;
+	k->grid_ok = 0;
 	k->nstatic = 0;
 	memset(k->flats, 0, sizeof k->flats);
 	uint32_t t_cells = eb_clock();
@@ -1084,33 +1090,102 @@ int e_follow(int i)
 	return ceiling;
 }
 
-/* Levels (a bit each) the solid statics take over the cells x0..x1, y0..y1, and apart (as the
- * original's collision grid keeps them) those the doors take. */
-static uint16_t levels_taken(int x0, int y0, int x1, int y1, uint16_t *doors)
+/* Chunk cx, cy's collision grid, made if need be: from its statics and those of the chunks east
+ * and south of it, whose footprints (west and north of their hot spots) reach into it. */
+static struct Chunk *grid(int cx, int cy)
 {
-	uint16_t taken = 0, door = 0;
+	struct Chunk *k = chunk_statics(cx, cy);
 
-	for (int cy = y0 >> 4; cy <= (y1 + 7) >> 4; cy++)
-		for (int cx = x0 >> 4; cx <= (x1 + 7) >> 4; cx++) {
+	if (k->grid_ok)
+		return k;
+	memset(k->solid_at, 0, 256 * 2);
+	memset(k->door_at, 0, 256 * 2);
+	memset(k->ground, 0, sizeof k->ground);
+	for (int i = 0; i < 256; i++) {
+		uint16_t type = rd16(k->cells + i * 2) & 0x3ff;
+		if (type < TILE_TYPES && (info[type].flags & INFO_SOLID))
+			k->ground[i >> 4] |= (uint16_t) (1u << (i & 15));
+	}
+	int x0 = cx * 16, y0 = cy * 16;
+	for (int n = 0; n < 4; n++) {
+		int ncx = cx + (n & 1), ncy = cy + (n >> 1);
+		if (ncx >= 192 || ncy >= 192)
+			continue;
+		const struct Chunk *o = n == 0 ? k : chunk_statics(ncx, ncy);
+		for (uint16_t j = 0; j < o->nstatic; j++) {
+			const struct Static *st = &o->statics[j];
+			const struct Info *in = &info[st->tf & 0x3ff];
+			if (!(in->flags & INFO_SOLID) || st->height == 0 || st->x - st->fx > x0 + 15
+				|| st->y - st->fy > y0 + 15 || st->x < x0 || st->y < y0)
+				continue;
+			uint16_t levels = (uint16_t) (((1u << st->height) - 1) << st->z);
+			uint16_t *to = in->flags & INFO_DOOR ? k->door_at : k->solid_at;
+			for (int y = clampi(st->y - st->fy, y0, y0 + 15); y <= st->y && y <= y0 + 15; y++)
+				for (int x = clampi(st->x - st->fx, x0, x0 + 15); x <= st->x && x <= x0 + 15; x++)
+					to[(y - y0) * 16 + x - x0] |= levels;
+		}
+	}
+	k->grid_ok = 1;
+	return k;
+}
+
+/* Levels (a bit each) the solid statics take over the cells x0..x1, y0..y1, and apart (as the
+ * original's collision grid keeps them) those the doors take; and whether any of the cells'
+ * ground is solid. */
+static inline __attribute__((always_inline)) uint16_t cells_taken(int x0, int y0, int x1, int y1,
+	uint16_t *doors, int *ground)
+{
+	static struct Chunk *last;
+	uint16_t taken = 0, door = 0;
+	int hard = 0;
+
+	/* most often all in one chunk, the one last asked about (routes ask a great deal) */
+	if (x0 >> 4 == x1 >> 4 && y0 >> 4 == y1 >> 4 && x0 >= 0 && y0 >= 0) {
+		const struct Chunk *k = last;
+		if (k == NULL || k->cx != x0 >> 4 || k->cy != y0 >> 4 || !k->grid_ok) {
+			if (x0 >> 4 >= 192 || y0 >> 4 >= 192)
+				goto none;
+			k = last = grid(x0 >> 4, y0 >> 4);
+		}
+		unsigned row = (unsigned) (y0 & 15) * 16;
+		uint16_t bits = (uint16_t) (((2u << (x1 & 15)) - 1) & ~((1u << (x0 & 15)) - 1));
+		for (int y = y0; y <= y1; y++, row += 16) {
+			const uint16_t *so = k->solid_at + row, *dr = k->door_at + row;
+			for (int x = x0 & 15; x <= (x1 & 15); x++) {
+				taken |= so[x];
+				door |= dr[x];
+			}
+			hard |= k->ground[row >> 4] & bits;
+		}
+		goto done;
+	}
+	for (int cy = y0 >> 4; cy <= y1 >> 4; cy++)
+		for (int cx = x0 >> 4; cx <= x1 >> 4; cx++) {
 			if (cx < 0 || cy < 0 || cx >= 192 || cy >= 192)
 				continue;
-			const struct Chunk *k = chunk_statics(cx, cy);
-			for (uint16_t j = 0; j < k->nstatic; j++) {
-				const struct Static *s = &k->statics[j];
-				const struct Info *in = &info[s->tf & 0x3ff];
-				if (!(in->flags & INFO_SOLID) || s->height == 0 || y0 > s->y
-					|| y1 < s->y - s->fy || x0 > s->x || x1 < s->x - s->fx)
-					continue;
-				uint16_t levels = (uint16_t) (((1u << s->height) - 1) << s->z);
-				if (in->flags & INFO_DOOR)
-					door |= levels;
-				else
-					taken |= levels;
-			}
+			const struct Chunk *k = grid(cx, cy);
+			for (int y = y0 > cy * 16 ? y0 : cy * 16; y <= y1 && y < cy * 16 + 16; y++)
+				for (int x = x0 > cx * 16 ? x0 : cx * 16; x <= x1 && x < cx * 16 + 16; x++) {
+					int c = (y & 15) * 16 + (x & 15);
+					taken |= k->solid_at[c];
+					door |= k->door_at[c];
+					hard |= k->ground[c >> 4] >> (c & 15) & 1;
+				}
 		}
+	goto done;
+none:
+	taken = door = 0;
+done:
 	if (doors != NULL)
 		*doors = door;
+	if (ground != NULL)
+		*ground = hard;
 	return taken;
+}
+
+static uint16_t levels_taken(int x0, int y0, int x1, int y1, uint16_t *doors)
+{
+	return cells_taken(x0, y0, x1, y1, doors, NULL);
 }
 
 /* A shape's footprint (cells west and north of its hot spot) and the levels it takes at z. */
@@ -1131,38 +1206,74 @@ int e_blocked(uint16_t tf, int16_t x, int16_t y, uint8_t z)
 	return ((levels_taken(x - fx, y - fy, x, y, &door) | door) & body) != 0;
 }
 
-/* As the original's CanWalkAt: nothing solid where it would stand at z, and something under it
- * (the ground at 0, else a solid static's top over any of its cells). With a door there, *door. */
-static int can_walk(uint16_t tf, int x, int y, int z, int *door)
+/* As the original's CanWalkAt, for a body taking levels body0 << z over cells whose solid
+ * levels are taken (ground: theirs is solid): nothing solid where it would stand, and something
+ * under it (the ground at 0, else a solid static's top over any of the cells). */
+static int walk_ok(uint16_t body0, uint16_t taken, int ground, int z)
 {
-	int fx, fy;
-	uint16_t body = body_of(tf, (uint8_t) z, &fx, &fy), doors;
-	uint16_t taken = levels_taken(x - fx, y - fy, x, y, &doors);
-
-	*door = (doors & body) != 0;
-	return !(taken & body) && (z == 0 || (taken >> (z - 1) & 1));
+	if (taken & (uint16_t) (body0 << z))
+		return 0;
+	return z == 0 ? !ground : (taken >> (z - 1)) & 1;
 }
 
-int e_step(uint16_t tf, int16_t *x, int16_t *y, uint8_t *z, int dx, int dy)
+/* Whether shape tf can stand at x, y, z (walk_ok); with a door there, *door. */
+static int can_walk(uint16_t tf, int x, int y, int z, int *door)
 {
-	int nx = *x + dx, ny = *y + dy, nz = *z, door;
+	int fx, fy, ground;
+	uint16_t body0 = body_of(tf, 0, &fx, &fy), doors;
+	uint16_t taken = cells_taken(x - fx, y - fy, x, y, &doors, &ground);
+
+	*door = (doors & (uint16_t) (body0 << z)) != 0;
+	return walk_ok(body0, taken, ground, z);
+}
+
+void e_body(uint16_t tf, struct EBody *b)
+{
+	int fx, fy;
+
+	b->levels = body_of(tf, 0, &fx, &fy);
+	b->fx = (int8_t) fx;
+	b->fy = (int8_t) fy;
+}
+
+int e_step_body(const struct EBody *b, int16_t *x, int16_t *y, uint8_t *z, int dx, int dy, int through)
+{
+	int nx = *x + dx, ny = *y + dy, nz = *z, ground;
+	uint16_t body0 = b->levels, doors;
+	uint16_t taken = cells_taken(nx - b->fx, ny - b->fy, nx, ny, &doors, &ground);
 
 	/* as CheckMove for a walker: its level, else one up, else one down */
-	if (!can_walk(tf, nx, ny, nz, &door)) {
-		if (nz < 15 && can_walk(tf, nx, ny, nz + 1, &door))
+	if (!walk_ok(body0, taken, ground, nz)) {
+		if (nz < 15 && walk_ok(body0, taken, ground, nz + 1))
 			nz++;
-		else if (nz > 0 && can_walk(tf, nx, ny, nz - 1, &door))
+		else if (nz > 0 && walk_ok(body0, taken, ground, nz - 1))
 			nz--;
 		else
 			return E_STEP_BLOCKED;
 	}
-	/* a door there: the avatar's step (and a route's) stops at it */
-	if (door)
+	int door = (doors & (uint16_t) (body0 << nz)) != 0;
+	/* a door there: the avatar's step (and a route's) stops at it; a route planned goes on */
+	if (door && !through)
 		return E_STEP_DOOR;
 	*x = (int16_t) nx;
 	*y = (int16_t) ny;
 	*z = (uint8_t) nz;
-	return E_STEP_MADE;
+	return door ? E_STEP_DOOR : E_STEP_MADE;
+}
+
+int e_step(uint16_t tf, int16_t *x, int16_t *y, uint8_t *z, int dx, int dy)
+{
+	struct EBody b;
+
+	e_body(tf, &b);
+	return e_step_body(&b, x, y, z, dx, dy, 0);
+}
+
+int e_can_stand(uint16_t tf, int16_t x, int16_t y, uint8_t z)
+{
+	int door;
+
+	return can_walk(tf, x, y, z, &door) && !door;
 }
 
 int e_walk(uint16_t tf, int16_t *x, int16_t *y, uint8_t *z, int dx, int dy, int open_doors)
@@ -1273,6 +1384,25 @@ static void doors_into(struct Region *r)
 	}
 }
 
+/* The handle of the door that is static s of chunk cx, cy: kept, or made; -1 if none is left. */
+static int door_of(const struct Static *s, int cx, int cy)
+{
+	for (int d = 0; d < ndoors; d++)
+		if (doors[d].x == s->x && doors[d].y == s->y && doors[d].tf == s->tf
+			&& doors[d].z == s->z)
+			return d;
+	if (ndoors == MOST_DOORS)
+		return -1;
+	struct Door *o = &doors[ndoors];
+	o->x0 = o->x = s->x;
+	o->y0 = o->y = s->y;
+	o->tf0 = o->tf = s->tf;
+	o->z = s->z;
+	o->lcx = (int16_t) cx;
+	o->lcy = (int16_t) cy;
+	return ndoors++;
+}
+
 int e_door_at(uint16_t tf, int16_t x, int16_t y, uint8_t z)
 {
 	int fx, fy;
@@ -1290,23 +1420,18 @@ int e_door_at(uint16_t tf, int16_t x, int16_t y, uint8_t z)
 					|| x0 > s->x || x < s->x - s->fx
 					|| !((((1u << (s->height ? s->height : 1)) - 1) << s->z) & body))
 					continue;
-				for (int d = 0; d < ndoors; d++)
-					if (doors[d].x == s->x && doors[d].y == s->y && doors[d].tf == s->tf
-						&& doors[d].z == s->z)
-						return d;
-				if (ndoors == MOST_DOORS)
-					return -1;
-				struct Door *o = &doors[ndoors];
-				o->x0 = o->x = s->x;
-				o->y0 = o->y = s->y;
-				o->tf0 = o->tf = s->tf;
-				o->z = s->z;
-				o->lcx = (int16_t) cx;
-				o->lcy = (int16_t) cy;
-				return ndoors++;
+				return door_of(s, cx, cy);
 			}
 		}
 	return -1;
+}
+
+/* The levels taken at cell x, y, solid or by a door. */
+static uint16_t taken_at(int x, int y)
+{
+	uint16_t door = 0;
+
+	return (uint16_t) (levels_taken(x, y, x, y, &door) | door);
 }
 
 int e_door_shut(int door)
@@ -1316,12 +1441,11 @@ int e_door_shut(int door)
 	int fx = o->tf & 0x8000 ? in->fy : in->fx, fy = o->tf & 0x8000 ? in->fx : in->fy;
 	uint16_t levels = (uint16_t) (((1u << (in->height ? in->height : 1)) - 1) << o->z);
 
-	/* shut when in a wall: something solid past each end of it, along its length */
+	/* shut when in a wall: something past each end of it, along its length (a wall, or the other
+	 * leaf of a double door) */
 	if (fx >= fy)
-		return (levels_taken(o->x - fx - 1, o->y, o->x - fx - 1, o->y, NULL) & levels)
-			&& (levels_taken(o->x + 1, o->y, o->x + 1, o->y, NULL) & levels);
-	return (levels_taken(o->x, o->y - fy - 1, o->x, o->y - fy - 1, NULL) & levels)
-		&& (levels_taken(o->x, o->y + 1, o->x, o->y + 1, NULL) & levels);
+		return (taken_at(o->x - fx - 1, o->y) & levels) && (taken_at(o->x + 1, o->y) & levels);
+	return (taken_at(o->x, o->y - fy - 1) & levels) && (taken_at(o->x, o->y + 1) & levels);
 }
 
 void e_door_place(int door, int16_t *x, int16_t *y)
@@ -1340,6 +1464,13 @@ static void static_changed(uint16_t tf, int x, int y, int z, int cx, int cy)
 		chunks[slot - 1].built = 0;
 		chunk_gen[slot - 1]++;
 	}
+	/* its grid, and those west and north its footprint may reach into */
+	for (int n = 0; n < 4; n++) {
+		int gx = cx - (n & 1), gy = cy - (n >> 1);
+		uint8_t g = gx >= 0 && gy >= 0 ? chunk_slot[gy * 192 + gx] : 0;
+		if (g != 0)
+			chunks[g - 1].grid_ok = 0;
+	}
 	if (picture_rect(tf, x, y, z, r))
 		for (int ay = r[1] >> 7; ay <= r[3] >> 7; ay++)
 			for (int ax = r[0] >> 7; ax <= r[2] >> 7; ax++)
@@ -1349,7 +1480,8 @@ static void static_changed(uint16_t tf, int x, int y, int z, int cx, int cy)
 		movers[m].cached = 0;
 }
 
-int e_door_toggle(int door)
+/* One leaf opened or shut, as its usecode does it; 0 if it can't be. */
+static int door_turn(int door)
 {
 	struct Door *o = &doors[door];
 	int state = o->tf >> 10 & 3, mx = 0, my = 0;
@@ -1403,6 +1535,55 @@ int e_door_toggle(int door)
 	o->lcy = (int16_t) (y >> 4);
 	static_changed(tf, x, y, o->z, o->lcx, o->lcy);
 	e_stats.doors_turned++;
+	return 1;
+}
+
+/* The other leaf of a double door: as the doors' usecode looks for it, the partner type (270 and
+ * 432, 376 and 433, 225 and 246, 392 and 250) within 7 cells of the leaf just turned, as open or
+ * shut as that one was, on its row or its column (by type and state); -1 if there is none. */
+static int partner(uint16_t type, int state, int x, int y, uint8_t z)
+{
+	uint16_t want;
+	int row;                    /* 1: the same y; 0: the same x */
+
+	switch (type) {
+	case 270: want = 432; break;
+	case 432: want = 270; break;
+	case 225: want = 246; break;
+	case 246: want = 225; break;
+	case 376: want = 433; break;
+	case 433: want = 376; break;
+	case 392: want = 250; break;
+	case 250: want = 392; break;
+	default: return -1;
+	}
+	row = (type == 270 || type == 432 || type == 225 || type == 246) ? state == 0 : state == 1;
+	for (int cy = (y - 7) >> 4; cy <= (y + 7) >> 4; cy++)
+		for (int cx = (x - 7) >> 4; cx <= (x + 7) >> 4; cx++) {
+			if (cx < 0 || cy < 0 || cx >= 192 || cy >= 192)
+				continue;
+			const struct Chunk *k = chunk_statics(cx, cy);
+			for (uint16_t j = 0; j < k->nstatic; j++) {
+				const struct Static *s = &k->statics[j];
+				if ((s->tf & 0x3ff) == want && (s->tf >> 10 & 3) == state && s->z == z
+					&& s->x >= x - 7 && s->x <= x + 7 && s->y >= y - 7 && s->y <= y + 7
+					&& (row ? s->y == y : s->x == x))
+					return door_of(s, cx, cy);
+			}
+		}
+	return -1;
+}
+
+int e_door_toggle(int door)
+{
+	uint16_t type = doors[door].tf & 0x3ff;
+	int state = doors[door].tf >> 10 & 3;
+
+	if (!door_turn(door))
+		return 0;
+	int other = partner(type, state, doors[door].x, doors[door].y, doors[door].z);
+	if (other >= 0 && other != door)
+		door_turn(other);
 	return 1;
 }
 
@@ -1854,7 +2035,9 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 	for (int i = 0; i < CHUNK_SLOTS; i++) {
 		chunks[i].cx = chunks[i].cy = -1000;
 		if ((chunks[i].statics = take(CHUNK_STATICS * sizeof(struct Static))) == NULL
-			|| (chunks[i].bin_list = take(CHUNK_BIN_ENTRIES)) == NULL)
+			|| (chunks[i].bin_list = take(CHUNK_BIN_ENTRIES)) == NULL
+			|| (chunks[i].solid_at = take(256 * 2)) == NULL
+			|| (chunks[i].door_at = take(256 * 2)) == NULL)
 			return -7;
 	}
 	ring.pitch = ring.w = RING_W;
@@ -1910,6 +2093,15 @@ void e_set_view(int16_t x, int16_t y)
 {
 	view_x = x;
 	view_y = y;
+}
+
+void e_near_window(int16_t *x0, int16_t *y0, int16_t *x1, int16_t *y1)
+{
+	/* the chunks under the view and one round them: those the chunk slots keep */
+	*x0 = (int16_t) (((view_x >> 4) - 1) * 16);
+	*y0 = (int16_t) (((view_y >> 4) - 1) * 16);
+	*x1 = (int16_t) ((((view_x + E_VIEW_W / 8 - 1) >> 4) + 2) * 16 - 1);
+	*y1 = (int16_t) ((((view_y + E_VIEW_H / 8 - 1) >> 4) + 2) * 16 - 1);
 }
 
 /* The next area ahead of the view not yet in the ring, if the ring has room for it beside what

@@ -33,9 +33,9 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
 - **The NPCs** (`core/world.c`) keep the original's schedules (`SCHEDULE.DAT`): for each three
   hours of the day, what each takes up and where. As the original, an NPC goes on with what it
   is doing (its work type in `NPC.DAT`) until its next entry comes round. Then those near the
-  avatar walk to the place (a cell every 10 blanks, along walls when one way is free), and the
-  rest are put there. At the place the roaming kinds (loiter, wander, pace, patrol, graze, ...)
-  walk to places within 4 cells in turn; the others stand. A game hour is a real minute for now
+  avatar walk to the place (a cell every 10 blanks) on a route, and the rest are put there. At
+  the place the roaming kinds (loiter, wander, pace, patrol, graze, ...) walk to places within 4
+  cells in turn; the others stand. A game hour is a real minute for now
   (`E_WORLD_MINUTE`); `-DSTART_MINUTES=` sets the time to start at (535: five minutes before the
   9:00 change, to see them go).
 - **Roofs.** As the original works it out (`UpdateCeiling`): of the levels the solid statics (not
@@ -50,16 +50,33 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   level, or failing that one up or one down, where nothing solid is in the way and something is
   under it (the ground, or a solid static's top): so up and down stairs, a level a step. Doors
   are kept apart from the solid statics, as the original's collision grid has them: they stop the
-  avatar, which otherwise veers an eighth either way round what is in its way.
+  avatar, which otherwise veers an eighth either way round what is in its way. Solid ground
+  (water, rock) stops a walker at level 0. What the statics take is kept as the original keeps
+  it, a grid of levels per cell (here one per chunk held, made when first asked for, made again
+  where a door turns).
+- **Routes** (`core/route.c`), as the original plans them (`Route::plan`): a straight walk at the
+  goal (straight, else along the longer axis, else the shorter); where that is blocked, two
+  walkers along the obstacle, one each way round, until one is nearer the goal than it has been
+  and can step straight at it; waypoints where they turn and where the level changes; planned
+  from the top when the goal is higher; then straightened, a waypoint either side of each door
+  walked through. Doors count as open while planning. The original's limits: 150 steps searched
+  to a schedule's place (at level 0), 45 roaming. Walking one is the original's too: a step at
+  the next waypoint, a shut door in the way opened, an open leaf walked round, planned again
+  after more than 3 steps not made, given up after half as many steps again as it is long (then
+  it walks straight at the goal). Routes are planned within the chunks held round the view, as
+  the original's collision grid covers only the world near the avatar: a place beyond them is
+  walked towards (to the nearest cell within them it could stand on, then on from there), or,
+  the NPC off the screen, it is put there. One route is planned a world step; the rest wait.
 - **Doors** (`e_door_at`, `e_door_toggle`) are movable items. Opening or shutting one does what
   the doors' usecode and the original's `toggleDoor` do: its type swapped for its other (270 and
   376, 432 and 433, the abbey's 225 and 392, 246 and 250), the frame's state flipped, the 432/433
   and 246/250 kinds moved 3 cells; states 2 and 3 are locked. A door changed is kept in a table
   and put back when its region is read again; its chunks are made again and the ring's areas
-  under it drawn again. A door is shut when something solid lies past each end of it, as Exult
-  tells. NPCs open a shut door in their way and shut it once 2 cells further from it than they
-  came, as the original's routes do. (Double doors' second leaf, which the usecode turns too, and
-  the sounds are not done.)
+  under it drawn again. A double door's other leaf turns with it, found as the usecode finds it:
+  the partner type (270 and 432, 376 and 433, 225 and 246, 392 and 250) within 7 cells, as open
+  or shut, on the same row or column. A door is shut when something lies past each end of it (a
+  wall, or the other leaf), as Exult tells. NPCs open a shut door in their way and shut it once 2
+  cells further from it than they came, as the original's routes do. (The sounds are not done.)
 - **Depth.** An object stands at the bottom right of its footprint and is lifted 4 pixels up and
   left a level. What lies south, east or above is in front: `order_of()` in `core/engine.c`.
 - **Shapes** are read on demand into a ring that gives the oldest way; the movers' are kept apart.
@@ -76,7 +93,7 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
 
 - `core/` — portable C: the data files, the order, the layer, the movers; `shapes.c`, the
   shape conversion, on its own so the dataset tool can use it; `world.c`, the clock and the
-  NPCs on their schedules. It needs files
+  NPCs on their schedules; `route.c`, their routes. It needs files
   (plat.h's `plat_file_*` names), a clock, and three drawing calls (`eb_copy`, `eb_tiles`,
   `eb_shape`) into 8-bit surfaces.
 - `host/` — the PC: draws views to PPM pictures (`u7engine <dir>/ <x> <y> [--walk dx dy n]
@@ -110,7 +127,10 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
 
 The walk at Trinsic (into the stables and out, about 10 NPCs in view) runs at 30-59 frames a
 second, the worst frame 2-10 blanks. (It was 41-59 and 4-6 before the movable items were read
-right: many were lost, and the areas hold more now.)
+right: many were lost, and the areas hold more now.) At 21:00 (`-DSTART_MINUTES=1259`), when NPCs
+near the avatar set off for their evening places, the first 64 frames are 21 a second, the
+worst 16 blanks; then as at 6:00. A route costs the 68000 about 0.4 ms a step tried: planning to
+every sixth cell near Trinsic's gate (`-DENGINE_ROUTE_BENCH`), 4.7 blanks a route, the most 20.
 
 Frames a second, averaged over 64 frames; the view scrolls a cell every frame (60 cells a second,
 many times walking pace) or every fourth frame (15 cells a second):
@@ -171,7 +191,8 @@ Built with `-DENGINE_BENCH_SHAPES` the Jaguar build logs those timings at the st
 68000's speed; `-DENGINE_LAYERS` shows the ring by the object processor (above);
 `-DENGINE_C_MOVERS` draws the movers by the core's C; `-DENGINE_FRAME_SUMS` logs a sum of each
 of the first 400 frames' pixels, which hang on the frame count alone: the GPU's movers and the
-C's give the same 400. With
+C's give the same 400; `-DENGINE_ROUTE_BENCH` plans routes from the avatar to every sixth cell
+near the view at the start and logs what they cost. With
 `U7_JAG_FRAME_POINTERS` (or `-fno-omit-frame-pointer -DJAG_PROF_FRAMES`) the profile has whole
 call chains (`tools/jag-profile.py --frames`).
 
@@ -187,8 +208,8 @@ call chains (`tools/jag-profile.py --frames`).
   the ring.
 - **Translucency**; **NPCs** from a save (it holds them as the game's memory, `U7NBUF.DAT` and
   `U7IBUF.DAT`, not as `NPC.DAT`); what their schedules' kinds do at the place (sleep, eat,
-  work, sell), finding a way round more than a wall, and keeping out of each other's way;
-  double doors opened together, door sounds; the party.
+  work, sell), and keeping out of each other's way (the movers are not in the collision grid);
+  door sounds; the party.
 - **Order.** `order_of()` is a simple rule. It still needs checking against the original's frames
   at the same places (the PC reference can draw them). The ring version already draws doors and
   benches that the first version lost.

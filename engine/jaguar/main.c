@@ -810,6 +810,39 @@ static int walk_init(void)
 	return 1;
 }
 
+#ifdef ENGINE_ROUTE_BENCH
+static void route_bench(void)
+{
+	/* routes from the avatar to every 6th cell it could stand on near the view, twice (the
+	 * first reads the chunks in): blanks for all, the most one took, how many found */
+	static struct EWay way[E_ROUTE_WAYS];
+	static char text[160];
+	int16_t x0, y0, x1, y1;
+	uint16_t tf = e_walk_frame(npcs[me].tf & 0x3ff, 2, 0);
+	e_set_view((int16_t) (ax - E_VIEW_CELLS_X / 2), (int16_t) (ay - E_VIEW_CELLS_Y / 2));
+	e_near_window(&x0, &y0, &x1, &y1);
+	for (int pass = 0; pass < 2; pass++) {
+		uint32_t all = 0, most = 0, found = 0, tried = 0, steps = e_stats.route_steps;
+		for (int ty = y0; ty <= y1; ty += 6)
+			for (int tx = x0; tx <= x1; tx += 6) {
+				if (!e_can_stand(tf, (int16_t) tx, (int16_t) ty, 0))
+					continue;
+				uint32_t t0 = eb_clock();
+				found += e_route_plan(tf, ax, ay, az, (int16_t) tx, (int16_t) ty, 0, 150, way) > 0;
+				uint32_t t = eb_clock() - t0;
+				all += t;
+				most = t > most ? t : most;
+				tried++;
+			}
+		snprintf(text, sizeof text, "route bench %d: %lu tried %lu found, steps %lu, blanks "
+			"%lu.%lu, worst %lu.%lu\n", pass, (unsigned long) tried, (unsigned long) found,
+			(unsigned long) (e_stats.route_steps - steps), tenths(all) / 10, tenths(all) % 10,
+			tenths(most) / 10, tenths(most) % 10);
+		GD_DebugString(text);
+	}
+}
+#endif
+
 /* A cell for each WALK_BLANKS blanks gone: the pad's way, or the demo's; veering round what is in
  * the way, up and down stairs, a shut door in the way opened. A: the door ahead opened or shut.
  * The NPCs near it picked again when it has gone 8 cells; the ceiling over it. */
@@ -936,6 +969,9 @@ void jag_main(void)
 	jag_prof_pit = 1;
 	jag_prof_end = profile + sizeof profile;
 	jag_prof_next = profile;
+#ifdef ENGINE_ROUTE_BENCH
+	route_bench();
+#endif
 	GD_DebugString("engine test: running\n");
 	mark_ticks = last_shown = jag_ticks;
 	for (;;) {
@@ -1026,6 +1062,14 @@ void jag_main(void)
 			e_stats.front_time = e_stats.front_misses = 0;
 			e_stats.build_time = e_stats.copy_time = e_stats.object_time = e_stats.finish_time = 0;
 			GD_DebugString(text);
+			if (e_stats.routes_planned != 0) {
+				/* routes planned (found), steps tried, blanks spent in all and the most one took */
+				snprintf(text, sizeof text, "routes %lu steps %lu blanks %lu.%lu worst %lu.%lu\n",
+					(unsigned long) e_stats.routes_planned, (unsigned long) e_stats.route_steps,
+					tenths(e_stats.route_time) / 10, tenths(e_stats.route_time) % 10,
+					tenths(e_stats.route_worst) / 10, tenths(e_stats.route_worst) % 10);
+				GD_DebugString(text);
+			}
 			mark_ticks = now;
 			mark_frame = frame;
 		}

@@ -11,8 +11,9 @@
  *                      roofs over it lifted, walls in its way, up and down stairs, shut doors
  *                      it walks into opened
  *     --path "dx,dy,n;..." with --avatar: legs of a walk, n cells each
- *     --from x,y       with --avatar: start the avatar there
+ *     --from x,y[,z]   with --avatar: start the avatar there
  *     --time m         with --avatar: the time to start at, minutes from midnight (default 360)
+ *     --route x,y[,z]  with --avatar: the avatar walks to x, y, z on a route, as an NPC walks one
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -209,7 +210,56 @@ static int start_minutes = 6 * 60;
 static void save(const char *name);
 
 static const char *path;
-static int from_x = -1, from_y = -1;
+static int from_x = -1, from_y = -1, from_z = -1;
+static int route_x = -1, route_y = -1, route_z;
+
+/* --route: the avatar's step on its route to route_x, route_y (planned the first time), as an
+ * NPC's (world.c): 1 and the step's dx, dy; 0 when it stays; -1 when there or given up. */
+static int route_step(uint16_t tf, int16_t *ax, int16_t *ay, uint8_t *az, int *dx, int *dy, int f)
+{
+	static const int8_t way_x[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
+	static const int8_t way_y[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
+	static struct EWay way[E_ROUTE_WAYS];
+	static int n = -1, next, failures;
+	int door;
+
+	*dx = *dy = 0;
+	if (n < 0 || failures > 3) {
+		n = e_route_plan(tf, *ax, *ay, *az, (int16_t) route_x, (int16_t) route_y, (uint8_t) route_z, 400, way);
+		next = failures = 0;
+		printf("frame %d: route from %d,%d,%d:", f, *ax, *ay, *az);
+		for (int k = 0; k < n; k++)
+			printf(" %d,%d,%d", way[k].x, way[k].y, way[k].z);
+		printf("%s\n", n ? "" : " none");
+		if (n == 0)
+			return -1;
+	}
+	if (*ax == route_x && *ay == route_y && *az == route_z)
+		return -1;
+	if (next < n - 1 && *ax == way[next].x && *ay == way[next].y && *az == way[next].z)
+		next++;
+	int16_t x = *ax, y = *ay;
+	uint8_t z = *az;
+	int d = e_route_step(tf, &x, &y, &z, way[next].x, way[next].y, way[next].z, E_ROUTE_STOP, &door);
+	if (d >= 0 && door) {
+		int k = e_door_at(tf, (int16_t) (x + way_x[d]), (int16_t) (y + way_y[d]), z);
+		if (k >= 0 && e_door_shut(k) && e_door_toggle(k)) {
+			printf("frame %d: a door opened at %d,%d\n", f, x + way_x[d], y + way_y[d]);
+			return 0;
+		}
+		d = e_route_step(tf, &x, &y, &z, way[next].x, way[next].y, way[next].z, E_ROUTE_AVOID, &door);
+	}
+	if (d < 0) {
+		failures++;
+		return 0;
+	}
+	*dx = way_x[d];
+	*dy = way_y[d];
+	*ax = x;
+	*ay = y;
+	*az = z;
+	return 1;
+}
 
 static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 {
@@ -227,6 +277,8 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 	if (from_x >= 0) {
 		npcs[me].x = (int16_t) from_x;
 		npcs[me].y = (int16_t) from_y;
+		if (from_z >= 0)
+			npcs[me].z = (uint8_t) from_z;
 	}
 	int16_t ax = npcs[me].x, ay = npcs[me].y;
 	uint8_t az = npcs[me].z;
@@ -237,10 +289,19 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 	e_mover_set(0, npcs[me].tf, ax, ay, az);
 	e_world_init(npcs, nnpcs, start_minutes, 0);
 	e_world_step(0, ax, ay);
-	if (path)
+	if (path || route_x >= 0)
 		n = 100000;
 	for (int f = 0; f < n; f++) {
-		if (f > 0 && (f & 1) == 0) {
+		if (f > 0 && (f & 1) == 0 && route_x >= 0) {
+			int r = route_step(e_walk_frame(type, 2, 0), &ax, &ay, &az, &dx, &dy, f);
+			if (r < 0 || f > 4000) {
+				printf("end: avatar %d,%d,%d; doors opened or shut %u\n", ax, ay, az,
+					e_stats.doors_turned);
+				break;
+			}
+			if (dx || dy)
+				dir = ((e_way_of(dx, dy) + 1) & 7) >> 1;
+		} else if (f > 0 && (f & 1) == 0) {
 			while (leg_n == 0 && next != NULL && *next) {
 				if (sscanf(next, "%d,%d,%d", &leg_dx, &leg_dy, &leg_n) != 3)
 					break;
@@ -268,6 +329,13 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 		e_mover_set(0, dx || dy ? e_walk_frame(type, dir, f / 2) : npcs[me].tf, ax, ay, az);
 		/* a frame here is 4 blanks (the avatar a cell every 2 frames, the Jaguar's 8 blanks) */
 		e_world_step((uint32_t) f * 4, ax, ay);
+		static uint32_t routes_seen;
+		if (e_stats.routes_planned + e_stats.routes_failed != routes_seen) {
+			routes_seen = e_stats.routes_planned + e_stats.routes_failed;
+			printf("frame %d: routes %u (%u not found), steps tried %u, time %u worst %u\n", f,
+				e_stats.routes_planned, e_stats.routes_failed,
+				e_stats.route_steps, e_stats.route_time, e_stats.route_worst);
+		}
 		static uint32_t doors_seen;
 		if (e_stats.doors_turned != doors_seen) {
 			doors_seen = e_stats.doors_turned;
@@ -328,7 +396,9 @@ int main(int argc, char **argv)
 		else if (!strcmp(argv[i], "--path") && i + 1 < argc)
 			path = argv[++i];
 		else if (!strcmp(argv[i], "--from") && i + 1 < argc)
-			sscanf(argv[++i], "%d,%d", &from_x, &from_y);
+			sscanf(argv[++i], "%d,%d,%d", &from_x, &from_y, &from_z);
+		else if (!strcmp(argv[i], "--route") && i + 1 < argc)
+			sscanf(argv[++i], "%d,%d,%d", &route_x, &route_y, &route_z);
 		else if (!strcmp(argv[i], "--time") && i + 1 < argc)
 			start_minutes = atoi(argv[++i]);
 	}
