@@ -1450,7 +1450,7 @@ int e_door_ahead(uint16_t tf, int16_t x, int16_t y, uint8_t z, int dx, int dy)
  * one touched is kept here (where it began, where and what it is now, the chunk whose list has
  * it, whether it is gone), and put back so when its region is read again ---- */
 
-#define MOST_DOORS 256
+#define MOST_DOORS 512
 
 static struct Door {
 	int16_t x0, y0;             /* where it began, as its region's file has it */
@@ -1905,6 +1905,25 @@ int e_shape_frames(uint16_t type)
 	const uint32_t *s = (const uint32_t *) shape(type);
 
 	return s == NULL || type < TILE_TYPES ? 0 : (int) (s[1] / 4 - 1);
+}
+
+int e_thing_ref(const struct EThing *t)
+{
+	int d = thing_handle(t);
+
+	return d < 0 ? 0 : d + 1;
+}
+
+int e_ref_thing(int ref, struct EThing *t)
+{
+	if (ref < 1 || ref > ndoors || doors[ref - 1].gone)
+		return 0;
+	const struct Door *o = &doors[ref - 1];
+	t->tf = o->tf;
+	t->x = o->x;
+	t->y = o->y;
+	t->z = o->z;
+	return 1;
 }
 
 int e_thing_quality(const struct EThing *t)

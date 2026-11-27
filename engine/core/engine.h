@@ -407,6 +407,10 @@ int e_thing_set(struct EThing *t, uint16_t tf);
 int e_thing_add(uint16_t tf, int16_t x, int16_t y, uint8_t z, struct EThing *out);
 /* How many frames an object shape has (0: none, or a flat). */
 int e_shape_frames(uint16_t type);
+/* A movable item's number for the usecode (1 on, kept while the game runs), or 0; and the item
+ * a number is now: 1, or 0 when it is none (or gone). */
+int e_thing_ref(const struct EThing *t);
+int e_ref_thing(int ref, struct EThing *t);
 /* A movable item's quality (a path marker's what to do), or -1 when it is not one there. */
 int e_thing_quality(const struct EThing *t);
 /* A movable item taken out of the world, as eaten: 1; 0 when it is not there. */

@@ -584,11 +584,24 @@ static int ref_of_npc(int k)
 	return k < 0 ? 0 : npc[k].number == 0 ? UC_AVATAR : -npc[k].number;
 }
 
-/* Where what ref refers to is (an NPC; the avatar where the world step has it): 1. */
+/* The item a number is, in the world (not an NPC): 1. */
+static int thing_of(int ref, struct EThing *t)
+{
+	return ref > 0 && ref < 0x4000 && e_ref_thing(ref, t);
+}
+
+/* Where what ref refers to is (an NPC, the avatar where the world step has it; an item): 1. */
 static int place_of_ref(int ref, int *x, int *y, int *z)
 {
 	int k = npc_of_ref(ref);
+	struct EThing t;
 
+	if (k < 0 && thing_of(ref, &t)) {
+		*x = t.x;
+		*y = t.y;
+		*z = t.z;
+		return 1;
+	}
 	if (k < 0)
 		return 0;
 	if (k == avatar_index()) {
@@ -898,6 +911,116 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 			else
 				npc[k].status &= (uint16_t) ~bit[f];
 		}
+		return 0;
+	}
+	case 0x0d: {                /* SetItemShape: type, item */
+		struct EThing t;
+		if (thing_of(arg_int(args, 2), &t))
+			e_thing_set(&t, (uint16_t) ((t.tf & ~0x3ffu) | (arg_int(args, 1) & 0x3ff)));
+		return 0;
+	}
+	case 0x0e: {                /* FindNearest: item, type, distance (-1: 20) */
+		int x, y, z, type = arg_int(args, 2), far = arg_int(args, 3);
+		static struct EThing found[48];
+		if (far == -1)
+			far = 20;
+		*ret = val_int(0);
+		if (type < 0 || !place_of_ref(arg_int(args, 1), &x, &y, &z))
+			return 0;
+		int n = e_things((uint16_t) type, (int16_t) (x - far), (int16_t) (y - far), (int16_t) (x + far),
+			(int16_t) (y + far), found, 48), best = -1, best_far = 0;
+		for (k = 0; k < n; k++) {
+			int d = far_of(x, y, found[k].x, found[k].y);
+			if (best < 0 || d < best_far) {
+				best = k;
+				best_far = d;
+			}
+		}
+		if (best >= 0)
+			*ret = val_int(e_thing_ref(&found[best]));
+		return 0;
+	}
+	case 0x0f:                  /* Sfx: at the avatar */
+		e_sound(arg_int(args, 1), me_x, me_y);
+		return 0;
+	case 0x11:                  /* GetItemShape */
+	case 0x12: {                /* GetItemFrame */
+		struct EThing t;
+		k = npc_of_ref(arg_int(args, 1));
+		uint16_t tf = k >= 0 ? npc[k].tf : thing_of(arg_int(args, 1), &t) ? t.tf : 0;
+		*ret = val_int(num == 0x11 ? tf & 0x3ff : tf >> 10 & 31);
+		return 0;
+	}
+	case 0x13: {                /* SetItemFrame: item, frame */
+		struct EThing t;
+		if (thing_of(arg_int(args, 1), &t))
+			e_thing_set(&t, (uint16_t) ((t.tf & ~(31u << 10)) | (uint16_t) (arg_int(args, 2) & 31) << 10));
+		return 0;
+	}
+	case 0x14:                  /* GetQuality */
+	case 0x16: {                /* GetItemQuantity (its quality byte, for those counted) */
+		struct EThing t;
+		k = thing_of(arg_int(args, 1), &t) ? e_thing_quality(&t) : 0;
+		*ret = val_int(k < 0 ? 0 : num == 0x16 && k == 0 ? 1 : k);
+		return 0;
+	}
+	case 0x31:                  /* IsNpc */
+		*ret = val_int(npc_of_ref(arg_int(args, 1)) >= 0);
+		return 0;
+	case 0x35: {                /* FindNearby: item or place, type, radius, flags */
+		static struct EThing found[48];
+		int x, y, z, type = arg_int(args, 2), r = arg_int(args, 3), n = 0;
+		int16_t refs[48];
+		const struct Val *where = &args[-1];
+		if (where->len == 1) {
+			if (!place_of_ref(first_int(where), &x, &y, &z))
+				return 0;
+		} else if (where->len >= 2) {
+			x = to_int(atom(where, where->len == 4 ? 1 : 0));
+			y = to_int(atom(where, where->len == 4 ? 2 : 1));
+		} else
+			return 0;
+		if (type == UC_ALL || type < 0) {
+			/* NPCs about (what the conversations look for) */
+			for (k = 0; k < nnpc && n < 48; k++) {
+				int nx, ny, nz;
+				if (place_of_ref(ref_of_npc(k), &nx, &ny, &nz) && far_of(x, y, nx, ny) <= r)
+					refs[n++] = (int16_t) ref_of_npc(k);
+			}
+		} else {
+			int m = e_things((uint16_t) type, (int16_t) (x - r), (int16_t) (y - r), (int16_t) (x + r),
+				(int16_t) (y + r), found, 48);
+			for (k = 0; k < m; k++)
+				refs[n++] = (int16_t) e_thing_ref(&found[k]);
+			for (k = 0; k < nnpc && n < 48; k++)
+				if ((npc[k].tf & 0x3ff) == type && far_of(x, y, npc[k].x, npc[k].y) <= r)
+					refs[n++] = (int16_t) ref_of_npc(k);
+		}
+		struct Atom *t = val_list(ret, n);
+		for (k = 0; t != NULL && k < n; k++) {
+			t[k].type = A_INT;
+			t[k].n = refs[k];
+			t[k].s = NULL;
+		}
+		return 0;
+	}
+	case 0x40: {                /* ItemSay: item, text (over an NPC) */
+		k = npc_of_ref(arg_int(args, 1));
+		const struct Atom *a = atom(&args[-2], 0);
+		if (k >= 0 && a->type == A_TEXT)
+			e_bark(k == avatar_index() ? 0 : in_slot(k), a->s, 15 * TICK_BLANKS);
+		return 0;
+	}
+	case 0x6f: {                /* RemoveItem */
+		struct EThing t;
+		if (thing_of(arg_int(args, 1), &t))
+			e_thing_remove(&t);
+		return 0;
+	}
+	case 0x86: {                /* PlaySoundEffect2: sound, item */
+		int x, y, z;
+		if (place_of_ref(arg_int(args, 2), &x, &y, &z))
+			e_sound(arg_int(args, 1), (int16_t) x, (int16_t) y);
 		return 0;
 	}
 	case 0x01:                  /* Post, PostInFuture: scripts on items (not yet: done) */

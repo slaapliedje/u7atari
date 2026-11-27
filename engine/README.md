@@ -201,7 +201,11 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   three frames holds the conversation nothing is drawn till a key changes it (drawn every
   frame, its letters, a shape each, took the frame rate from 42 to 20). On the PC `--talk n`
   with `--out` saves a picture at each stop. `-DENGINE_TALK_TEST` opens Iolo's at the start.
-  Not yet: using items, the conversations' item intrinsics.
+  Items in the world are given the usecode as numbers (`e_thing_ref`: their place in the
+  table of moved items, so a number stays the item's while the game runs): finding the nearest
+  or those about (`FindNearest`, `FindNearby`), their shape, frame, quality and quantity, a
+  new shape or frame, taking one away, sounds at one. Not yet: the avatar's belongings (gold,
+  items handed over, counted or taken), choosing a number, double-clicking items.
 
 ## Layout
 
