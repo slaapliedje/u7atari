@@ -268,6 +268,8 @@ int e_inside(void);                     /* the avatar under a roof (the view's c
 #define E_UC_NUMBER 3           /* a number to choose (e_uc_number); then e_uc_resume_number */
 #define E_UC_SIGN 4             /* a sign shown (e_uc_sign, its lines e_uc_text split by \r); then
                                  * e_uc_resume(NULL) */
+#define E_UC_TARGET 5           /* something to point at (the original's click on an item); then
+                                 * e_uc_resume_target */
 #define E_UC_CODE (128 * 1024)  /* room for the functions a run calls (the engine's store) */
 #define E_UC_HEAP (64 * 1024)   /* ... the values it makes */
 /* Usecode function (an NPC's conversation is 0x400 + its number) for item (an NPC: -its
@@ -283,6 +285,9 @@ int e_uc_resume(const char *answer);
 /* The number asked for: its range, step and first value (1), or 0 when none is. */
 int e_uc_number(int *low, int *high, int *step, int *initial);
 int e_uc_resume_number(int value);
+/* What was pointed at (picked 0: nothing, let go): its usecode number (an item's, -an NPC's; 0
+ * the ground) and cell. */
+int e_uc_resume_target(int picked, int ref, int x, int y, int z);
 /* What is said (the original's text: '~' a new line, '*' wait for a key, "@" quotes). */
 const char *e_uc_text(void);
 /* The answers offered, up to most into list: how many. */
@@ -318,6 +323,7 @@ void e_uc_memory(void *code_room, void *heap_room);
 #define E_KEY_UP 4              /* ... on the line above */
 #define E_KEY_DOWN 5            /* ... below */
 #define E_KEY_CLEAR 6           /* a number typed cleared (the Jaguar's * key) */
+#define E_KEY_BACK 7            /* let go: nothing pointed at (the Jaguar's B) */
 #define E_KEY_DIGIT 10          /* E_KEY_DIGIT + d: digit d typed (the Jaguar's keypad) */
 /* NPC number's conversation begun (its usecode as spoken to): 1 when there is one. */
 int e_talk_start(int number);
@@ -325,6 +331,10 @@ int e_talk_active(void);
 void e_talk_key(int key);
 /* An answer picked by its words (for tests): 1 when answers were asked for. */
 int e_talk_choose(const char *answer);
+/* Something is to be pointed at: 1 and where the cross-hairs are (view pixels); and they put
+ * at x, y (within the view). */
+int e_talk_targeting(int16_t *x, int16_t *y);
+void e_talk_aim(int x, int y);
 /* Line n of what face place p shows now (for tests), or NULL. */
 const char *e_talk_line(int place, int line);
 /* Gump n (GUMPS.VGA's entry) drawn with its hot spot at x, y (frame NULL: only its size);
@@ -364,9 +374,12 @@ void e_world_step(uint32_t blanks, int16_t x, int16_t y);
 /* The NPC (by number) whose schedule's kinds and states are logged as they change (eb_log), or -1:
  * for tests. */
 extern int e_world_trace;
+extern int e_uc_trace;           /* nonzero: each intrinsic called logged */
 /* The NPC (its number) ahead of one at x, y facing dx, dy (1 or 2 cells), else the nearest
  * within 2 cells; -1 for none. */
 int e_world_npc_near(int16_t x, int16_t y, int dx, int dy);
+/* The number of the NPC in mover slot s (0: the avatar), or -1. */
+int e_world_mover_npc(int s);
 /* The time of day, in minutes from midnight. */
 int e_world_minutes(void);
 /* Blanks a game minute (the original's is slower: a game hour a real minute here, for now). */
@@ -474,6 +487,9 @@ int e_thing_add(uint16_t tf, int16_t x, int16_t y, uint8_t z, struct EThing *out
 int e_shape_frames(uint16_t type);
 /* The item ahead of a shape at x, y, z facing dx, dy (as e_door_ahead looks: the cell ahead, either
  * side of it, past it) that wanted takes: 1 and it in out, else 0. */
+/* What is drawn at view pixel sx, sy, the frontmost: 1, with mover set to its mover slot if it
+ * is one (else -1); 0 when only the ground is, out holding its cell. */
+int e_pick(int16_t sx, int16_t sy, struct EThing *out, int *mover);
 int e_thing_ahead(int16_t x, int16_t y, uint8_t z, int dx, int dy, int (*wanted)(uint16_t tf),
 	struct EThing *out);
 /* A movable item's number for the usecode (1 on, kept while the game runs), or 0; and the item

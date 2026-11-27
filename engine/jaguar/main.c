@@ -106,7 +106,7 @@ static int16_t view_sx, view_sy;
 #define FRAMES 3
 #endif
 static uint8_t frames[FRAMES][W * H] __attribute__((aligned(16)));
-static uint8_t store[1492 * 1024] __attribute__((aligned(8)));
+static uint8_t store[1484 * 1024] __attribute__((aligned(8)));
 static uint8_t row_table[H * 4];
 static struct ESurface surfaces[FRAMES] = {
 	{ frames[0], W, W, H, row_table }, { frames[1], W, W, H, row_table },
@@ -951,6 +951,7 @@ static void walk_update(void)
 		/* the nearest item of shape ENGINE_USE_TEST used, two seconds in (to see a book, a
 		 * scroll or a sign shown) */
 		static int use_in;
+		e_uc_trace = 1;
 		if (++use_in == 40) {
 			static struct EThing found[16];
 			int n = e_things(ENGINE_USE_TEST, (int16_t) (ax - 20), (int16_t) (ay - 20), (int16_t) (ax + 20),
@@ -969,7 +970,33 @@ static void walk_update(void)
 			GD_DebugString(text);
 		}
 #endif
-		if (e_talk_active()) {
+		int16_t aim_x, aim_y;
+		static int aiming;      /* frames the cross-hairs have been out, the pad held */
+		if (e_talk_targeting(&aim_x, &aim_y)) {
+			/* something to point at: the cross-hairs, first a cell ahead of the avatar, moved
+			 * by the pad (faster as it is held); A points, B lets go */
+			static const int8_t face_x[4] = { 0, 1, 0, -1 }, face_y[4] = { -1, 0, 1, 0 };
+			int fx = (E_VIEW_CELLS_X / 2) * 8 + 3 - az * 4, fy = (E_VIEW_CELLS_Y / 2) * 8 + 3 - az * 4;
+			int dx = (held & (1UL << 23) ? 1 : 0) - (held & (1UL << 22) ? 1 : 0);
+			int dy = (held & (1UL << 21) ? 1 : 0) - (held & (1UL << 20) ? 1 : 0);
+			if (aiming == 0) {
+				e_talk_aim(fx + face_x[walk_dir] * 16, fy + face_y[walk_dir] * 16);
+				aiming = 1;
+			} else if (dx != 0 || dy != 0) {
+				int speed = aiming < 8 ? 1 : aiming < 24 ? 2 : 4;
+				aiming++;
+				e_talk_aim(aim_x + dx * speed, aim_y + dy * speed);
+			} else
+				aiming = 1;
+			if (pressed & PAD_A)
+				e_talk_key(E_KEY_NEXT);
+			else if (pressed & PAD_B)
+				e_talk_key(E_KEY_BACK);
+			if (!e_talk_targeting(&aim_x, &aim_y))
+				aiming = 0;
+			touched = 1;
+			a_held = 1;
+		} else if (e_talk_active()) {
 			/* talking: A on (or the answer picked), the pad moves the pointer; the world waits */
 			if (pressed & PAD_A)
 				e_talk_key(E_KEY_NEXT);
@@ -1004,9 +1031,11 @@ static void walk_update(void)
 			int door = e_door_ahead(e_walk_frame(type, walk_dir, 0), ax, ay, az,
 				face_x[walk_dir], face_y[walk_dir]);
 			touched = 1;
-			if (door >= 0)
-				e_door_toggle(door);
-			else if (e_thing_ahead(ax, ay, az, face_x[walk_dir], face_y[walk_dir], e_usable, &t))
+			if (door >= 0) {
+				/* (locked: its usecode says so) */
+				if (!e_door_toggle(door) && e_ref_thing(door + 1, &t) && e_usable(t.tf))
+					e_talk_use(&t);
+			} else if (e_thing_ahead(ax, ay, az, face_x[walk_dir], face_y[walk_dir], e_usable, &t))
 				e_talk_use(&t);
 		} else if (pressed & PAD_B) {
 			/* B: the NPC ahead (or the nearest within 2 cells) spoken to */

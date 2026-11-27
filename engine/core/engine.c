@@ -3488,3 +3488,76 @@ void e_draw(struct ESurface *frame)
 	eb_finish();
 	e_stats.finish_time += eb_clock() - t1;
 }
+
+/* ---- what is under a point of the view (the original's click on an item) ---- */
+
+/* Whether a frame (from its hot spot drawn at px, py, turned or not) has a pixel at x, y. */
+static int frame_hits(uint16_t tf, int px, int py, int x, int y)
+{
+	const int16_t *f = frame_of(tf & 0x3ff, (tf >> 10) & 31);
+
+	if (f == NULL)
+		return 0;
+	int dx = x - px, dy = y - py;
+	if (tf & 0x8000) {
+		int t = dx; dx = dy; dy = t;
+	}
+	if (dx < -f[1] || dx > f[0] || dy < -f[2] || dy > f[3])
+		return 0;
+	for (const uint32_t *r = (const uint32_t *) (f + 4); *r != 0;) {
+		uint32_t h = *r++;
+		int across = (int8_t) (h >> 24), along = (int8_t) (h >> 16), len = (int) E_RUN_LENGTH(h);
+		if (across == dy && dx >= along && dx < along + len)
+			return 1;
+		r += h & E_RUN_FILL ? 1 : (uint32_t) (len + 3) / 4;
+	}
+	return 0;
+}
+
+static int static_hits(const struct Static *s, int x, int y)
+{
+	return s->z <= ceiling && x >= s->r[0] && x <= s->r[2] && y >= s->r[1] && y <= s->r[3]
+		&& frame_hits(s->tf, s->x * 8 + 7 - s->z * 4, s->y * 8 + 7 - s->z * 4, x, y);
+}
+
+int e_pick(int16_t sx, int16_t sy, struct EThing *out, int *mover)
+{
+	int x = view_x * 8 + sx, y = view_y * 8 + sy;
+	const struct Static *best = NULL;
+	int16_t wx0, wy0, wx1, wy1;
+
+	*mover = -1;
+	e_near_window(&wx0, &wy0, &wx1, &wy1);
+	for (int cy = wy0 >> 4; cy <= wy1 >> 4 && cy < 192; cy++)
+		for (int cx = wx0 >> 4; cx <= wx1 >> 4 && cx < 192; cx++) {
+			const struct Chunk *k = chunk_statics(cx, cy);
+			if (x < k->reach[0] || x > k->reach[2] || y < k->reach[1] || y > k->reach[3])
+				continue;
+			for (uint16_t j = 0; j < k->nstatic; j++) {
+				const struct Static *s = &k->statics[j];
+				if (static_hits(s, x, y) && (best == NULL || order_of(s, best) >= 0))
+					best = s;
+			}
+		}
+	for (uint8_t m = 0; m < nmovers; m++)
+		if (movers[m].ok && static_hits(&movers[m].s, x, y)
+			&& (best == NULL || order_of(&movers[m].s, best) >= 0)) {
+			best = &movers[m].s;
+			*mover = m;
+		}
+	if (best == NULL) {
+		/* the ground: its cell */
+		out->tf = 0;
+		out->x = (int16_t) (x >> 3);
+		out->y = (int16_t) (y >> 3);
+		out->z = 0;
+		return 0;
+	}
+	if (*mover >= 0 && best != &movers[*mover].s)
+		*mover = -1;
+	out->tf = best->tf;
+	out->x = best->x;
+	out->y = best->y;
+	out->z = best->z;
+	return 1;
+}

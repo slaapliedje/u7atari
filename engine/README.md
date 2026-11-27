@@ -234,10 +234,18 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   A book's or sign's gump and font are read in to the faces' room (no face is shown meanwhile),
   converted by the backend (the Jaguar's GPU: a sign shows within a few frames; the 68000's C
   took 2 seconds). A gump past the converter's reach from its hot spot (a book's 307 wide) is
-  cut in bands up to 256 wide, each centred on its own. Not yet: picking a target (keys,
-  buckets: `GetTarget` gives none), sitting, sleeping in a bed, the map, combat. On the PC
+  cut in bands up to 256 wide, each centred on its own. An item that asks for something to be
+  pointed at (`ClickOnItem`: a key's door or chest, a bucket's well) shows the original's green
+  cross-hairs (`POINTERS.SHP` frame 2) a cell ahead of the avatar, the world waiting; the pad
+  moves them (a pixel a frame, faster held), A points, B lets go. What is drawn under them, the
+  frontmost (`e_pick`: each static's and mover's picture tested pixel by pixel, ordered as they
+  are drawn), goes to the usecode as `[item, x, y, z]` (an NPC by its number, the ground as its
+  cell). A key locks and unlocks doors this way; A on a locked door runs the door's usecode.
+  Not yet: sitting, sleeping in a bed, the map, combat. On the PC
   `--use-near` uses every usable item about the avatar (`--put type` puts one beside it first),
-  `--use-ahead dx,dy` the one ahead, `--use-all` runs each shape's function on an item made for
+  `--use-ahead dx,dy` the one ahead (`--aim dx,dy`: pointed at that many pixels from the
+  avatar's feet when asked; `--find a,b,..` lists items of those shapes about it; `--uc-trace`
+  logs each intrinsic and call), `--use-all` runs each shape's function on an item made for
   it; `-DENGINE_USE_TEST=type` on the Jaguar uses the nearest of a type at the start.
 
 ## Layout

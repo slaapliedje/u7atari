@@ -341,7 +341,9 @@ static int route_step(uint16_t tf, int16_t *ax, int16_t *ay, uint8_t *az, int *d
 static int list_npcs;           /* --npcs: those in view listed with each picture */
 static int appear_frame;        /* --appear f: the avatar far off till frame f */
 static int use_dx, use_dy, use_ahead;     /* --use-ahead dx,dy: the item ahead used (as A does) */
-static int put_type = -1;        /* --put type: an item of it put beside the avatar (to use) */
+static int aim_dx, aim_dy, aim_given;  /* --aim dx,dy: pointed at, pixels from the avatar's feet */
+static int put_type = -1;
+static int find_types[4];       /* --find a,b,..: those shapes about the avatar listed */        /* --put type: an item of it put beside the avatar (to use) */
 static int use_near;             /* --use-near: each usable item about the avatar used */
 static int use_all;              /* --use-all: each shape's usecode run on an item of it */
 static int talk_npc = -1;       /* --talk n: NPC n's conversation, printed (or with --out shown) */
@@ -430,6 +432,14 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 		e_follow(0);
 		e_draw(&frame);         /* (the world about read in) */
 		e_near_window(&wx0, &wy0, &wx1, &wy1);
+		for (int k = 0; k < 4 && find_types[k] > 0; k++) {
+			static struct EThing f[32];
+			int n = e_things((uint16_t) find_types[k], wx0, wy0, wx1, wy1, f, 32);
+			for (int j = 0; j < n; j++)
+				printf("found shape %d frame %d at %d,%d,%d (%+d,%+d from the avatar) quality %d\n",
+					find_types[k], f[j].tf >> 10 & 31, f[j].x, f[j].y, f[j].z, f[j].x - ax, f[j].y - ay,
+					e_thing_quality(&f[j]));
+		}
 		if (put_type >= 0)
 			e_thing_add((uint16_t) put_type, (int16_t) (ax + 1), ay, az, NULL);
 		if (use_ahead) {
@@ -442,11 +452,33 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 			printf("== ahead: shape %d frame %d at %d,%d,%d\n", t.tf & 0x3ff, t.tf >> 10 & 31, t.x, t.y, t.z);
 			e_talk_use(&t);
 			for (int turns = 0; e_talk_active() && turns < 50; turns++) {
+				int16_t px, py;
 				for (int pl = 0; pl < 2; pl++)
 					for (int l = 0; e_talk_line(pl, l); l++)
 						printf("  %d| %s\n", pl, e_talk_line(pl, l));
+				if (e_talk_targeting(&px, &py)) {
+					/* pointed at: from the avatar's feet on the screen (or let go) */
+					struct EThing p;
+					int m, sx = (E_VIEW_CELLS_X / 2) * 8 + 7 - az * 4 + aim_dx;
+					int sy = (E_VIEW_CELLS_Y / 2) * 8 + 7 - az * 4 + aim_dy;
+					e_talk_aim(sx, sy);
+					int hit = e_pick((int16_t) sx, (int16_t) sy, &p, &m);
+					printf("  target at %d,%d: %s shape %d frame %d at %d,%d,%d mover %d\n", sx, sy,
+						hit ? "item" : "ground", p.tf & 0x3ff, p.tf >> 10 & 31, p.x, p.y, p.z, m);
+					if (out_pictures) {
+						char name[256];
+						e_draw(&frame);
+						e_talk_draw(&frame);
+						eb_finish();
+						snprintf(name, sizeof name, "%s.aim.ppm", out);
+						save(name);
+					}
+					e_talk_key(aim_given ? E_KEY_NEXT : E_KEY_BACK);
+					continue;
+				}
 				e_talk_key(E_KEY_NEXT);
 			}
+			printf("  (over)\n");
 			return;
 		}
 		for (int type = 0; type < 1024; type++) {
@@ -712,8 +744,16 @@ int main(int argc, char **argv)
 		} else if (!strcmp(argv[i], "--use-ahead") && i + 1 < argc) {
 			sscanf(argv[++i], "%d,%d", &use_dx, &use_dy);
 			use_ahead = use_near = 1;
+		} else if (!strcmp(argv[i], "--aim") && i + 1 < argc) {
+			sscanf(argv[++i], "%d,%d", &aim_dx, &aim_dy);
+			aim_given = 1;
+		} else if (!strcmp(argv[i], "--find") && i + 1 < argc) {
+			sscanf(argv[++i], "%d,%d,%d,%d", &find_types[0], &find_types[1], &find_types[2], &find_types[3]);
+			use_near = 1;
 		} else if (!strcmp(argv[i], "--put") && i + 1 < argc)
 			put_type = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--uc-trace"))
+			e_uc_trace = 1;
 		else if (!strcmp(argv[i], "--use-near"))
 			use_near = 1;
 		else if (!strcmp(argv[i], "--use-all"))

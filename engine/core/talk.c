@@ -18,6 +18,11 @@
  * ends a page; a full right page (a scroll's page) waits for the player, then is cleared. When
  * the usecode ends the last pages stay till the player lets them go. A sign (gumps 49-51, each
  * its font): its lines centred in it, till the player lets it go.
+ *
+ * Something to point at (the original's click on an item, a key's door, a bucket's well): the
+ * green cross-hairs over the world (POINTERS.SHP frame 2), moved by the pad; on, what is drawn
+ * under them, the frontmost (an item, an NPC, else the ground's cell), is given the usecode; let
+ * go, nothing is.
  */
 #include <stdio.h>
 #include <string.h>
@@ -75,6 +80,9 @@ static int read_wait;           /* its pages full: they wait for the player */
 static int read_end;            /* the usecode has ended: its last pages wait for the player */
 static int sign_open = -1;      /* the sign's style (0-2) while one is shown, or -1 */
 static char sign_lines[11][LINE_TEXT];
+static int16_t aim_x = E_VIEW_W / 2, aim_y = E_VIEW_H / 2;   /* the cross-hairs (view pixels) */
+#define AIM_FRAME 2             /* POINTERS.SHP's green cross-hairs */
+#define AIM_STEP 8              /* a key moves them a cell */
 static int nsign_lines;
 
 /* Lays out a page of said from page_at, at most most lines width wide, into place's lines from
@@ -328,6 +336,9 @@ static void took(int r)
 	} else if (r == E_UC_ASK) {
 		picked = 0;
 		lay_out();
+	} else if (r == E_UC_TARGET) {
+		aim_x = E_VIEW_W / 2;
+		aim_y = E_VIEW_H / 2;
 	} else if (r == E_UC_NUMBER) {
 		e_uc_number(&low, &high, &step, &value);
 		if (value < low)
@@ -384,6 +395,35 @@ int e_talk_choose(const char *answer)
 	return 1;
 }
 
+int e_talk_targeting(int16_t *x, int16_t *y)
+{
+	if (status != E_UC_TARGET)
+		return 0;
+	*x = aim_x;
+	*y = aim_y;
+	return 1;
+}
+
+void e_talk_aim(int x, int y)
+{
+	aim_x = (int16_t) (x < 0 ? 0 : x > E_VIEW_W - 1 ? E_VIEW_W - 1 : x);
+	aim_y = (int16_t) (y < 0 ? 0 : y > E_VIEW_H - 1 ? E_VIEW_H - 1 : y);
+	changes++;
+}
+
+/* What is under the cross-hairs given the usecode. */
+static void target_picked(void)
+{
+	struct EThing t;
+	int mover, ref = 0;
+
+	if (e_pick(aim_x, aim_y, &t, &mover)) {
+		int number = mover >= 0 ? e_world_mover_npc(mover) : -1;
+		ref = mover >= 0 ? (number == 0 ? -356 : number > 0 ? -number : 0) : e_thing_ref(&t);
+	}
+	took(e_uc_resume_target(1, ref, t.x, t.y, t.z));
+}
+
 uint32_t e_talk_changes(void)
 {
 	return changes;
@@ -409,6 +449,16 @@ void e_talk_key(int key)
 			return;
 		}
 		took(e_uc_resume(NULL));
+		return;
+	}
+	if (status == E_UC_TARGET) {
+		if (key == E_KEY_NEXT)
+			target_picked();
+		else if (key == E_KEY_BACK)
+			took(e_uc_resume_target(0, 0, 0, 0, 0));
+		else if (key >= E_KEY_LEFT && key <= E_KEY_DOWN)
+			e_talk_aim(aim_x + (key == E_KEY_LEFT ? -AIM_STEP : key == E_KEY_RIGHT ? AIM_STEP : 0),
+				aim_y + (key == E_KEY_UP ? -AIM_STEP : key == E_KEY_DOWN ? AIM_STEP : 0));
 		return;
 	}
 	if (status == E_UC_SIGN) {
@@ -497,6 +547,10 @@ void e_talk_draw(struct ESurface *frame)
 
 	if (status == E_UC_DONE)
 		return;
+	if (status == E_UC_TARGET) {
+		e_draw_pointer(frame, AIM_FRAME, aim_x, aim_y);
+		return;
+	}
 	if (sign_open >= 0) {
 		/* the sign, its lines centred in its area (the original's SignGump) */
 		int s = sign_open, aw = signs[s].x1 - signs[s].x0, ah = signs[s].y1 - signs[s].y0;

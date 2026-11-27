@@ -639,3 +639,8 @@ int e_world_npc_near(int16_t x, int16_t y, int dx, int dy)
 	}
 	return best;
 }
+
+int e_world_mover_npc(int s)
+{
+	return s == 0 ? 0 : s > 0 && s < E_MOVERS && slot_npc[s] >= 0 ? npc[slot_npc[s]].number : -1;
+}

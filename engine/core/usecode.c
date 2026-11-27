@@ -694,11 +694,21 @@ static int arg_int(const struct Val *args, int n)  /* from 1 */
 }
 
 /* An intrinsic. 1 when it waits for the player (E_UC_ASK set; its result pushed on resuming). */
+int e_uc_trace;
+
 static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 {
 	int k;
 
 	*ret = val_empty();
+	if (e_uc_trace) {
+		char text[96];
+		int at = snprintf(text, sizeof text, "uc: 0x%02x(", num);
+		for (int a = 1; a <= argc && at < 80; a++)
+			at += snprintf(text + at, sizeof text - (size_t) at, "%s%d", a > 1 ? "," : "", arg_int(args, a));
+		snprintf(text + at, sizeof text - (size_t) at, ")\n");
+		eb_log(text);
+	}
 	switch (num) {
 	case 0x00:                  /* Random: 1 to n */
 		k = arg_int(args, 1);
@@ -1073,6 +1083,10 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 				break;
 		*ret = val_int(k >= 0);
 		return 0;
+	case 0x33:                  /* ClickOnItem: what the player points at, [item, x, y, z] */
+		run.wait_kind = num;
+		run.waiting = E_UC_TARGET;
+		return 1;
 	case 0x0c:                  /* InputNumericValue: low, high, step, initial */
 		for (k = 0; k < 4; k++)
 			run.number[k] = (int16_t) arg_int(args, k + 1);
@@ -1366,7 +1380,6 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 	case 0x81:                  /* InGumpMode */
 	case 0x8e:                  /* InCombat */
 	case 0x90:                  /* IsWater (not yet looked at) */
-	case 0x33:                  /* GetTarget: (not yet: none picked) */
 	case 0x48:                  /* DisplayMap (not yet) */
 		*ret = val_int(0);
 		return 0;
@@ -1690,6 +1703,11 @@ static int go(void)
 			else
 				item = first_int(&run.stack[run.sp - 1]);
 			f->pc = pc;
+			if (e_uc_trace) {
+				char text[48];
+				snprintf(text, sizeof text, "uc: call 0x%04x item %d\n", id, item);
+				eb_log(text);
+			}
 			if (!enter(body_of(id), item)) {
 				char text[64];
 				snprintf(text, sizeof text, "usecode: function 0x%04x not run\n", id);
@@ -1807,6 +1825,27 @@ int e_uc_resume_number(int value)
 		return E_UC_DONE;
 	if (run.wait_kind & 0x200)
 		push(val_int(value));
+	run.waiting = 0;
+	return go();
+}
+
+int e_uc_resume_target(int picked, int ref, int x, int y, int z)
+{
+	if (!run.on || run.waiting != E_UC_TARGET)
+		return E_UC_DONE;
+	if (run.wait_kind & 0x200) {
+		struct Val v = val_int(0);
+		if (picked) {
+			struct Atom *t = val_list(&v, 4);
+			const int16_t n[4] = { (int16_t) ref, (int16_t) x, (int16_t) y, (int16_t) z };
+			for (int k = 0; k < 4 && v.len == 4; k++) {
+				t[k].type = A_INT;
+				t[k].n = n[k];
+				t[k].s = NULL;
+			}
+		}
+		push(v);
+	}
 	run.waiting = 0;
 	return go();
 }
