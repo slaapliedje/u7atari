@@ -352,6 +352,7 @@ static int spawn_type = -1, spawn_n;    /* --spawn type,n: monsters put 6 cells 
 static int combat_on;
 static int save_slot, load_slot;
 static int show_equipment;
+static int show_eggs;           /* --eggs: the eggs read in, and the monster eggs set or hatched */
 static int female;              /* --female: the avatar a woman (as the original's character made) */      /* --equipment: what the avatar and NPCs 1-4 wear */
 static int save_at = -1, load_at = -1;  /* --save-at f, --load-at f: slot 9 saved, loaded, mid-walk */        /* --save n: saved at the end; --load n: loaded at the start */           /* --combat: the party in combat mode */   /* --party a,b,..: NPCs joining at the start */
 static int uc_function = -1;
@@ -836,11 +837,22 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 						printf("  party %d at %d,%d,%d (%+d,%+d) frame %d hp %d%s\n", npcs[i].number, npcs[i].x, npcs[i].y,
 							npcs[i].z, npcs[i].x - ax, npcs[i].y - ay, npcs[i].tf >> 10 & 31, (int8_t) npcs[i].hit_points,
 							npcs[i].status & 0x8000 ? " dead" : npcs[i].status & 0x80 ? " out" : "");
-			for (int i = 0; i < nnpcs; i++)
-				if (npcs[i].number >= 1000)
+			for (int i = 0; i < e_world_npc_count(); i++)
+				if (npcs[i].number >= 1000 && !(npcs[i].status & 0x8000))
 					printf("  monster %d type %d at %d,%d (%+d,%+d) hp %d%s\n", npcs[i].number, npcs[i].tf & 0x3ff,
 						npcs[i].x, npcs[i].y, npcs[i].x - ax, npcs[i].y - ay, (int8_t) npcs[i].hit_points,
 						npcs[i].status & 0x8000 ? " dead" : npcs[i].status & 0x80 ? " out" : "");
+			if (show_eggs) {
+				struct EEgg *t;
+				int ne = e_eggs(&t), states[4] = { 0, 0, 0, 0 };
+				for (int k = 0; k < ne; k++)
+					states[t[k].state & 3]++;
+				printf("  eggs %d: out %d asleep %d set %d away %d\n", ne, states[0], states[1], states[2], states[3]);
+				for (int k = 0; k < ne; k++)
+					if ((t[k].bits & 15) == 1 && t[k].state)
+						printf("    egg %d,%d kind %d crit %d state %d type %d\n", t[k].x, t[k].y, t[k].bits & 15,
+							t[k].bits >> 4 & 7, t[k].state, t[k].data2 & 0x3ff);
+			}
 			if (npcs[me].number == 0 && combat_on)
 				printf("  avatar hp %d\n", (int8_t) npcs[me].hit_points);
 			/* the NPCs in view: number, place, frame (10 sitting, 13 lying) */
@@ -932,6 +944,8 @@ int main(int argc, char **argv)
 			save_slot = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--female"))
 			female = 1;
+		else if (!strcmp(argv[i], "--eggs"))
+			show_eggs = 1;
 		else if (!strcmp(argv[i], "--equipment"))
 			show_equipment = 1;
 		else if (!strcmp(argv[i], "--save-at") && i + 1 < argc)

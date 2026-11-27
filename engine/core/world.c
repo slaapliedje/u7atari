@@ -609,6 +609,11 @@ void e_world_step(uint32_t blanks, int16_t x, int16_t y)
 	searched = 0;
 	kind_things(dt);
 	e_barks_age(dt);
+	static int16_t egg_wait;
+	if ((egg_wait = (int16_t) (egg_wait - dt)) <= 0) {
+		egg_wait = TICK_BLANKS;
+		kind_eggs();
+	}
 	for (int s = 1; s < E_MOVERS; s++) {
 		int i = slot_npc[s];
 		if (i < 0)
@@ -753,4 +758,9 @@ void e_world_avatar_where(int16_t *x, int16_t *y, uint8_t *z)
 		*y = npc[i].y;
 		*z = npc[i].z;
 	}
+}
+
+int e_world_npc_count(void)
+{
+	return nnpc;
 }

@@ -1531,6 +1531,11 @@ static void request(int function, int item, int event)
 	}
 }
 
+void e_uc_request_function(int function, int item, int event)
+{
+	request(function, item, event);
+}
+
 int e_uc_request(int *function, int *item, int *event)
 {
 	if (nrequests == 0)

@@ -146,6 +146,7 @@ int kind_avatar_posed(void);    /* sitting or in bed (its place the usecode's, n
 void kind_join(int i, int on);  /* into the party (following the avatar), or out of it */
 void kind_party_step(int moved);        /* the party's step after the avatar's (or its pause) */
 void kind_fight(int i, int on); /* a party member into combat, or back to following */
+void kind_eggs(void);           /* the eggs in the window set, hatched (a tick) */
 void world_gone(int i);         /* dead: out of the mover slots and the party */
 
 /* usecode.c */

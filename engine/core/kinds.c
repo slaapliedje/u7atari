@@ -2333,13 +2333,23 @@ int e_world_avatar_fight(int *dx, int *dy, uint16_t *tf)
 	return 1;
 }
 
-int e_world_spawn(int type, int16_t x, int16_t y, uint8_t z)
+/* A monster of type made at x, y, z (alignment 0: its kind's), doing work: its index, or -1. A
+ * spawned one gone (dead, or left far behind) gives its place to the next. */
+static int spawn(int type, int16_t x, int16_t y, uint8_t z, int align, int work)
 {
 	const uint8_t *m = record(monsters_dat, 25, type);
+	int i = -1;
 
-	if (nnpc >= MOST_NPCS || m == NULL)
+	if (m == NULL)
 		return -1;
-	int i = nnpc++;
+	for (int k = 0; k < nnpc && i < 0; k++)
+		if (npc[k].number >= 1000 && (npc[k].status & 0x8000) && !in_slot(k))
+			i = k;
+	if (i < 0) {
+		if (nnpc >= MOST_NPCS)
+			return -1;
+		i = nnpc++;
+	}
 	struct ENpc *p = &npc[i];
 	memset(p, 0, sizeof *p);
 	p->tf = (uint16_t) type;
@@ -2351,14 +2361,127 @@ int e_world_spawn(int type, int16_t x, int16_t y, uint8_t z)
 	p->intelligence = m[4] >> 2;
 	p->combat = m[5] >> 2;
 	p->hit_points = p->strength;
-	p->status = (uint16_t) ((m[5] & 3) << 3);
-	p->activity = K_COMBAT;
+	p->status = (uint16_t) (((align ? align : m[5]) & 3) << 3);
+	p->activity = (uint8_t) work;
+	p->male = 1;
 	p->number = (uint16_t) (1000 + i);
 	memset(&doing[i], 0, sizeof doing[i]);
 	doing[i].door = doing[i].route = -1;
+	doing[i].place_x = doing[i].goal_x = x;
+	doing[i].place_y = doing[i].goal_y = y;
 	kind_init(i);
 	return i;
 }
+
+int e_world_spawn(int type, int16_t x, int16_t y, uint8_t z)
+{
+	return spawn(type, x, y, z, 0, K_COMBAT);
+}
+
+/* ---- eggs (the original's, its monster, usecode and sound eggs): one coming into the window
+ * of chunks held rolls its chance and, it falling, is set (the original's LoadChunkItems);
+ * set, it hatches at once (criteria 0) or when the avatar (1, 2, 4) or one of the party (3, 5)
+ * comes within its distance; a repeating one, once all have gone away again, is set again.
+ * Leaving the window it is reset (UnloadChunk). Hatched: a monster egg makes its monsters (data1:
+ * count << 2 | alignment, their work; data2: their type), one to its count, about it when more
+ * than one, where they can stand; a usecode egg runs its function (data2) for itself (event 2);
+ * a sound egg plays its sound. Not yet: the other kinds, a monster egg's roof (the original's
+ * only under a roof when the avatar is), the items it makes (fire fields), stepped-on eggs. ---- */
+
+#define EGG_OUT 0
+#define EGG_ASLEEP 1            /* in the window, its chance failed (or hatched, once) */
+#define EGG_SET 2
+#define EGG_AWAY 3              /* hatched, repeating: waiting for all to go away */
+
+static int egg_near(const struct EEgg *g)
+{
+	int crit = g->bits >> 4 & 7, dist = g->bits >> 10 & 31;
+
+	if (crit == 0)
+		return 1;
+	if (crit == 1 || crit == 2 || crit == 4)
+		return far_of(g->x, g->y, me_x, me_y) <= dist;
+	if (crit == 3 || crit == 5) {
+		for (int j = 0; uc_party(j) >= 0; j++) {
+			int x, y;
+			place_of(uc_party(j), &x, &y);
+			if (far_of(g->x, g->y, x, y) <= dist)
+				return 1;
+		}
+	}
+	return 0;
+}
+
+static void hatch(struct EEgg *g)
+{
+	int kind = g->bits & 15;
+
+	if (kind == 1) {
+		int type = g->data2 & 0x3ff, count = (g->data1 & 255) >> 2, made = 0;
+		int cls = e_shape_class(type);
+		if (cls != 12 && cls != 13)
+			return;             /* (an item: not yet) */
+		if (count < 1)
+			count = 1;
+		else if (count > 1)
+			count = rnd(count) + 1;
+		for (int tries = 100; made < count && tries > 0; ) {
+			int16_t x = g->x, y = g->y;
+			if (count > 1) {
+				x = (int16_t) (x + rnd(8) + rnd(8) - 7);
+				y = (int16_t) (y + rnd(8) + rnd(8) - 7);
+			}
+			if (in_near_window(x, y) && e_can_stand(e_walk_frame((uint16_t) type, 2, 0), x, y, g->z)
+				&& spawn(type, x, y, g->z, g->data1 & 3, g->data1 >> 8) >= 0)
+				made++;
+			else
+				tries--;
+		}
+	} else if (kind == 5) {
+		struct EThing t = { 0, g->x, g->y, g->z };
+		/* (the egg itself: its type-frame from the world) */
+		struct EThing found[4];
+		int n = e_things(275, g->x, g->y, g->x, g->y, found, 4);
+		for (int k = 0; k < n; k++)
+			if (found[k].z == g->z)
+				t = found[k];
+		e_uc_request_function(g->data2, t.tf ? e_thing_ref(&t) : 0, 2);
+	} else if (kind == 3)
+		e_sound(g->data1 & 255, g->x, g->y);
+}
+
+void kind_eggs(void)
+{
+	struct EEgg *t;
+	int n = e_eggs(&t);
+
+	for (int k = 0; k < n; k++) {
+		struct EEgg *g = &t[k];
+		int kind = g->bits & 15, crit = g->bits >> 4 & 7;
+		if (!in_near_window(g->x, g->y)) {
+			g->state = EGG_OUT;
+			continue;
+		}
+		if (g->state == EGG_OUT) {
+			int hour = e_world_minutes() / 60 % 24, night = hour < 5 || hour > 20;
+			g->state = (kind == 1 || kind == 3 || kind == 5) && crit <= 5 && rnd(100) < g->chance
+				&& (!(g->bits & 0x80) || night) ? EGG_SET : EGG_ASLEEP;
+		}
+		if (g->state == EGG_SET && egg_near(g)) {
+			hatch(g);
+			g->state = (g->bits & 0x8000) && crit != 0 ? EGG_AWAY : EGG_ASLEEP;
+		} else if (g->state == EGG_AWAY && !egg_near(g))
+			g->state = EGG_SET;
+	}
+	/* spawned monsters left far behind, gone (their places for the next) */
+	for (int i = 0; i < nnpc; i++)
+		if (npc[i].number >= 1000 && !(npc[i].status & 0x8000)
+			&& far_of(npc[i].x, npc[i].y, me_x, me_y) > 64) {
+			npc[i].status |= 0x8000;
+			world_gone(i);
+		}
+}
+
 
 /* ---- the avatar put in a chair or a bed by the usecode ---- */
 

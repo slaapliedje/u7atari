@@ -288,6 +288,26 @@ static void add_ifix(struct Region *r, uint16_t *n, const uint8_t *e, int count,
 
 static void doors_into(struct Region *r);
 
+static struct EEgg *eggs;       /* (in the pool: E_EGGS) */
+static int neggs;
+
+int e_eggs(struct EEgg **table)
+{
+	*table = eggs;
+	return eggs != NULL ? neggs : 0;
+}
+
+/* Region id read in: its eggs (those kept of it before given up). */
+static void eggs_of_region(int id)
+{
+	int k = 0;
+
+	for (int j = 0; j < neggs; j++)
+		if (eggs[j].region != id)
+			eggs[k++] = eggs[j];
+	neggs = k;
+}
+
 static struct Region *region(int id)
 {
 	struct Region *r = NULL, *old = &regions[0];
@@ -341,6 +361,8 @@ static struct Region *region(int id)
 	}
 	/* the fixed ones are now items[0..n); read the movable ones beside, then merge per chunk */
 	/* the dataset's (a new game's, with its NPC.DAT) or the save's */
+	if (eggs != NULL)
+		eggs_of_region(id);
 	if ((f = open_file("ENGINE", name)) >= 0 || (f = open_file("GAMEDAT", name)) >= 0) {
 		len = plat_file_length(f);
 		if (len > 0 && len <= SCRATCH && read_at(f, 0, scratch, (uint32_t) len)) {
@@ -360,6 +382,20 @@ static struct Region *region(int id)
 				i += l;
 				if (i > len)
 					break;
+				if (depth == 0 && l == 12 && info[rd16(d + 2) & 0x3ff].cls == 7 && eggs != NULL
+					&& neggs < E_EGGS) {
+					/* an egg: its record kept */
+					struct EEgg *g = &eggs[neggs++];
+					g->x = (int16_t) (id % 12 * 256 + d[0]);
+					g->y = (int16_t) (id / 12 * 256 + d[1]);
+					g->z = d[9] >> 4;
+					g->bits = rd16(d + 4);
+					g->chance = d[6];
+					g->data1 = rd16(d + 7);
+					g->data2 = rd16(d + 10);
+					g->region = (uint8_t) id;
+					g->state = 0;
+				}
 				if (depth == 0 && ireg < REGION_ITEMS) {
 					struct Item *it = &movable[ireg];
 					it->x = d[0];
@@ -3425,6 +3461,8 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 		}
 	}
 	e_combat_memory(take(E_COMBAT_ROOM), E_COMBAT_ROOM);
+	eggs = take(E_EGGS * sizeof *eggs);
+	neggs = 0;
 	pool = pool_next = pool_pinned = mem_next;
 	pool_end = mem_end;
 	if (pool_end - pool < 256 * 1024)
@@ -3500,6 +3538,7 @@ void e_world_flush(void)
 {
 	for (int i = 0; i < REGION_SLOTS; i++)
 		regions[i].id = -1;
+	neggs = 0;                  /* (read again with their regions) */
 	for (int i = 0; i < CHUNK_SLOTS; i++) {
 		if (chunks[i].cx >= 0 && chunks[i].cy >= 0 && chunks[i].cx < 192 && chunks[i].cy < 192)
 			chunk_slot[chunks[i].cy * 192 + chunks[i].cx] = 0;

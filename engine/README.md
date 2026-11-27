@@ -320,6 +320,21 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   and the bodies are put down, and the movers. The shapes' pool has 336 KB of 1484 KB left (256 KB
   needed), the statics 4.4 KB below the stack.
 
+- **Eggs** (engine.c reads them, kinds.c hatches them). The regions' eggs (class 7) are kept
+  with their record (kind, criteria, distance, repeat, chance, data) while their regions are
+  read in (384 at most, in the pool). As the original's: one coming into the window of chunks
+  held rolls its chance and, it falling, is set; set, it hatches at once (criteria 0) or when the
+  avatar (1, 2, 4) or one of the party (3, 5) comes within its distance; a repeating one is set
+  again once all have gone away; leaving the window it is reset. Monster eggs make their
+  monsters (one to the count, about the egg when more, where they can stand, the egg's
+  alignment and work: Trinsic's horse, cat and dog, the wolves south of it, dragons and
+  headless further west); usecode eggs run their function for the egg (event 2), so the game's
+  opening, Iolo meeting the avatar ("A rather large, familiar man looks up and sees you."),
+  begins by itself, as the original's; sound eggs play their sound. Monsters made and left far
+  behind (64 cells) are gone, their places reused. Not yet: music, speech, missile, teleport,
+  weather and button eggs, a monster egg's roof (the original's hatches under a roof only when
+  the avatar is under one), the items monster eggs make (fire fields), eggs stepped on. On the
+  PC `--eggs` lists them with each picture.
 - **Saving** (`core/save.c`). Pause on the Jaguar opens a menu: save game, load game (left and
   right pick slot 1 to 3), continue. A game is the engine's own file, `U7/ENGINE/SAVEn.DAT`
   (not the original's format; this machine's byte order): the clock, the NPCs (spawned monsters

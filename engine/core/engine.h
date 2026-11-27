@@ -322,6 +322,7 @@ int e_uc_avatar_male(void);             /* the avatar is a man (as chosen) */
  * usecode has faded the screen out (FadePalette). */
 void e_uc_scripts_step(void);
 int e_uc_request(int *function, int *item, int *event);
+void e_uc_request_function(int function, int item, int event);  /* (one asked for) */
 int e_uc_faded(void);
 /* What was pointed at (picked 0: nothing, let go): its usecode number (an item's, -an NPC's; 0
  * the ground) and cell. */
@@ -471,6 +472,21 @@ void e_world_avatar_stand(void);
 void e_combat_memory(void *room, uint32_t size);
 uint32_t e_pool_size(void);             /* the shapes' pool e_init left (bytes) */
 
+/* Eggs (the original's): the region's movable items of class 7, their record (bytes 4-11 of
+ * the region's 12): a word of kind (low 4 bits: 1 monster, 2 music, 3 sound, 4 speech, 5
+ * usecode, 6 missile, 7 teleport, 8 weather, 10 button), criteria (3: 0 at once, 1-3 something
+ * near, 4-5 stepped on, 6 an item, 7 a button), nocturnal (1), once (1), hatched (1), distance
+ * (5), repeat (1); the chance in 100; data1 (a monster's count << 2 | alignment, its work);
+ * data2 (a monster's type-frame). Kept for the regions read in (the engine's), what becomes of
+ * them the world's (state). */
+struct EEgg {
+	int16_t x, y;
+	uint16_t bits, data1, data2;
+	uint8_t z, chance, region, state;
+};
+#define E_EGGS 384
+int e_eggs(struct EEgg **table);        /* the table, and how many are in it */
+
 /* ---- saved games (core/save.c): U7/ENGINE/SAVEn.DAT, the engine's own (not the original's
  * format): the clock, the NPCs, the usecode's flags and party, what is held and carried, the
  * world's items changed. Each part a section (its tag, the size of its records, how many); a
@@ -514,6 +530,7 @@ int e_save_close(void);
 int e_combat_mode(int on);
 int e_world_avatar_fight(int *dx, int *dy, uint16_t *tf);
 int e_world_spawn(int type, int16_t x, int16_t y, uint8_t z);
+int e_world_npc_count(void);            /* NPCs (and monsters made) in the world's table */
 /* The party's step after the avatar's (moved: it stepped; else it stood a step's time). */
 void e_world_party_step(int moved);
 /* The number of the NPC in mover slot s (0: the avatar), or -1. */
