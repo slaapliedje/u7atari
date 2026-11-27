@@ -1052,9 +1052,13 @@ static uint8_t nmovers;
 /* ---- the ceiling over a mover, as the original's (UpdateCeiling): of the levels the solid
  * statics (not doors) take over its row of cells, those above it; the lowest less one, or 15 ---- */
 
+static int listener;             /* the mover sounds are heard from (the one followed) */
+
 int e_follow(int i)
 {
 	const struct Mover *v = &movers[i];
+
+	listener = i;
 	const struct Info *in = &info[v->tf & 0x3ff];
 	int w = v->tf & 0x8000 ? in->fy : in->fx;
 	uint16_t taken = 0, own = (uint16_t) (((1u << (in->height ? in->height : 1)) - 1) << v->z);
@@ -1734,6 +1738,8 @@ int e_door_toggle(int door)
 	int other = partner(type, state, doors[door].x, doors[door].y, doors[door].z);
 	if (other >= 0 && other != door)
 		door_turn(other);
+	/* as the original's toggleDoor: Black Gate's door opening (30) or shutting (31) */
+	e_sound(state == 0 ? 30 : 31, doors[door].x, doors[door].y);
 	return 1;
 }
 
@@ -1800,6 +1806,57 @@ int e_thing_remove(const struct EThing *t)
 	int d = thing_handle(t);
 
 	return d >= 0 && keep_set(d, t->tf, t->x, t->y, 1);
+}
+
+/* ---- sounds: the original's AdLib effects as the dataset has them rendered (ENGINE/SFX.FLX),
+ * each read into a cache the first time it is played, the oldest giving way ---- */
+
+#define SOUND_CACHE (64 * 1024)
+static struct Flex sounds;
+static uint8_t sounds_ok;
+static uint8_t *sound_cache;
+static uint32_t sound_next;
+static uint32_t sound_at[256];  /* each sound's place in the cache + 1, or 0 */
+
+static void open_sounds(void)
+{
+	uint8_t title[64];
+
+	if (flex_open(&sounds, "ENGINE", "SFX.FLX") < 0)
+		return;
+	if (!read_at(sounds.f, 0, title, sizeof title)
+		|| memcmp(title, E_SOUNDS_TITLE, sizeof E_SOUNDS_TITLE - 1) != 0
+		|| (sound_cache = take(SOUND_CACHE)) == NULL)
+		return;
+	sounds_ok = 1;
+}
+
+void e_sound(int number, int16_t x, int16_t y)
+{
+	if (!sounds_ok || number < 0 || number >= sounds.count || number >= 256)
+		return;
+	/* as the original's PlaySoundAtItem with the AdLib: fainter by 2 a cell across and down
+	 * from the avatar, panned by 2 a cell across */
+	const struct Mover *v = &movers[listener];
+	int dx = x - v->x, dy = y - v->y;
+	int volume = 127 - 2 * ((dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy));
+	int pan = clampi(64 + 2 * dx, 0, 127);
+	uint32_t at = sounds.table[number * 2], size = sounds.table[number * 2 + 1] & ~1u;
+	if (volume < 0 || size == 0 || size > SOUND_CACHE)
+		return;
+	if (sound_at[number] == 0) {
+		if (sound_next + size > SOUND_CACHE)
+			sound_next = 0;
+		for (int k = 0; k < sounds.count && k < 256; k++)
+			if (sound_at[k] != 0 && sound_at[k] - 1 < sound_next + size
+				&& sound_at[k] - 1 + sounds.table[k * 2 + 1] > sound_next)
+				sound_at[k] = 0;
+		if (!read_at(sounds.f, at, sound_cache + sound_next, size))
+			return;
+		sound_at[number] = sound_next + 1;
+		sound_next = (sound_next + size + 7) & ~7u;
+	}
+	eb_sound(sound_cache + sound_at[number] - 1, size / 2, volume, pan);
 }
 
 int32_t e_read_file(const char *dir, const char *name, uint8_t *to, uint32_t most)
@@ -2279,6 +2336,7 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 	for (int i = 0; i < E_MOVERS; i++)
 		if ((movers[i].near = take(MOVER_CANDS * sizeof *movers[i].near)) == NULL)
 			return -7;
+	open_sounds();
 	pool = pool_next = pool_pinned = mem_next;
 	pool_end = mem_end;
 	if (pool_end - pool < 256 * 1024)

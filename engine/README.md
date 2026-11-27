@@ -102,13 +102,28 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   the partner type (270 and 432, 376 and 433, 225 and 246, 392 and 250) within 7 cells, as open
   or shut, on the same row or column. A door is shut when something lies past each end of it (a
   wall, or the other leaf), as Exult tells. NPCs open a shut door in their way and shut it once 2
-  cells further from it than they came, as the original's routes do. (The sounds are not done.)
+  cells further from it than they came, as the original's routes do, and each turn plays the
+  original's sound (below).
   Other movable items the game changes (a bed's cover, food eaten: `e_things`, `e_thing_set`,
   `e_thing_remove`) are kept in the same table, an eaten one as gone.
 - **Depth.** An object stands at the bottom right of its footprint and is lifted 4 pixels up and
   left a level. What lies south, east or above is in front: `order_of()` in `core/engine.c`.
   Two that overlap every way go as the original's sort has them: the higher in front, and at
   one level the shorter (a bed's cover over its sleeper).
+- **Sounds** (`e_sound`) are the original's AdLib effects. The original plays an effect
+  (`STATIC/ADLIBSFX.DAT`) through its own driver: a header and envelope scripts driving an OPL2
+  channel at a 60 Hz tick. That cannot run on the Jaguar, which has no FM chip, so the dataset
+  holds each effect rendered once on the PC: `u7sfxdro` runs the port's upstream copy of the
+  original's driver, as it is, and records its register writes as DOSBox captures; adlconvert
+  renders them (Nuked OPL3) at 15980 Hz; `tools/sfxpack.py` packs them, one gain for all, as
+  16-bit samples (`ENGINE/SFX.FLX`, 3.7 MB; the 13 that sound until stopped are cut at 2 s,
+  not yet looped). A sound is read into a 64 KB cache the first time it plays. It is played at
+  a world cell as the original's `PlaySoundAtItem` with the AdLib: volume 127 less 2 a cell
+  across and down from the avatar, panned by 2 a cell across. A door's turn plays Black Gate's
+  30 (opening) or 31 (shutting), as `toggleDoor` does. On the Jaguar the DSP mixes four
+  channels at each I2S interrupt (`jaguar/sound_dsp.s`), the console's left output being
+  `RTXD` ($F1A14C) as the netlist has it. Virtual Jaguar plays it on its right, so in the
+  emulator the pan sounds reversed. On the PC, `--wav` writes the same mix.
 - **Shapes** are read on demand into a ring that gives the oldest way; the movers' are kept apart.
   They are in the engine's own form (`engine.h`, `E_RUN_`): per run one long for where it is, how
   long, and whether it is a fill, then its pixels padded to a long; colour 0 kept as 255, black
@@ -128,8 +143,9 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   `eb_shape`) into 8-bit surfaces.
 - `host/` — the PC: draws views to PPM pictures (`u7engine <dir>/ <x> <y> [--walk dx dy n]
   [--movers n] [--out p] [--every k] [--sheet shape] [--layers] [--avatar [--path
-  "dx,dy,n;..."] [--time m] [--from x,y,z] [--route x,y,z] [--npcs]]`): `--avatar` walks the
-  avatar as the Jaguar does; `--npcs` lists the NPCs in view with each picture (place, frame). Build: `cmake --build build-host
+  "dx,dy,n;..."] [--time m] [--from x,y,z] [--route x,y,z] [--npcs] [--wav file]]`):
+  `--avatar` walks the avatar as the Jaguar does; `--npcs` lists the NPCs in view with each
+  picture (place, frame); `--wav` writes the sounds as the Jaguar mixes them. Build: `cmake --build build-host
   --target u7engine`.
 - `tools/jagdata.c` — `u7jagdata <data dir> <out dir>` (the data dir holding `STATIC/`) writes
   the dataset, in the Jaguar's byte order: `SHAPES.FLX` (7.1 MB), SHAPES.VGA with every object
@@ -139,6 +155,9 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   core, shown `STATIC/` alone. Build: `cmake --build build-host --target u7jagdata`. The files go
   on the card in `U7/ENGINE/`; the PC engine reads them too (`<dir>/ENGINE/`), turning them
   round. Without them the engine makes it all from the original's files, as before.
+  The sounds: `tools/mksfx.sh <u7sfxdro> <adlconvert> <STATIC dir> <out SFX.FLX>` (build
+  `u7sfxdro` with `cmake --build build-host --target u7sfxdro`); `SFX.FLX` goes in
+  `U7/ENGINE/` too. Without it the engine is silent.
 - `jaguar/` — the Jaguar: GameDrive files, a triple-buffered 8-bit bitmap object, the blitter,
   the GPU. Build: `cmake --build <jaguar build> --target u7engine_jag`, which gives `U7ENGINE.rom`.
   It uses the same card as the game (`U7/STATIC`, `U7/GAMEDAT`) and `U7/ENGINE`. It starts a new
@@ -240,7 +259,8 @@ call chains (`tools/jag-profile.py --frames`).
 - **Translucency**; **NPCs** from a save (it holds them as the game's memory, `U7NBUF.DAT` and
   `U7IBUF.DAT`, not as `NPC.DAT`); the schedules' kinds not yet done at the place (the
   waiter, the smith, baker, farmer, miner, preacher, duel, thieves, ...), barks, and usecode;
-  door sounds; the party.
+  the other sounds (the effects are all in the dataset, only doors play them), looped sounds
+  and music; the party.
 - **Order.** `order_of()` is a simple rule. It still needs checking against the original's frames
   at the same places (the PC reference can draw them). The ring version already draws doors and
   benches that the first version lost.

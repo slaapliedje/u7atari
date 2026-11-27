@@ -169,6 +169,83 @@ void eb_finish(void)
 {
 }
 
+/* Sounds: mixed as the Jaguar's DSP does (four channels, each sample times its side's volume,
+ * the sum saturated), into a WAV (--wav), and listed. */
+#define SOUND_CHANNELS 4
+static struct {
+	const uint8_t *at;
+	uint32_t left;
+	int vl, vr;
+} channel[SOUND_CHANNELS];
+static FILE *wav;
+static uint32_t wav_frames;
+static int sound_frame;
+
+void eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
+{
+	int c = 0;
+
+	for (int k = 1; k < SOUND_CHANNELS; k++)
+		if (channel[k].left < channel[c].left)
+			c = k;
+	channel[c].at = samples;
+	channel[c].left = n;
+	/* volume 0-127 to each side by the pan: 255 the whole */
+	channel[c].vl = volume * (127 - pan) * 2 / 127;
+	channel[c].vr = volume * pan * 2 / 127;
+	printf("frame %d: sound of %u samples, volume %d, pan %d\n", sound_frame, n, volume, pan);
+}
+
+static void wav_put(uint32_t v, int bytes)
+{
+	for (int k = 0; k < bytes; k++)
+		fputc((int) (v >> (8 * k)) & 255, wav);
+}
+
+static void wav_header(void)
+{
+	fseek(wav, 0, SEEK_SET);
+	fwrite("RIFF", 1, 4, wav);
+	wav_put(36 + wav_frames * 4, 4);
+	fwrite("WAVEfmt ", 1, 8, wav);
+	wav_put(16, 4);
+	wav_put(1, 2);
+	wav_put(2, 2);
+	wav_put(E_SOUND_RATE, 4);
+	wav_put(E_SOUND_RATE * 4, 4);
+	wav_put(4, 2);
+	wav_put(16, 2);
+	fwrite("data", 1, 4, wav);
+	wav_put(wav_frames * 4, 4);
+}
+
+/* The sound of blanks more blanks (at 60 a second). */
+static void mix(int blanks)
+{
+	static uint32_t owed;
+
+	owed += (uint32_t) blanks * E_SOUND_RATE;
+	for (; owed >= 60; owed -= 60) {
+		int32_t l = 0, r = 0;
+		for (int c = 0; c < SOUND_CHANNELS; c++) {
+			if (channel[c].left == 0)
+				continue;
+			int16_t v = (int16_t) (channel[c].at[0] << 8 | channel[c].at[1]);
+			channel[c].at += 2;
+			channel[c].left--;
+			l += v * channel[c].vl >> 8;
+			r += v * channel[c].vr >> 8;
+		}
+		l = l > 32767 ? 32767 : l < -32768 ? -32768 : l;
+		r = r > 32767 ? 32767 : r < -32768 ? -32768 : r;
+		if (wav != NULL) {
+			wav_put((uint32_t) l & 0xffff, 2);
+			wav_put((uint32_t) r & 0xffff, 2);
+			wav_frames++;
+		}
+	}
+}
+
 uint32_t eb_clock(void)
 {
 	return (uint32_t) clock();
@@ -332,6 +409,8 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 				printf("frame %d: a door opened at %d,%d\n", f, ax + dx, ay + dy);
 			e_mover_self(-1);
 		}
+		sound_frame = f;
+		mix(4);
 		e_mover_set(0, dx || dy ? e_walk_frame(type, dir, f / 2) : npcs[me].tf, ax, ay, az);
 		/* a frame here is 4 blanks (the avatar a cell every 2 frames, the Jaguar's 8 blanks) */
 		e_world_step((uint32_t) f * 4, ax, ay);
@@ -411,7 +490,13 @@ int main(int argc, char **argv)
 			sscanf(argv[++i], "%d,%d,%d", &from_x, &from_y, &from_z);
 		else if (!strcmp(argv[i], "--route") && i + 1 < argc)
 			sscanf(argv[++i], "%d,%d,%d", &route_x, &route_y, &route_z);
-		else if (!strcmp(argv[i], "--npcs"))
+		else if (!strcmp(argv[i], "--wav") && i + 1 < argc) {
+			if ((wav = fopen(argv[++i], "wb")) == NULL) {
+				perror(argv[i]);
+				return 1;
+			}
+			wav_header();
+		} else if (!strcmp(argv[i], "--npcs"))
 			list_npcs = 1;
 		else if (!strcmp(argv[i], "--time") && i + 1 < argc)
 			start_minutes = atoi(argv[++i]);
@@ -437,6 +522,10 @@ int main(int argc, char **argv)
 	}
 	if (avatar) {
 		walk_avatar(dx, dy, n, out, every);
+		if (wav != NULL) {
+			wav_header();
+			fclose(wav);
+		}
 		return 0;
 	}
 	for (int m = 0; m < nm && m < E_MOVERS; m++) {

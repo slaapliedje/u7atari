@@ -130,6 +130,11 @@ struct ETileChunk {
 #define E_TILE_CHUNKS 12
 void eb_tiles(struct ESurface *dst, const struct EFlat flats[E_FLAT_TYPES],
 	const struct ETileChunk *chunks, int n);
+/* A sound started: n samples (16-bit, big-endian, signed, mono, at E_SOUND_RATE) at samples,
+ * which stay put while it plays; volume and pan 0-127 (0 left). On a free channel, else the one
+ * nearest its end. */
+#define E_SOUND_RATE 15980
+void eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan);
 /* All drawing asked for so far is done when this returns (before the CPU touches a surface). */
 void eb_finish(void);
 void eb_log(const char *text);
@@ -182,6 +187,14 @@ const uint32_t *e_frame_runs(uint16_t type, uint16_t frame);
 void e_draw(struct ESurface *frame);
 /* The ring's window copied into frame, in up to four pieces where it wraps (for eb_view). */
 void e_copy_view(struct ESurface *frame, const struct ESurface *ring, int16_t sx, int16_t sy);
+
+/* The dataset's sounds (engine/tools/mksfx.sh): ENGINE/SFX.FLX, a flex file as the original's,
+ * each entry the original's AdLib effect of that number (STATIC/ADLIBSFX.DAT) played by its
+ * effects driver and rendered, as eb_sound takes it. Its title starts E_SOUNDS_TITLE. */
+#define E_SOUNDS_TITLE "U7 engine sounds 1, 16-bit big-endian at 15980 Hz"
+/* Sound number played at world cell x, y, heard from the mover followed (e_follow), as the
+ * original plays one at an item. Nothing without the dataset's sounds. */
+void e_sound(int number, int16_t x, int16_t y);
 
 /* Things that move (NPCs): up to E_MOVERS, re-placed every frame. */
 #define E_MOVERS 32

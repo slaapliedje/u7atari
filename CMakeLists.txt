@@ -46,6 +46,14 @@ if(U7_HOST)
         engine/core/shapes.c engine/core/world.c engine/core/route.c)
     target_include_directories(u7jagdata PRIVATE engine/core)
     target_compile_options(u7jagdata PRIVATE -O2 -Wall -Wextra)
+    # Its sounds: the original's AdLib effects played by upstream's own effects driver, their
+    # register writes as DRO captures for adlconvert to render (engine/tools/mksfx.sh).
+    add_executable(u7sfxdro EXCLUDE_FROM_ALL engine/tools/sfxdro.cpp
+        "${U7_UPSTREAM_DIR}/game/sound/drv/adlib.cpp")
+    target_include_directories(u7sfxdro PRIVATE "${U7_UPSTREAM_DIR}/game/sound/drv"
+        "${U7_UPSTREAM_DIR}/game/include" "${U7_UPSTREAM_DIR}/platform" platform/common)
+    set_source_files_properties("${U7_UPSTREAM_DIR}/game/sound/drv/adlib.cpp" TARGET_DIRECTORY
+        u7sfxdro PROPERTIES COMPILE_OPTIONS "-w")
     if(U7_GAME STREQUAL "Serpent Isle")
         target_compile_definitions(u7host PRIVATE U7_SERPENT_ISLE)
     endif()
@@ -166,10 +174,13 @@ if(U7_JAGUAR)
     add_custom_command(OUTPUT movers_gpu.o
         COMMAND "${U7_RMAC}" -fe -o movers_gpu.o "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/movers_gpu.s"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/movers_gpu.s" VERBATIM)
+    add_custom_command(OUTPUT sound_dsp.o
+        COMMAND "${U7_RMAC}" -fe -o sound_dsp.o "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/sound_dsp.s"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/sound_dsp.s" VERBATIM)
     add_executable(u7engine_jag EXCLUDE_FROM_ALL platform/jaguar/startup.S engine/jaguar/main.c
         "${CMAKE_CURRENT_BINARY_DIR}/tiles_gpu.o" "${CMAKE_CURRENT_BINARY_DIR}/shapes_gpu.o"
         "${CMAKE_CURRENT_BINARY_DIR}/convert_gpu.o" "${CMAKE_CURRENT_BINARY_DIR}/movers_gpu.o"
-        engine/jaguar/stubs.c engine/core/engine.c engine/core/shapes.c engine/core/world.c engine/core/route.c
+        "${CMAKE_CURRENT_BINARY_DIR}/sound_dsp.o" engine/jaguar/stubs.c engine/core/engine.c engine/core/shapes.c engine/core/world.c engine/core/route.c
         "${CMAKE_CURRENT_BINARY_DIR}/gdbios.o")
     target_include_directories(u7engine_jag PRIVATE engine/core platform/jaguar)
     if(U7_JAG_FRAME_POINTERS)

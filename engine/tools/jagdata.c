@@ -106,6 +106,14 @@ void eb_finish(void)
 {
 }
 
+void eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
+{
+	(void) samples;
+	(void) n;
+	(void) volume;
+	(void) pan;
+}
+
 void eb_log(const char *text)
 {
 	fputs(text, stderr);

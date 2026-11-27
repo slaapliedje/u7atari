@@ -14,6 +14,7 @@
 
 extern const uint8_t gpu_tiles[], gpu_tiles_end[], gpu_shapes[], gpu_shapes_end[];
 extern const uint8_t gpu_convert[], gpu_convert_end[], gpu_movers[], gpu_movers_end[];
+extern const uint8_t dsp_sound[], dsp_sound_end[];
 #define G_FLAGS (*(volatile uint32_t *) 0xF02100)
 #define G_PC (*(volatile uint32_t *) 0xF02110)
 #define G_CTRL (*(volatile uint32_t *) 0xF02114)
@@ -234,6 +235,56 @@ void eb_copy(struct ESurface *dst, int16_t dx, int16_t dy, const struct ESurface
 	BREG(B_COUNT) = (uint32_t) h << 16 | (uint16_t) w;
 	BREG(B_CMD) = SRCEN | UPDA1 | UPDA2 | LFU_REPLACE;
 	/* not waited for: the GPU's shapes wait for the blitter before each run, and eb_finish */
+}
+
+/* ---- sounds: four channels mixed by the DSP (sound_dsp.s) at 15980 Hz ---- */
+
+#define D_PC (*(volatile uint32_t *) 0xF1A110)
+#define D_CTRL (*(volatile uint32_t *) 0xF1A114)
+#define SCLK (*(volatile uint32_t *) 0xF1A150)
+#define SMODE (*(volatile uint32_t *) 0xF1A154)
+#define SOUND_CHANNELS 4
+/* each: the next sample's address, the end's, the left volume, the right (0-255) */
+#define SOUND_CHANNEL ((volatile uint32_t *) 0xF1CF00)
+
+static void sound_init(void)
+{
+	const uint32_t *from = (const uint32_t *) dsp_sound;
+	volatile uint32_t *to = (volatile uint32_t *) 0xF1B000;
+
+	D_CTRL = 0;
+	for (uint32_t i = 0; i < (uint32_t) (dsp_sound_end - dsp_sound + 3) / 4; i++)
+		to[i] = from[i];
+	for (int i = 0; i < SOUND_CHANNELS * 4; i++)
+		SOUND_CHANNEL[i] = 0;
+	/* the I2S clock: 26.59 MHz / (64 * (25 + 1)), 15980 Hz (E_SOUND_RATE); internal, word
+	 * strobe on, the interrupt each word pair */
+	SCLK = 25;
+	SMODE = 0x15;
+	D_PC = 0xF1B000;
+	D_CTRL = 1;
+}
+
+void eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
+{
+	int c = 0;
+	uint32_t least = 0xffffffff;
+
+	/* a free channel, else the one nearest its end */
+	for (int k = 0; k < SOUND_CHANNELS; k++) {
+		uint32_t at = SOUND_CHANNEL[k * 4], end = SOUND_CHANNEL[k * 4 + 1];
+		uint32_t left = end > at ? end - at : 0;
+		if (left < least) {
+			least = left;
+			c = k;
+		}
+	}
+	volatile uint32_t *ch = &SOUND_CHANNEL[c * 4];
+	ch[1] = 0;
+	ch[2] = (uint32_t) (volume * (127 - pan) * 2 / 127);
+	ch[3] = (uint32_t) (volume * pan * 2 / 127);
+	ch[0] = (uint32_t) samples;
+	ch[1] = (uint32_t) samples + n * 2;
 }
 
 /* ---- the GPU: shapes_gpu.s and tiles_gpu.s, each run while the 68000 goes on ----
@@ -927,6 +978,7 @@ void jag_main(void)
 			;
 	}
 	set_palette(e_palette());
+	sound_init();
 #ifdef ENGINE_BENCH_SHAPES
 	bench_shapes();
 #endif
