@@ -495,6 +495,8 @@ static struct Run {
 	int wait_kind;              /* the intrinsic waiting (0x0a, 0x0b, 0x0c) or 0 for a converse */
 	int16_t number[4];          /* a number asked for: low, high, step, initial */
 	char say[UC_SAY];
+	int8_t book;                /* 2 a scroll, 3 a book being read (BookMode), else 0 */
+	int16_t sign;               /* the sign's gump (DisplayRunes), its lines in say */
 	int speaker, speaker_frame;
 	int face[2], face_frame[2], speaking;      /* the two places faces are shown in */
 } run;
@@ -592,8 +594,9 @@ static int thing_of(int ref, struct EThing *t)
 }
 
 /* What NPCs carry (held.c): their numbers from HELD_REF up. */
-#define HELD_REF 0x4000
+#define HELD_REF E_HELD_REF
 #define NOWHERE (-32768)
+static struct { int16_t function, item, event; uint8_t set; } pending;   /* PathRunUsecode's */
 static int dragged = -1;        /* the item made or taken up, to be put somewhere (the original's
                                  * item being dragged), or -1 */
 
@@ -1253,6 +1256,138 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 			e_sound(arg_int(args, 1), (int16_t) x, (int16_t) y);
 		return 0;
 	}
+	case 0x30: {                /* FindNearbyAvatar: the items of a type about the avatar */
+		static struct EThing found[48];
+		int16_t wx0, wy0, wx1, wy1;
+		e_near_window(&wx0, &wy0, &wx1, &wy1);
+		int n = arg_int(args, 1) < 0 ? 0 : e_things((uint16_t) arg_int(args, 1), wx0, wy0, wx1, wy1, found, 48);
+		struct Atom *t = val_list(ret, n);
+		for (k = 0; t != NULL && k < n; k++) {
+			t[k].type = A_INT;
+			t[k].n = (int16_t) e_thing_ref(&found[k]);
+			t[k].s = NULL;
+		}
+		return 0;
+	}
+	case 0x3e: {                /* MoveObject: item, [x, y, z] (an NPC, a world item; not yet the
+	                             * party) */
+		const struct Val *to = &args[-2];
+		struct EThing t, put;
+		if (to->len < 3)
+			return 0;
+		int x = to_int(atom(to, 0)), y = to_int(atom(to, 1)), z = to_int(atom(to, 2));
+		k = npc_of_ref(arg_int(args, 1));
+		if (k >= 0 && k != avatar_index()) {
+			npc[k].x = (int16_t) x;
+			npc[k].y = (int16_t) y;
+			npc[k].z = (uint8_t) z;
+		} else if (thing_of(arg_int(args, 1), &t) && e_thing_remove(&t))
+			e_thing_add(t.tf, (int16_t) x, (int16_t) y, (uint8_t) z, &put);
+		return 0;
+	}
+	case 0x87: {                /* DirectionFrom: item, to an item or [x, y]: 0-7, north clockwise */
+		int x, y, z, tx, ty, tz;
+		const struct Val *to = &args[-2];
+		*ret = val_int(0);
+		if (!place_of_ref(arg_int(args, 1), &x, &y, &z))
+			return 0;
+		if (to->len >= 2) {
+			tx = to_int(atom(to, 0));
+			ty = to_int(atom(to, 1));
+		} else if (!place_of_ref(first_int(to), &tx, &ty, &tz))
+			return 0;
+		int dx = tx - x, dy = ty - y, ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+		/* within half a step of a side: that side; else the corner between */
+		int sx = ax * 2 < ay ? 0 : dx < 0 ? -1 : dx > 0, sy = ay * 2 < ax ? 0 : dy < 0 ? -1 : dy > 0;
+		k = e_way_of(sx, sy);
+		*ret = val_int(k < 0 ? 0 : k);
+		return 0;
+	}
+	case 0x55:                  /* BookMode: what is said next is read in the item's book or scroll */
+		k = held_of(arg_int(args, 1));
+		{
+			struct EThing t;
+			int type = k >= 0 ? e_held_tf(k) & 0x3ff : thing_of(arg_int(args, 1), &t) ? t.tf & 0x3ff : 0;
+			run.book = type == 797 ? 2 : 3;
+		}
+		return 0;
+	case 0x32: {                /* DisplayRunes: gump, its lines: a sign shown till it is let go */
+		const struct Val *lines = &args[-2];
+		size_t at = 0;
+		run.say[0] = 0;
+		for (k = 0; k < lines->len && at + 2 < sizeof run.say; k++) {
+			const struct Atom *a = atom(lines, k);
+			if (a->type != A_TEXT)
+				continue;
+			int w = snprintf(run.say + at, sizeof run.say - at, "%s%s", at ? "\r" : "", a->s);
+			at = w < 0 ? at : at + (size_t) w >= sizeof run.say ? sizeof run.say - 1 : at + (size_t) w;
+		}
+		run.sign = (int16_t) arg_int(args, 1);
+		run.wait_kind = num;
+		run.waiting = E_UC_SIGN;
+		return 1;
+	}
+	case 0x62:                  /* IsPcInside */
+		*ret = val_int(e_inside());
+		return 0;
+	case 0x69:                  /* GetSpeechTrack: none */
+		*ret = val_int(-1);
+		return 0;
+	case 0x6e: {                /* GetContainer: what a held item is in (an NPC, a container) */
+		int i = held_of(arg_int(args, 1)), in = e_held_in(i);
+		*ret = val_int(i < 0 || in == E_HELD_LOOSE ? 0 : in >= 0 ? ref_of_held(in)
+			: E_HELD_ON(0) - in == 0 ? UC_AVATAR : -(E_HELD_ON(0) - in));
+		return 0;
+	}
+	case 0x72: {                /* IsReadied: npc, slot, type, frame (held on it: slots not kept) */
+		int in = in_of_ref(arg_int(args, 1)), type = arg_int(args, 3), f = arg_int(args, 4);
+		*ret = val_int(0);
+		for (k = in == NOWHERE ? -1 : e_held_find(in, type, -1, f == UC_ALL ? -1 : f, -1); k >= 0;
+			k = e_held_find(in, type, -1, f == UC_ALL ? -1 : f, k))
+			if (e_held_in(k) == in)
+				*ret = val_int(1);
+		return 0;
+	}
+	case 0x7d:                  /* PathRunUsecode: [x, y, z], function, item, event: the walk not
+	                             * walked (the item used is at hand), the function run after */
+		pending.function = (int16_t) arg_int(args, 2);
+		pending.item = (int16_t) arg_int(args, 3);
+		pending.event = (int16_t) arg_int(args, 4);
+		pending.set = 1;
+		*ret = val_int(1);
+		return 0;
+	case 0x85:                  /* IsNotBlocked: (not yet looked at: yes) */
+		*ret = val_int(1);
+		return 0;
+	case 0x44:                  /* GetWeather: fair */
+	case 0x58:                  /* GetBarge: none */
+	case 0x74:                  /* StartSpeech: none played */
+	case 0x79:                  /* InUsecode: none queued */
+	case 0x81:                  /* InGumpMode */
+	case 0x8e:                  /* InCombat */
+	case 0x90:                  /* IsWater (not yet looked at) */
+	case 0x33:                  /* GetTarget: (not yet: none picked) */
+	case 0x48:                  /* DisplayMap (not yet) */
+		*ret = val_int(0);
+		return 0;
+	case 0x41:                  /* SetToAttack, SetAttackMode, SetOppressor, AttackObject: no combat yet */
+	case 0x4b:
+	case 0x4c:
+	case 0x54:
+	case 0x46:                  /* SitDown: (party members: not yet) */
+	case 0x4f:                  /* DisplayArea, WizardEye, SpriteEffect, SetOrrery, FlashMouse,
+	                             * CloseGumps, SetLight, SetTimePalette, ViewTile: not yet */
+	case 0x50:
+	case 0x53:
+	case 0x63:
+	case 0x6a:
+	case 0x7e:
+	case 0x82:
+	case 0x84:
+	case 0x94:
+	case 0x7a:                  /* CallGuards: no crimes yet */
+	case 0x77:                  /* NapTime: (sleeping not yet) */
+		return 0;
 	case 0x01:                  /* Post, PostInFuture: scripts on items (not yet: done) */
 	case 0x02:
 	case 0x2e:                  /* PlayMusic */
@@ -1604,12 +1739,39 @@ static int go(void)
 	return E_UC_DONE;
 }
 
+int e_uc_pending(int *function, int *item, int *event)
+{
+	if (!pending.set)
+		return 0;
+	pending.set = 0;
+	*function = pending.function;
+	*item = pending.item;
+	*event = pending.event;
+	return 1;
+}
+
+int e_uc_book(void)
+{
+	return run.on ? run.book : 0;
+}
+
+int e_uc_sign(void)
+{
+	return run.on && run.waiting == E_UC_SIGN ? run.sign : -1;
+}
+
+int e_uc_has(int function)
+{
+	return function >= 0 && function < UC_FUNCTIONS && e_uc_open() && uc_at[function] != 0;
+}
+
 int e_uc_start(int function, int item, int event)
 {
 	if (!e_uc_open() || code == NULL)
 		return E_UC_DONE;
 	if (run.on)
 		end_run();
+	pending.set = 0;
 	for (int k = 0; k < nloaded; k++)
 		loaded[loaded_list[k]] = 0;
 	nloaded = 0;
@@ -1655,6 +1817,11 @@ int e_uc_resume(const char *answer)
 		return E_UC_DONE;
 	if (run.waiting == E_UC_SAY)
 		run.say[0] = 0;
+	else if (run.waiting == E_UC_SIGN) {
+		run.say[0] = 0;
+		if (run.wait_kind & 0x200)
+			push(val_int(0));
+	}
 	else if (run.waiting == E_UC_ASK) {
 		snprintf(run.answer, sizeof run.answer, "%s", answer != NULL ? answer : "");
 		if (run.wait_kind == 0)

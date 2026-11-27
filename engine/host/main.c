@@ -340,6 +340,10 @@ static int route_step(uint16_t tf, int16_t *ax, int16_t *ay, uint8_t *az, int *d
 
 static int list_npcs;           /* --npcs: those in view listed with each picture */
 static int appear_frame;        /* --appear f: the avatar far off till frame f */
+static int use_dx, use_dy, use_ahead;     /* --use-ahead dx,dy: the item ahead used (as A does) */
+static int put_type = -1;        /* --put type: an item of it put beside the avatar (to use) */
+static int use_near;             /* --use-near: each usable item about the avatar used */
+static int use_all;              /* --use-all: each shape's usecode run on an item of it */
 static int talk_npc = -1;       /* --talk n: NPC n's conversation, printed (or with --out shown) */
 static int out_pictures;        /* --out given */
 static const char *talk_answers; /* --answers a,b,...: the answers picked */
@@ -415,6 +419,93 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 				e_talk_key(E_KEY_NEXT);
 		}
 		printf("(conversation over, %d pictures)\n", pic);
+		return;
+	}
+	if (use_near) {
+		/* each item about the avatar with usecode, used as the Jaguar's A uses it (the
+		 * conversation screen's run: the first answer, the first number) */
+		static struct EThing found[64];
+		int16_t wx0, wy0, wx1, wy1;
+		e_set_view((int16_t) (ax - E_VIEW_CELLS_X / 2), (int16_t) (ay - E_VIEW_CELLS_Y / 2));
+		e_follow(0);
+		e_draw(&frame);         /* (the world about read in) */
+		e_near_window(&wx0, &wy0, &wx1, &wy1);
+		if (put_type >= 0)
+			e_thing_add((uint16_t) put_type, (int16_t) (ax + 1), ay, az, NULL);
+		if (use_ahead) {
+			/* the item ahead, as the Jaguar's A finds it */
+			struct EThing t;
+			if (!e_thing_ahead(ax, ay, az, use_dx, use_dy, e_usable, &t)) {
+				printf("nothing usable ahead\n");
+				return;
+			}
+			printf("== ahead: shape %d frame %d at %d,%d,%d\n", t.tf & 0x3ff, t.tf >> 10 & 31, t.x, t.y, t.z);
+			e_talk_use(&t);
+			for (int turns = 0; e_talk_active() && turns < 50; turns++) {
+				for (int pl = 0; pl < 2; pl++)
+					for (int l = 0; e_talk_line(pl, l); l++)
+						printf("  %d| %s\n", pl, e_talk_line(pl, l));
+				e_talk_key(E_KEY_NEXT);
+			}
+			return;
+		}
+		for (int type = 0; type < 1024; type++) {
+			if (!e_usable((uint16_t) type))
+				continue;
+			int n = e_things((uint16_t) type, wx0, wy0, wx1, wy1, found, 64);
+			for (int k = 0; k < n && k < 3; k++) {
+				printf("== shape %d frame %d at %d,%d,%d\n", type, found[k].tf >> 10 & 31, found[k].x,
+					found[k].y, found[k].z);
+				int turns = 0;
+				static int pic;
+				e_talk_use(&found[k]);
+				while (e_talk_active() && turns++ < 200) {
+					for (int pl = 0; pl < 2; pl++)
+						for (int l = 0; e_talk_line(pl, l); l++)
+							printf("  %d| %s\n", pl, e_talk_line(pl, l));
+					if (out_pictures) {
+						char name[256];
+						e_draw(&frame);
+						e_talk_draw(&frame);
+						eb_finish();
+						snprintf(name, sizeof name, "%s.use%03d.ppm", out, pic++);
+						save(name);
+						printf("-- picture %d\n", pic - 1);
+					}
+					e_talk_key(E_KEY_NEXT);
+				}
+			}
+		}
+		return;
+	}
+	if (use_all) {
+		/* each shape's function (0-1023) used on an item of that shape made for it (loose):
+		 * the first answer, the first number, to its end */
+		for (int type = 0; type < 1024; type++) {
+			int i = e_held_add((uint16_t) type, 0, E_HELD_LOOSE);
+			int r = e_uc_start(type, E_HELD_REF + i, 1), turns = 0;
+			if (r == E_UC_DONE && i >= 0) {
+				e_held_remove(i);
+				continue;
+			}
+			printf("== shape %d\n", type);
+			while (r != E_UC_DONE && turns++ < 200) {
+				if (r == E_UC_SAY) {
+					printf("  say: %.100s\n", e_uc_text());
+					r = e_uc_resume(NULL);
+				} else if (r == E_UC_NUMBER) {
+					int lo, hi, st, in;
+					e_uc_number(&lo, &hi, &st, &in);
+					r = e_uc_resume_number(in);
+				} else {
+					const char *list[40];
+					int n = e_uc_answers(list, 40);
+					printf("  ask: %s\n", n > 0 ? list[0] : "-");
+					r = e_uc_resume(n > 0 ? list[0] : "");
+				}
+			}
+			e_held_remove(i);
+		}
 		return;
 	}
 	if (talk_npc >= 0) {
@@ -618,7 +709,16 @@ int main(int argc, char **argv)
 				return 1;
 			}
 			wav_header();
-		} else if (!strcmp(argv[i], "--talk") && i + 1 < argc)
+		} else if (!strcmp(argv[i], "--use-ahead") && i + 1 < argc) {
+			sscanf(argv[++i], "%d,%d", &use_dx, &use_dy);
+			use_ahead = use_near = 1;
+		} else if (!strcmp(argv[i], "--put") && i + 1 < argc)
+			put_type = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--use-near"))
+			use_near = 1;
+		else if (!strcmp(argv[i], "--use-all"))
+			use_all = 1;
+		else if (!strcmp(argv[i], "--talk") && i + 1 < argc)
 			talk_npc = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--answers") && i + 1 < argc)
 			talk_answers = argv[++i];

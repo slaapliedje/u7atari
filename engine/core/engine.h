@@ -233,6 +233,7 @@ int e_npcs(struct ENpc *out, int max);
  * stones, a container what its bulk leaves room for. */
 #define E_HELD_MOST 1200
 #define E_HELD_LOOSE (-1)
+#define E_HELD_REF 0x4000       /* held item i is E_HELD_REF + i to the usecode */
 #define E_HELD_ON(n) (-2 - (n))
 void e_held_clear(void);
 int e_held_add(uint16_t tf, uint8_t quality, int in);   /* its index, or -1: no room */
@@ -256,6 +257,7 @@ int e_held_place(int i, int in, int strength);
 void e_held_remove(int i);              /* and what it holds */
 int e_held_used(void);
 int e_shape_class(int type);            /* a type's class (TFA.DAT) */
+int e_inside(void);                     /* the avatar under a roof (the view's ceiling lowered) */
 
 /* ---- usecode (core/usecode.c): the original's (STATIC/USECODE), run as its interpreter runs
  * it, stopping where the player is waited for ---- */
@@ -264,11 +266,19 @@ int e_shape_class(int type);            /* a type's class (TFA.DAT) */
 #define E_UC_SAY 1              /* text to show (e_uc_text); then e_uc_resume(NULL) */
 #define E_UC_ASK 2              /* an answer to pick (e_uc_answers); then e_uc_resume(it) */
 #define E_UC_NUMBER 3           /* a number to choose (e_uc_number); then e_uc_resume_number */
+#define E_UC_SIGN 4             /* a sign shown (e_uc_sign, its lines e_uc_text split by \r); then
+                                 * e_uc_resume(NULL) */
 #define E_UC_CODE (128 * 1024)  /* room for the functions a run calls (the engine's store) */
 #define E_UC_HEAP (64 * 1024)   /* ... the values it makes */
 /* Usecode function (an NPC's conversation is 0x400 + its number) for item (an NPC: -its
  * number, the avatar -356) on event (1: used, as spoken to): E_UC_. */
 int e_uc_start(int function, int item, int event);
+int e_uc_has(int function);             /* whether there is usecode function n */
+int e_uc_book(void);                    /* what is said is read in a book (3), a scroll (2); or 0 */
+int e_uc_sign(void);                    /* the sign's gump while one is shown, else -1 */
+/* A function a run asked to be run when it ended (the original's after its walk to the item:
+ * PathRunUsecode): 1 and it, its item and event, taken; else 0. */
+int e_uc_pending(int *function, int *item, int *event);
 int e_uc_resume(const char *answer);
 /* The number asked for: its range, step and first value (1), or 0 when none is. */
 int e_uc_number(int *low, int *high, int *step, int *initial);
@@ -321,6 +331,20 @@ const char *e_talk_line(int place, int line);
  * text in font 2 (the slider's numbers) from x on its line at y. */
 void e_draw_gump(struct ESurface *frame, int n, int fr, int16_t x, int16_t y, int16_t *w, int16_t *h);
 void e_draw_small(struct ESurface *frame, int16_t x, int16_t y, const char *s);
+/* A book's, scroll's or sign's gump and font read in to be read (the faces' room taken: none is
+ * shown meanwhile): 1 when both are; drawn with its hot spot at x, y; given up. */
+int e_reading_open(int gump, int font);
+void e_draw_reading(struct ESurface *frame, int16_t x, int16_t y);
+void e_reading_close(void);
+/* The font the text functions (e_letter_width, e_text_width, e_line_height, e_draw_text) use:
+ * 0 (the conversations'), or the one read in for reading; 1 when it is that. */
+int e_text_font(int n);
+/* An item used (double-clicked, the original's): its usecode (by its type; a book of quality
+ * 100 on, the books' function) run for it, what it says shown as a conversation: 1 while that
+ * goes on. And whether an item's type has usecode to run. */
+struct EThing;
+int e_talk_use(const struct EThing *t);
+int e_usable(uint16_t tf);
 /* Counts the changes to what the conversation shows (while it is the same, so is the
  * picture: the world waits). */
 uint32_t e_talk_changes(void);
@@ -448,6 +472,10 @@ int e_thing_set(struct EThing *t, uint16_t tf);
 int e_thing_add(uint16_t tf, int16_t x, int16_t y, uint8_t z, struct EThing *out);
 /* How many frames an object shape has (0: none, or a flat). */
 int e_shape_frames(uint16_t type);
+/* The item ahead of a shape at x, y, z facing dx, dy (as e_door_ahead looks: the cell ahead, either
+ * side of it, past it) that wanted takes: 1 and it in out, else 0. */
+int e_thing_ahead(int16_t x, int16_t y, uint8_t z, int dx, int dy, int (*wanted)(uint16_t tf),
+	struct EThing *out);
 /* A movable item's number for the usecode (1 on, kept while the game runs), or 0; and the item
  * a number is now: 1, or 0 when it is none (or gone). */
 int e_thing_ref(const struct EThing *t);

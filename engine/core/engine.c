@@ -1840,6 +1840,43 @@ int e_things(uint16_t type, int16_t x0, int16_t y0, int16_t x1, int16_t y1, stru
 	return n;
 }
 
+int e_thing_ahead(int16_t x, int16_t y, uint8_t z, int dx, int dy, int (*wanted)(uint16_t tf),
+	struct EThing *out)
+{
+	/* the cell ahead, those either side of it, the one past it; the highest wanted item there
+	 * from the shape's feet to a little over its head */
+	const int8_t try_x[4] = { (int8_t) dx, (int8_t) (dx - dy), (int8_t) (dx + dy), (int8_t) (2 * dx) };
+	const int8_t try_y[4] = { (int8_t) dy, (int8_t) (dy + dx), (int8_t) (dy - dx), (int8_t) (2 * dy) };
+	int16_t wx0, wy0, wx1, wy1;
+
+	e_near_window(&wx0, &wy0, &wx1, &wy1);
+	for (int i = 0; i < 4; i++) {
+		int tx = x + try_x[i], ty = y + try_y[i], found = 0;
+		if (tx < wx0 || ty < wy0 || tx > wx1 || ty > wy1)
+			continue;
+		for (int cy = ty >> 4; cy <= (ty + 7) >> 4 && cy < 192; cy++)
+			for (int cx = tx >> 4; cx <= (tx + 7) >> 4 && cx < 192; cx++) {
+				const struct Chunk *k = chunk_statics(cx, cy);
+				for (uint16_t j = 0; j < k->nstatic; j++) {
+					const struct Static *st = &k->statics[j];
+					if (tx > st->x || tx < st->x - st->fx || ty > st->y || ty < st->y - st->fy
+						|| st->z > z + 6 || st->z + st->height < z || !wanted(st->tf))
+						continue;
+					if (found && st->z + st->height <= out->z)
+						continue;
+					out->tf = st->tf;
+					out->x = st->x;
+					out->y = st->y;
+					out->z = st->z;
+					found = 1;
+				}
+			}
+		if (found)
+			return 1;
+	}
+	return 0;
+}
+
 /* The kept handle of thing t, a movable item (as e_things gave it) still there; or -1. */
 static int thing_handle(const struct EThing *t)
 {
@@ -1906,6 +1943,11 @@ int e_shape_frames(uint16_t type)
 	const uint32_t *s = (const uint32_t *) shape(type);
 
 	return s == NULL || type < TILE_TYPES ? 0 : (int) (s[1] / 4 - 1);
+}
+
+int e_inside(void)
+{
+	return ceiling != 15;
 }
 
 int e_shape_class(int type)
@@ -2214,20 +2256,53 @@ static const int16_t *shape_frame(const uint8_t *s, int frame)
 	return (const int16_t *) (s + f[1 + frame]);
 }
 
-/* Shape bytes (raw, size) converted into room bytes at out: 1 when they fit. */
+/* Whether every frame of a raw shape lies within the converter's offsets of its hot spot (a span
+ * starts within -128 to 127 of it): then the backend's converter (the Jaguar's GPU, which does
+ * not look) can take it. */
+static int fits_offsets(const uint8_t *raw, uint32_t size)
+{
+	if (size < 8 || rd32(raw) != size)
+		return 0;
+	uint32_t first = rd32(raw + 4);
+	if (first < 8 || first > size || (first & 3))
+		return 0;
+	for (uint32_t f = 0; f < (first - 4) / 4; f++) {
+		uint32_t p = rd32(raw + 4 + f * 4);
+		if (p + 8 > size || rds16(raw + p) > 127 || rds16(raw + p + 2) > 128 || rds16(raw + p + 4) > 128
+			|| rds16(raw + p + 6) > 127)
+			return 0;
+	}
+	return 1;
+}
+
+/* Shape bytes (raw, size) converted into room bytes at out (by the backend's converter): 1 when
+ * they fit. */
 static int convert_into(const uint8_t *raw, uint32_t size, uint8_t *out, uint32_t room)
 {
-	uint32_t made = e_convert_shape(raw, size, NULL, 0);
+	if (!fits_offsets(raw, size))
+		return 0;
+	uint32_t made = eb_convert(raw, size, NULL, 0);
 
-	return made != 0 && made + E_CONVERT_SLACK <= room && e_convert_shape(raw, size, out, room) != 0;
+	return made != 0 && made + E_CONVERT_SLACK <= room && eb_convert(raw, size, out, room) != 0;
 }
+
+/* What converting a shape makes (by the backend's converter), or 0 when it does not fit. */
+static uint32_t convert_size(const uint8_t *raw, uint32_t size)
+{
+	return fits_offsets(raw, size) ? eb_convert(raw, size, NULL, 0) : 0;
+}
+
+static uint8_t *read_room;      /* the faces' slots, one block: a book's room while it is read */
 
 static void open_faces(void)
 {
+	/* one block: a book's, scroll's or sign's room while it is read (read_room) */
+	uint8_t *block = take(FACE_SLOTS * FACE_ROOM);
 	for (int k = 0; k < FACE_SLOTS; k++) {
 		faces[k].face = -1;
-		faces[k].s = take(FACE_ROOM);
+		faces[k].s = block != NULL ? block + k * FACE_ROOM : NULL;
 	}
+	read_room = block;
 	int16_t f = open_file("STATIC", "POINTERS.SHP");
 	if (f < 0)
 		return;
@@ -2299,14 +2374,36 @@ void e_draw_pointer(struct ESurface *frame, int fr, int16_t x, int16_t y)
 	}
 }
 
-/* ---- gumps (GUMPS.VGA: the slider's), read in as wanted, a few kept; font 2 (its numbers) ---- */
+/* ---- gumps (GUMPS.VGA), read in as wanted: the slider's a few kept; a book's, scroll's or
+ * sign's in the faces' room while it is read (no face is shown then), with its font. Font 2 (the
+ * slider's numbers). A gump wider or taller than the converter's offsets reach from its hot
+ * spot (a span must start within -128 to 127 of it) is cut in bands up to 256 wide, each
+ * centred on its own, drawn where its part of the gump is. ---- */
 
 #define GUMP_ROOM (8 * 1024)
 #define GUMPS_KEPT 8
+#define GUMP_PARTS 2
+struct Gump {
+	int16_t n, w, h;
+	uint8_t parts;
+	uint32_t at[GUMP_PARTS];    /* each part, converted, in its room */
+	int16_t dx[GUMP_PARTS], dy[GUMP_PARTS];     /* where its hot spot is from the gump's */
+};
 static uint8_t *gump_room, *font2;
 static uint32_t gump_used;
-static struct { int16_t n; uint32_t at; } gumps_kept[GUMPS_KEPT];
+static struct Gump gumps_kept[GUMPS_KEPT];
 static int ngumps_kept;
+#define READ_ROOM (FACE_SLOTS * FACE_ROOM)
+static struct Gump reading;     /* the gump being read (parts 0: none) */
+static uint8_t *reading_font;
+static int reading_font_n = -1;
+static uint8_t span_px[512];
+
+static inline void wr32(uint8_t *p, uint32_t v)
+{
+	wr16(p, (uint16_t) v);
+	wr16(p + 2, (uint16_t) (v >> 16));
+}
 
 static void open_gumps(void)
 {
@@ -2328,97 +2425,250 @@ static void open_gumps(void)
 		font2 = NULL;
 }
 
-/* A raw shape's hot spot moved dx to the right (its spans' offsets and boxes changed), so one
- * wider than the converter's offsets reach converts; 1 when it walked it whole. */
-static int shift_raw(uint8_t *s, uint32_t size, int dx)
+/* Frame 0 of raw shape s, the part of it from along lo to hi, its hot spot moved to cx, cy: a raw
+ * one-frame shape at out (run-encoded again: repeats of 3 or more filled): its size, or 0. */
+static uint32_t cut_raw(const uint8_t *s, uint32_t size, int lo, int hi, int cx, int cy, uint8_t *out,
+	uint32_t room)
 {
-	uint32_t first = rd32(s + 4), frames = (first - 4) / 4;
+	uint32_t p = rd32(s + 4), o = 16;
 
-	for (uint32_t f = 0; f < frames; f++) {
-		uint32_t p = rd32(s + 4 + f * 4);
-		if (p + 8 > size)
+	if (p + 8 > size || room < 20)
+		return 0;
+	int right = rds16(s + p), left = rds16(s + p + 2), up = rds16(s + p + 4), down = rds16(s + p + 6);
+	int r = right < hi - 1 ? right : hi - 1, l = -left > lo ? -left : lo;
+	wr32(out + 4, 8);
+	wr16(out + 8, (uint16_t) (r - cx));
+	wr16(out + 10, (uint16_t) (cx - l));
+	wr16(out + 12, (uint16_t) (up + cy));
+	wr16(out + 14, (uint16_t) (down - cy));
+	for (p += 8;;) {
+		if (p + 2 > size)
 			return 0;
-		int16_t right = rds16(s + p), left = rds16(s + p + 2);
-		wr16(s + p, (uint16_t) (right - dx));
-		wr16(s + p + 2, (uint16_t) (left + dx));
-		for (p += 8;;) {
-			if (p + 2 > size)
+		uint16_t head = rd16(s + p);
+		if (head == 0)
+			break;
+		if (p + 6 > size)
+			return 0;
+		int len = head >> 1, along = rds16(s + p + 2), across = rds16(s + p + 4);
+		p += 6;
+		if (len > (int) sizeof span_px)
+			return 0;
+		if (!(head & 1)) {
+			if (p + (uint32_t) len > size)
 				return 0;
-			uint16_t head = rd16(s + p);
-			if (head == 0)
-				break;
-			if (p + 6 > size)
-				return 0;
-			int len = head >> 1;
-			wr16(s + p + 2, (uint16_t) (rds16(s + p + 2) - dx));
-			p += 6;
-			if (!(head & 1)) {
-				p += (uint32_t) len;
-				continue;
-			}
-			for (int pos = 0; pos < len && p < size;) {
+			memcpy(span_px, s + p, (size_t) len);
+			p += (uint32_t) len;
+		} else
+			for (int pos = 0; pos < len;) {
+				if (p >= size)
+					return 0;
 				int c = s[p] >> 1, fill = s[p] & 1;
-				p += 1 + (fill ? 1u : (uint32_t) c);
+				p++;
+				if (pos + c > len || p + (fill ? 1u : (uint32_t) c) > size)
+					return 0;
+				if (fill)
+					memset(span_px + pos, s[p++], (size_t) c);
+				else {
+					memcpy(span_px + pos, s + p, (size_t) c);
+					p += (uint32_t) c;
+				}
 				pos += c;
 			}
+		int a = along > lo ? along : lo, e = along + len < hi ? along + len : hi;
+		if (a >= e)
+			continue;
+		if (o + 6 > room)
+			return 0;
+		uint32_t h = o;
+		o += 6;
+		wr16(out + h, (uint16_t) ((e - a) << 1 | 1));
+		wr16(out + h + 2, (uint16_t) (a - cx));
+		wr16(out + h + 4, (uint16_t) (across - cy));
+		const uint8_t *px = span_px - along;
+		for (int i = a; i < e;) {
+			int rep = 1;
+			while (i + rep < e && rep < 127 && px[i + rep] == px[i])
+				rep++;
+			if (o + 2 + 127 > room)
+				return 0;
+			if (rep >= 3) {
+				out[o++] = (uint8_t) (rep << 1 | 1);
+				out[o++] = px[i];
+				i += rep;
+				continue;
+			}
+			uint32_t start = o++;
+			int lit = 0;
+			while (i < e && lit < 127) {
+				if (lit > 0 && i + 2 < e && px[i] == px[i + 1] && px[i] == px[i + 2])
+					break;
+				out[o++] = px[i++];
+				lit++;
+			}
+			out[start] = (uint8_t) (lit << 1);
 		}
 	}
-	return 1;
+	if (o + 2 > room)
+		return 0;
+	wr16(out + o, 0);
+	o += 2;
+	wr32(out, o);
+	return o;
 }
 
-static int16_t gump_shift[GUMPS_KEPT];
-
-static const uint8_t *gump_shape(int n)
+/* Gump n read and converted into room bytes at out (cut in bands if need be): 1 and g. */
+static int load_gump(int n, uint8_t *out, uint32_t room, struct Gump *g)
 {
-	uint8_t head[8];
+	uint8_t head[8], *raw = scratch, *cut = scratch + SCRATCH / 2;
+	uint32_t used = 0;
 
-	for (int k = 0; k < ngumps_kept; k++)
-		if (gumps_kept[k].n == n)
-			return gump_room + gumps_kept[k].at;
-	if (gump_room == NULL)
-		return NULL;
+	g->parts = 0;
 	int16_t f = open_file("STATIC", "GUMPS.VGA");
 	if (f < 0)
-		return NULL;
+		return 0;
 	int ok = read_at(f, 0x80 + 8 * (uint32_t) n, head, 8);
 	uint32_t at = rd32(head), size = rd32(head + 4);
-	ok = ok && size > 0 && size <= SCRATCH && read_at(f, at, scratch, size);
+	ok = ok && size > 16 && size <= SCRATCH / 2 && read_at(f, at, raw, size);
 	plat_file_close(f);
-	uint32_t made = ok ? e_convert_shape(scratch, size, NULL, 0) : 0;
-	int dx = 0;
-	if (made == 0 && ok && shift_raw(scratch, size, 64)) {
-		/* too wide for the converter's offsets from its hot spot: moved in */
-		dx = 64;
-		made = e_convert_shape(scratch, size, NULL, 0);
+	if (!ok)
+		return 0;
+	uint32_t p = rd32(raw + 4);
+	if (p + 8 > size)
+		return 0;
+	int right = rds16(raw + p), left = rds16(raw + p + 2), up = rds16(raw + p + 4), down = rds16(raw + p + 6);
+	g->n = (int16_t) n;
+	g->w = (int16_t) (right + left + 1);
+	g->h = (int16_t) (up + down + 1);
+	uint32_t made = convert_size(raw, size);
+	if (made != 0) {
+		if (made + E_CONVERT_SLACK > room || !convert_into(raw, size, out, made + E_CONVERT_SLACK))
+			return 0;
+		g->parts = 1;
+		g->at[0] = 0;
+		g->dx[0] = g->dy[0] = 0;
+		return 1;
 	}
-	if (made == 0 || made + E_CONVERT_SLACK > GUMP_ROOM)
+	/* in bands, each centred */
+	int cy = (down - up) / 2;
+	for (int lo = -left; lo <= right && g->parts < GUMP_PARTS; lo += 256) {
+		int hi = lo + 256 > right + 1 ? right + 1 : lo + 256, cx = lo + 128, k = g->parts;
+		uint32_t c = cut_raw(raw, size, lo, hi, cx, cy, cut, SCRATCH / 2);
+		made = c ? convert_size(cut, c) : 0;
+		if (made == 0 || used + made + E_CONVERT_SLACK > room
+			|| !convert_into(cut, c, out + used, made + E_CONVERT_SLACK))
+			return 0;
+		g->at[k] = used;
+		g->dx[k] = (int16_t) cx;
+		g->dy[k] = (int16_t) cy;
+		g->parts++;
+		used = (used + made + E_CONVERT_SLACK + 7) & ~7u;
+	}
+	return g->parts > 0;
+}
+
+static void draw_gump(struct ESurface *frame, const uint8_t *room, const struct Gump *g, int16_t x, int16_t y)
+{
+	static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
+
+	for (int k = 0; k < g->parts; k++) {
+		const int16_t *f = shape_frame(room + g->at[k], 0);
+		if (f != NULL)
+			eb_shape(frame, whole, (const uint32_t *) (f + 4), (int16_t) (x + g->dx[k]),
+				(int16_t) (y + g->dy[k]), 0);
+	}
+}
+
+static const struct Gump *gump_shape(int n)
+{
+	for (int k = 0; k < ngumps_kept; k++)
+		if (gumps_kept[k].n == n)
+			return &gumps_kept[k];
+	if (gump_room == NULL)
 		return NULL;
-	if (ngumps_kept == GUMPS_KEPT || gump_used + made + E_CONVERT_SLACK > GUMP_ROOM)
-		ngumps_kept = 0, gump_used = 0;     /* full: all given way */
-	if (!convert_into(scratch, size, gump_room + gump_used, made + E_CONVERT_SLACK))
-		return NULL;
-	gump_shift[ngumps_kept] = (int16_t) dx;
-	gumps_kept[ngumps_kept].n = (int16_t) n;
-	gumps_kept[ngumps_kept++].at = gump_used;
-	gump_used = (gump_used + made + E_CONVERT_SLACK + 7) & ~7u;
-	return gump_room + gumps_kept[ngumps_kept - 1].at;
+	for (int tries = 0; tries < 2; tries++) {
+		if (ngumps_kept == GUMPS_KEPT)
+			ngumps_kept = 0, gump_used = 0;     /* full: all given way */
+		struct Gump *g = &gumps_kept[ngumps_kept];
+		if (load_gump(n, gump_room + gump_used, GUMP_ROOM - gump_used, g)) {
+			uint32_t base = gump_used, end = 0;
+			for (int k = 0; k < g->parts; k++) {
+				g->at[k] += base;
+				uint32_t sz = ((const uint32_t *) (gump_room + g->at[k]))[0];
+				if (g->at[k] + sz > end)
+					end = g->at[k] + sz;
+			}
+			gump_used = (end + E_CONVERT_SLACK + 7) & ~7u;
+			if (gump_used > GUMP_ROOM)
+				gump_used = GUMP_ROOM;
+			ngumps_kept++;
+			return g;
+		}
+		if (gump_used == 0)
+			return NULL;
+		ngumps_kept = 0, gump_used = 0;         /* no room left: all given way, once more */
+	}
+	return NULL;
 }
 
 void e_draw_gump(struct ESurface *frame, int n, int fr, int16_t x, int16_t y, int16_t *w, int16_t *h)
 {
-	static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
-	const uint8_t *g = gump_shape(n);
-	const int16_t *f = shape_frame(g, fr);
+	const struct Gump *g = gump_shape(n);
 
-	for (int k = 0; k < ngumps_kept && g != NULL; k++)
-		if (gump_room + gumps_kept[k].at == g)
-			x = (int16_t) (x + gump_shift[k]);     /* (its hot spot moved in) */
+	(void) fr;
 	if (w != NULL)
-		*w = f != NULL ? (int16_t) (f[0] + f[1] + 1) : 0;
+		*w = g != NULL ? g->w : 0;
 	if (h != NULL)
-		*h = f != NULL ? (int16_t) (f[2] + f[3] + 1) : 0;
-	if (f != NULL && frame != NULL)
-		eb_shape(frame, whole, (const uint32_t *) (f + 4), x, y, 0);
+		*h = g != NULL ? g->h : 0;
+	if (g != NULL && frame != NULL)
+		draw_gump(frame, gump_room, g, x, y);
+}
+
+int e_reading_open(int gump, int fontn)
+{
+	static struct Flex fonts;
+	uint32_t made;
+
+	for (int k = 0; k < FACE_SLOTS; k++)
+		faces[k].face = -1;     /* (their room taken) */
+	reading.parts = 0;
+	reading_font = NULL;
+	reading_font_n = -1;
+	if (read_room == NULL || !load_gump(gump, read_room, READ_ROOM, &reading))
+		return 0;
+	uint32_t used = 0;
+	for (int k = 0; k < reading.parts; k++) {
+		uint32_t end = reading.at[k] + ((const uint32_t *) (read_room + reading.at[k]))[0];
+		if (end > used)
+			used = end;
+	}
+	used = (used + E_CONVERT_SLACK + 7) & ~7u;
+	if (flex_open(&fonts, "STATIC", "FONTS.VGA") < 0 || fonts.count <= (uint32_t) fontn) {
+		if (fonts.f >= 0)
+			plat_file_close(fonts.f);
+		return 0;
+	}
+	uint32_t at = fonts.table[fontn * 2], size = fonts.table[fontn * 2 + 1];
+	int ok = size != 0 && size <= SCRATCH && read_at(fonts.f, at, scratch, size);
+	plat_file_close(fonts.f);
+	if (!ok || (made = convert_size(scratch, size)) == 0 || used + made + E_CONVERT_SLACK > READ_ROOM
+		|| !convert_into(scratch, size, read_room + used, made + E_CONVERT_SLACK))
+		return 0;
+	reading_font = read_room + used;
+	reading_font_n = fontn;
+	return 1;
+}
+
+void e_reading_close(void)
+{
+	reading.parts = 0;
+	reading_font = NULL;
+	reading_font_n = -1;
+	e_text_font(0);
+}
+
+void e_draw_reading(struct ESurface *frame, int16_t x, int16_t y)
+{
+	draw_gump(frame, read_room, &reading, x, y);
 }
 
 void e_draw_small(struct ESurface *frame, int16_t x, int16_t y, const char *s)
@@ -2435,12 +2685,38 @@ void e_draw_small(struct ESurface *frame, int16_t x, int16_t y, const char *s)
 	}
 }
 
+/* The text font (e_text_font): font 0, or the one read in for reading; the original's spacing
+ * and leading for each (its FontLetterSpacing, FontLineSpacing). */
+static const int8_t letter_spacing[8] = { -1, 1, 0, 1, 0, 0, 0, -1 };
+static const int8_t line_spacing[8] = { -1, 0, -1, 0, 1, 1, 1, -1 };
+static const uint8_t *text_font;
+static int text_n;
+
+int e_text_font(int n)
+{
+	if (n == reading_font_n && reading_font != NULL) {
+		text_font = reading_font;
+		text_n = n;
+		return 1;
+	}
+	text_font = font;
+	text_n = 0;
+	return n == 0;
+}
+
+static const int16_t *text_letter(uint8_t c)
+{
+	if (text_font == NULL)
+		text_font = font;
+	return shape_frame(text_font, c);
+}
+
 int e_letter_width(uint8_t c)
 {
-	const int16_t *f = letter(c);
+	const int16_t *f = text_letter(c);
 
 	/* as the original's: a letter's frame width, and the font's spacing */
-	return f != NULL ? f[0] + f[1] + 1 + FONT_SPACING : 0;
+	return f != NULL ? f[0] + f[1] + 1 + letter_spacing[text_n & 7] : 0;
 }
 
 int e_text_width(const char *s)
@@ -2448,24 +2724,27 @@ int e_text_width(const char *s)
 	int w = 0;
 
 	for (; *s; s++)
-		w += e_letter_width((uint8_t) *s) + FONT_SPACING;      /* as its textWidth: twice */
+		w += e_letter_width((uint8_t) *s) + letter_spacing[text_n & 7];   /* as its textWidth: twice */
 	return w;
 }
 
 int e_line_height(void)
 {
-	static int height;
+	static int height[8];
 
-	if (height == 0 && font != NULL) {
+	if (height[text_n & 7] == 0) {
 		/* the font's height over all its letters, and its leading */
+		int h = 0;
 		for (int c = 0; c < 256; c++) {
-			const int16_t *f = letter((uint8_t) c);
-			if (f != NULL && f[2] + f[3] + 1 > height)
-				height = f[2] + f[3] + 1;
+			const int16_t *f = text_letter((uint8_t) c);
+			if (f != NULL && f[2] + f[3] + 1 > h)
+				h = f[2] + f[3] + 1;
 		}
-		height += FONT_LEADING;
+		if (h == 0)
+			return 0;
+		height[text_n & 7] = h + line_spacing[text_n & 7];
 	}
-	return height;
+	return height[text_n & 7];
 }
 
 void e_draw_text(struct ESurface *frame, int16_t x, int16_t y, const char *s, int n)
@@ -2473,11 +2752,11 @@ void e_draw_text(struct ESurface *frame, int16_t x, int16_t y, const char *s, in
 	static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
 
 	for (int k = 0; k < n && s[k]; k++) {
-		const int16_t *f = letter((uint8_t) s[k]);
+		const int16_t *f = text_letter((uint8_t) s[k]);
 		if (f == NULL)
 			continue;
 		eb_shape(frame, whole, (const uint32_t *) (f + 4), (int16_t) (x + f[1]), y, 0);
-		x = (int16_t) (x + e_letter_width((uint8_t) s[k]) + FONT_SPACING);      /* its printChar */
+		x = (int16_t) (x + e_letter_width((uint8_t) s[k]) + letter_spacing[text_n & 7]);   /* its printChar */
 	}
 }
 

@@ -947,6 +947,28 @@ static void walk_update(void)
 		if (++frames_in == 40)
 			e_talk_start(ENGINE_TALK_TEST);
 #endif
+#ifdef ENGINE_USE_TEST
+		/* the nearest item of shape ENGINE_USE_TEST used, two seconds in (to see a book, a
+		 * scroll or a sign shown) */
+		static int use_in;
+		if (++use_in == 40) {
+			static struct EThing found[16];
+			int n = e_things(ENGINE_USE_TEST, (int16_t) (ax - 20), (int16_t) (ay - 20), (int16_t) (ax + 20),
+				(int16_t) (ay + 48), found, 16), best = -1, bd = 0;
+			for (int k = 0; k < n; k++) {
+				int d = (found[k].x > ax ? found[k].x - ax : ax - found[k].x)
+					+ (found[k].y > ay ? found[k].y - ay : ay - found[k].y);
+				if (best < 0 || d < bd)
+					best = k, bd = d;
+			}
+			if (best < 0 && e_thing_add(ENGINE_USE_TEST, (int16_t) (ax + 1), ay, az, &found[0]))
+				best = 0;       /* (none about: one put beside the avatar) */
+			int used = best >= 0 && e_talk_use(&found[best]);
+			char text[64];
+			snprintf(text, sizeof text, "use test: %d found, used %d\n", n, used);
+			GD_DebugString(text);
+		}
+#endif
 		if (e_talk_active()) {
 			/* talking: A on (or the answer picked), the pad moves the pointer; the world waits */
 			if (pressed & PAD_A)
@@ -974,6 +996,18 @@ static void walk_update(void)
 				touched = 1;
 			if (e_talk_active() || pressed & PAD_A)
 				a_held = 1;     /* (the A that ended it is not a door's) */
+		} else if (pressed & PAD_A) {
+			/* A: the door ahead opened or shut (the engine's, as the original's doors do it);
+			 * else the item ahead used, as the original's double-click */
+			static const int8_t face_x[4] = { 0, 1, 0, -1 }, face_y[4] = { -1, 0, 1, 0 };
+			struct EThing t;
+			int door = e_door_ahead(e_walk_frame(type, walk_dir, 0), ax, ay, az,
+				face_x[walk_dir], face_y[walk_dir]);
+			touched = 1;
+			if (door >= 0)
+				e_door_toggle(door);
+			else if (e_thing_ahead(ax, ay, az, face_x[walk_dir], face_y[walk_dir], e_usable, &t))
+				e_talk_use(&t);
 		} else if (pressed & PAD_B) {
 			/* B: the NPC ahead (or the nearest within 2 cells) spoken to */
 			static const int8_t face_x[4] = { 0, 1, 0, -1 }, face_y[4] = { -1, 0, 1, 0 };
@@ -999,13 +1033,6 @@ static void walk_update(void)
 		if (e_talk_active()) {
 			a_held = (held & PAD_A) != 0;
 			continue;
-		}
-		if ((held & PAD_A) && !a_held) {
-			static const int8_t face_x[4] = { 0, 1, 0, -1 }, face_y[4] = { -1, 0, 1, 0 };
-			int door = e_door_ahead(e_walk_frame(type, walk_dir, 0), ax, ay, az,
-				face_x[walk_dir], face_y[walk_dir]);
-			if (door >= 0)
-				e_door_toggle(door);
 		}
 		a_held = (held & PAD_A) != 0;
 		if (touched) {

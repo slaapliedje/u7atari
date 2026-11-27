@@ -221,7 +221,24 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   digits make a number, set as a dragged one is (down to the step, within the range; a digit
   past the range starts it again), `*` clears it, `#` takes it. Not the original's: an item given goes in its NPC's first
   container with room, else on it (the original fills hands and slots first; nothing shows
-  where yet). Not yet: the paperdolls and bags shown, double-clicking items, saving.
+  where yet). Not yet: the paperdolls and bags shown, saving.
+- **Using items** (the original's double-click): on the Jaguar A opens or shuts the door ahead
+  (the engine's doors, as their usecode does it), else uses the item ahead (`e_thing_ahead`: the
+  cell ahead, those beside it, the one past it; the highest with usecode). Its function (its
+  shape's; a book of quality 100 on, the books') is run for it through the conversation screen
+  (`e_talk_use`). A function it asks to be run after a walk to the item (`PathRunUsecode`) runs
+  when it ends, the item being at hand. Books (gump 32, two pages) and scrolls (gump 55) are
+  read as the original's conversation modes 3 and 2 lay them out, in font 4: each say on a line
+  of its own, '*' ending a page, a book's left page going on to its right, full pages waiting
+  for A; signs (gumps 49-51) show their lines centred in their own font (runes, mostly) till A.
+  A book's or sign's gump and font are read in to the faces' room (no face is shown meanwhile),
+  converted by the backend (the Jaguar's GPU: a sign shows within a few frames; the 68000's C
+  took 2 seconds). A gump past the converter's reach from its hot spot (a book's 307 wide) is
+  cut in bands up to 256 wide, each centred on its own. Not yet: picking a target (keys,
+  buckets: `GetTarget` gives none), sitting, sleeping in a bed, the map, combat. On the PC
+  `--use-near` uses every usable item about the avatar (`--put type` puts one beside it first),
+  `--use-ahead dx,dy` the one ahead, `--use-all` runs each shape's function on an item made for
+  it; `-DENGINE_USE_TEST=type` on the Jaguar uses the nearest of a type at the start.
 
 ## Layout
 
