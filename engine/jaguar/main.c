@@ -948,6 +948,16 @@ static void walk_update(void)
 	if (walking || moved)
 		e_mover_set(0, e_walk_frame(type, walk_dir, walk_steps), ax, ay, az);
 	e_world_step(world_clock(), ax, ay);
+#ifdef ENGINE_BARK_TEST
+	/* a line over mover 1 every two seconds, to see barks drawn */
+	{
+		static uint32_t said;
+		if (world_clock() / 120 != said) {
+			said = world_clock() / 120;
+			e_bark(1, e_text(1, 128), 90);
+		}
+	}
+#endif
 	if (moved)
 		e_follow(0);
 }

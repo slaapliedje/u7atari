@@ -1914,8 +1914,10 @@ static void open_sounds(void)
 		return;
 	if (!read_at(sounds.f, 0, title, sizeof title)
 		|| memcmp(title, E_SOUNDS_TITLE, sizeof E_SOUNDS_TITLE - 1) != 0
-		|| (sound_cache = take(SOUND_CACHE)) == NULL)
+		|| (sound_cache = take(SOUND_CACHE)) == NULL) {
+		plat_file_close(sounds.f);
 		return;
+	}
 	sounds_ok = 1;
 }
 
@@ -1945,6 +1947,197 @@ void e_sound(int number, int16_t x, int16_t y)
 		sound_next = (sound_next + size + 7) & ~7u;
 	}
 	eb_sound(sound_cache + sound_at[number] - 1, size / 2, volume, pan);
+}
+
+/* ---- text (STATIC/TEXT.FLX) and barks: a line over an NPC's head a while, in the original's
+ * yellow font (FONTS.VGA's first: its frames are the letters by their codes) ---- */
+
+static void note_drawn(const struct ESurface *frame, const int16_t clip[4]);
+static uint8_t ring_shown;      /* (below) */
+struct Bark;
+static int bark_box(const struct Bark *b, int16_t box[4]);
+static struct Flex text_flex;
+static uint8_t text_ok;
+static uint8_t *font;           /* font 0, in the engine's form */
+#define FONT_SPACING (-1)       /* the original's for font 0: between letters */
+#define FONT_LEADING (-1)
+#define BARKS 8
+#define BARK_TEXT 72
+
+static struct Bark {
+	int8_t mover;               /* whose (a mover slot), or -1: none */
+	int16_t life;               /* blanks left */
+	char text[BARK_TEXT];
+} barks[BARKS];
+
+static void open_text(void)
+{
+	static struct Flex fonts;
+	uint32_t made;
+
+	/* (the files shut: a GameDrive keeps few open; the text's is opened as a line is wanted) */
+	text_ok = flex_open(&text_flex, "STATIC", "TEXT.FLX") == 0;
+	if (text_flex.f >= 0)
+		plat_file_close(text_flex.f);
+	if (flex_open(&fonts, "STATIC", "FONTS.VGA") < 0 || fonts.count == 0) {
+		if (fonts.f >= 0)
+			plat_file_close(fonts.f);
+		return;
+	}
+	uint32_t at = fonts.table[0], size = fonts.table[1];
+	int ok = size != 0 && size <= SCRATCH && read_at(fonts.f, at, scratch, size);
+	plat_file_close(fonts.f);
+	if (!ok || (made = e_convert_shape(scratch, size, NULL, 0)) == 0
+		|| (font = take(made + E_CONVERT_SLACK)) == NULL)
+		return;
+	if (e_convert_shape(scratch, size, font, made + E_CONVERT_SLACK) == 0)
+		font = NULL;
+}
+
+/* Letter c's frame (its box, then its runs), or NULL. */
+static const int16_t *letter(uint8_t c)
+{
+	const uint32_t *f = (const uint32_t *) font;
+
+	if (f == NULL || (c + 1) * 4u >= f[1])
+		return NULL;
+	return (const int16_t *) (font + f[1 + c]);
+}
+
+const char *e_text(int section, int n)
+{
+	/* Black Gate's file: eight sections of 1024, 256, 256, ... entries */
+	static const uint16_t start[9] = { 0, 1024, 1280, 1536, 1792, 2048, 2304, 2560, 2560 };
+	static char line[BARK_TEXT];
+	uint32_t k;
+
+	line[0] = 0;
+	if (!text_ok || section < 0 || section > 7 || n < 0 || n >= start[section + 1] - start[section])
+		return line;
+	k = start[section] + (uint32_t) n;
+	if (k >= text_flex.count)
+		return line;
+	uint32_t at = text_flex.table[k * 2], size = text_flex.table[k * 2 + 1];
+	if (size > sizeof line - 1)
+		size = sizeof line - 1;
+	int16_t f = size ? open_file("STATIC", "TEXT.FLX") : -1;
+	if (f < 0 || !read_at(f, at, line, size))
+		size = 0;
+	if (f >= 0)
+		plat_file_close(f);
+	line[size] = 0;
+	return line;
+}
+
+void e_bark(int mover, const char *text, int blanks)
+{
+	struct Bark *b = NULL;
+
+	if (mover < 0 || mover >= nmovers || text == NULL || text[0] == 0)
+		return;
+	/* its own last one gives way, else a free one, else the oldest */
+	for (int k = 0; k < BARKS && b == NULL; k++)
+		if (barks[k].life > 0 && barks[k].mover == mover)
+			b = &barks[k];
+	for (int k = 0; k < BARKS && b == NULL; k++)
+		if (barks[k].life <= 0)
+			b = &barks[k];
+	if (b == NULL) {
+		b = &barks[0];
+		for (int k = 1; k < BARKS; k++)
+			if (barks[k].life < b->life)
+				b = &barks[k];
+	}
+	b->mover = (int8_t) mover;
+	b->life = (int16_t) blanks;
+	int n = 0;
+	for (; text[n] && n < BARK_TEXT - 1; n++)
+		b->text[n] = text[n] == '@' ? '"' : text[n];   /* as the original: '@' a double quote */
+	b->text[n] = 0;
+	/* as the original's: the others it would overlap given up */
+	int16_t mine[4], other[4];
+	if (font != NULL && bark_box(b, mine))
+		for (int k = 0; k < BARKS; k++)
+			if (&barks[k] != b && bark_box(&barks[k], other) && other[0] <= mine[2]
+				&& mine[0] <= other[2] && other[1] <= mine[3] && mine[1] <= other[3])
+				barks[k].life = 0;
+}
+
+void e_barks_age(int blanks)
+{
+	for (int k = 0; k < BARKS; k++)
+		if (barks[k].life > 0)
+			barks[k].life = (int16_t) (barks[k].life - blanks);
+}
+
+/* Where bark b would be drawn, in world pixels (x0, y0, x1, y1): 0 when nowhere. */
+static int bark_box(const struct Bark *b, int16_t box[4])
+{
+	int16_t r[4];
+	int height = 0, width = 0;
+
+	if (b->life <= 0 || b->mover >= nmovers || movers[b->mover].tf == 0)
+		return 0;
+	const struct Mover *v = &movers[b->mover];
+	if (!picture_rect(v->tf, v->x, v->y, v->z, r))
+		return 0;
+	for (const char *c = b->text; *c; c++) {
+		const int16_t *f = letter((uint8_t) *c);
+		if (f != NULL) {
+			if (f[2] + f[3] + 1 > height)
+				height = f[2] + f[3] + 1;
+			width += f[0] + f[1] + 1 + FONT_SPACING;
+		}
+	}
+	box[0] = r[0];
+	box[1] = (int16_t) (r[1] - 2 - height);
+	box[2] = (int16_t) (r[0] + width);
+	box[3] = (int16_t) (r[1] - 2);
+	return 1;
+}
+
+/* The barks of movers in view drawn into frame: above the speaker's picture, from its left. */
+static void draw_barks(struct ESurface *frame, int16_t vx, int16_t vy)
+{
+	static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
+	int16_t r[4];
+
+	if (font == NULL)
+		return;
+	for (int k = 0; k < BARKS; k++) {
+		const struct Bark *b = &barks[k];
+		if (b->life <= 0 || b->mover >= nmovers || movers[b->mover].tf == 0)
+			continue;
+		const struct Mover *v = &movers[b->mover];
+		if (v->z > ceiling || !picture_rect(v->tf, v->x, v->y, v->z, r))
+			continue;
+		int x = r[0] - vx, base = r[1] - vy - 2, height = 0, width = 0;
+		for (const char *c = b->text; *c; c++) {
+			const int16_t *f = letter((uint8_t) *c);
+			if (f != NULL) {
+				if (f[2] + f[3] + 1 > height)
+					height = f[2] + f[3] + 1;
+				width += f[0] + f[1] + 1 + FONT_SPACING;
+			}
+		}
+		if (x + width < 0 || x >= E_VIEW_W || base < 0 || base - height >= E_VIEW_H)
+			continue;
+		/* kept within the view across */
+		if (x + width > E_VIEW_W)
+			x = E_VIEW_W - width;
+		if (x < 0)
+			x = 0;
+		int16_t box[4] = { (int16_t) x, (int16_t) (base - height), (int16_t) (x + width), (int16_t) base };
+		for (const char *c = b->text; *c; c++) {
+			const int16_t *f = letter((uint8_t) *c);
+			if (f == NULL)
+				continue;
+			eb_shape(frame, whole, (const uint32_t *) (f + 4), (int16_t) (x + f[1]), (int16_t) base, 0);
+			x += f[0] + f[1] + 1 + FONT_SPACING;
+		}
+		if (ring_shown)
+			note_drawn(frame, box);
+	}
 }
 
 int32_t e_read_file(const char *dir, const char *name, uint8_t *to, uint32_t most)
@@ -2425,6 +2618,7 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 		if ((movers[i].near = take(MOVER_CANDS * sizeof *movers[i].near)) == NULL)
 			return -7;
 	open_sounds();
+	open_text();
 	pool = pool_next = pool_pinned = mem_next;
 	pool_end = mem_end;
 	if (pool_end - pool < 256 * 1024)
@@ -2629,6 +2823,7 @@ void e_draw(struct ESurface *frame)
 	t0 = t1;
 	e_stats.drawn = 0;
 	draw_movers(frame, vx, vy);
+	draw_barks(frame, vx, vy);
 	t1 = eb_clock();
 	e_stats.object_time += t1 - t0;
 	eb_finish();

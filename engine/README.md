@@ -78,9 +78,15 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   The items' own scripts (a bellows working, a firepit glowing and cooling, a blade reddening,
   a spinning wheel or loom turning, a trough filling, with their sounds) run as the original's.
 
-  Not yet: barks (no text), usecode and conversation, held weapons and missiles (no weapon
-  drawn, no arrow flying), looking round the area, combat, the thief's pickpocketing, waking to
-  chase the avatar. A game hour is a real minute for now (`E_WORLD_MINUTE`);
+  NPCs bark as the original's do (`e_bark`): the line, from the game's text (`TEXT.FLX`,
+  section 1, the numbers the schedules use), said over the speaker's head in the original's
+  yellow font (`FONTS.VGA`'s first, its letters drawn as shapes, by the GPU on the Jaguar) for
+  15 ticks, a newer one clearing those it would overlap: diners calling for service, a
+  preacher and the faithful, children at tag, a farmer in the heat, a miner finding gold, ...
+
+  Not yet: usecode and conversation, held weapons and missiles (no weapon drawn, no arrow
+  flying), looking round the area, combat, the thief's pickpocketing, waking to chase the
+  avatar. A game hour is a real minute for now (`E_WORLD_MINUTE`);
   `-DSTART_MINUTES=` sets the time to start at (535: five minutes before the 9:00 change, to see
   them go). On the PC `--trace n` logs NPC n's kinds and states as they change, and `--appear f`
   keeps the avatar far off till frame f (so those whose period starts then are put at their
@@ -265,7 +271,8 @@ Built with `-DENGINE_BENCH_SHAPES` the Jaguar build logs those timings at the st
 `-DENGINE_NO_FRAME_SHAPES` leaves the movers and what is in front of them undrawn;
 `-DENGINE_DOUBLE_BUFFER` uses two frames, waiting for the blank; `-DENGINE_BENCH_CPU` logs the
 68000's speed; `-DENGINE_LAYERS` shows the ring by the object processor (above);
-`-DENGINE_C_MOVERS` draws the movers by the core's C; `-DENGINE_FRAME_SUMS` logs a sum of each
+`-DENGINE_BARK_TEST` has mover 1 say a line every two seconds; `-DENGINE_C_MOVERS` draws the
+movers by the core's C; `-DENGINE_FRAME_SUMS` logs a sum of each
 of the first 400 frames' pixels, which hang on the frame count alone: the GPU's movers and the
 C's give the same 400; `-DENGINE_ROUTE_BENCH` plans routes from the avatar to every sixth cell
 near the view at the start and logs what they cost. With
@@ -283,7 +290,7 @@ call chains (`tools/jag-profile.py --frames`).
 - **Animation.** Animated statics and terrain (water, fire, clocks) belong with the movers, not in
   the ring.
 - **Translucency**; **NPCs** from a save (it holds them as the game's memory, `U7NBUF.DAT` and
-  `U7IBUF.DAT`, not as `NPC.DAT`); barks, usecode, held weapons;
+  `U7IBUF.DAT`, not as `NPC.DAT`); usecode and conversation, held weapons;
   the other sounds (the effects are all in the dataset, only doors play them), looped sounds
   and music; the party.
 - **Order.** `order_of()` is a simple rule. It still needs checking against the original's frames

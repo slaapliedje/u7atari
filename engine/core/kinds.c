@@ -8,7 +8,7 @@
  * moved on, as the original's ContinueScheduleWalk and schedule scripts do. The states, ranges,
  * waits and chances are the original's (the decompilation's main/schedule/ files).
  *
- * Not yet: barks (no text), usecode, held items and missiles (no weapons drawn, so archery and
+ * Not yet: usecode, held items and missiles (no weapons drawn, so archery and
  * fencing are the poses and sounds alone, and the arrows hit), items carried, made or put down
  * (food on a plate, a desk's items, a plant on a grave), looking round the area (CHECK_AREA
  * finds nothing), combat, waking to chase the avatar; and the kinds that carry and make things
@@ -188,8 +188,26 @@ static int run_script(int i)
 	return 0;
 }
 
+/* NPC k says one of count lines from the text's barks (section 1), first on (the original's
+ * barkOnItem, 15 of its ticks). */
+#define BARK_BLANKS (15 * TICK_BLANKS)
+static int in_view_slot(int k);
+
+static void bark(int k, int first, int count)
+{
+	int s = in_view_slot(k);
+
+	if (s)
+		e_bark(s, e_text(1, first + rnd(count)), BARK_BLANKS);
+}
+
 /* Where NPC k is (the avatar's from the world step). */
 static int avatar = -1;
+
+static int in_view_slot(int k)
+{
+	return k == avatar ? 0 : in_slot(k);
+}
 
 static void place_of(int k, int *x, int *y)
 {
@@ -681,7 +699,11 @@ static int tag(int i)
 		return 0;
 	case 3:
 		place_of(d->value, &x, &y);
-		l->state = far_of(npc[i].x, npc[i].y, x, y) <= 2 ? 4 : 1;
+		if (far_of(npc[i].x, npc[i].y, x, y) <= 2) {
+			bark(i, 128, 5);            /* "Catch me if thou canst!", "Tag!  Thou art it!" */
+			l->state = 4;
+		} else
+			l->state = 1;
 		return 0;
 	case 4:
 		POST(i, P(F_STAND), WAIT(5));
@@ -797,6 +819,7 @@ static int archery(int i)
 		if (chance(5) || !npc_ahead(i, 2))
 			pop(i, -1);
 		else {
+			bark(i, 93, 3);             /* "Step aside so that I can practice!" */
 			uint8_t s[2] = { S_WAIT, 15 };
 			post(i, s, 2);
 			l->state = 8;
@@ -1635,8 +1658,11 @@ static int eat_inn(int i)
 			push(i, K_PAUSE, range(40, 100), -1);
 		return 0;
 	case 3:
-		if (chance(2))
-			eat_ahead(i, 2);
+		if (chance(2)) {
+			if (eat_ahead(i, 2))
+				bark(i, 37, 3);         /* "Mmmm, tasty!", "Burp!", "Mmmm..." */
+		} else
+			bark(i, 32, 5);             /* "More food!", "Service!", ... */
 		l->state = 2;
 		return 0;
 	}
@@ -1776,6 +1802,7 @@ static int pace(int i)
 				return 1;
 			if (npc_ahead(i, l->x)) {
 				d->pose = F_STAND;
+				bark(i, 0, 3);          /* "Step aside!", "Stand away!", "Move on!" */
 				d->value++;
 				return show(i);
 			}
@@ -1857,6 +1884,8 @@ static int talk(int i)
 			cur(d)->state = 1;
 		} else if (far_of(npc[i].x, npc[i].y, me_x, me_y) <= 3)
 			l->state++;
+		else if (chance(20))
+			bark(i, 20, 3);             /* "Stop!", "I would have words with thee." */
 		return 0;
 	case 2:
 		POST(i, P(F_STAND));
@@ -1981,8 +2010,13 @@ static int preach(int i)
 			l->state++;
 		return 0;
 	case 12:
-	case 13:
 		POST(i, WAIT(20));
+		return 0;
+	case 13:
+		bark(i, 3, 5);                  /* "Strive for unity!", "Trust thy brother!" */
+		POST(i, WAIT(20));
+		if ((k = npc_in_front(i, 0)) >= 0)
+			bark(k, 12, 4);             /* "I am worthy!", "I believe!", "Yes!" */
 		return 0;
 	case 14:
 	case 23:
@@ -2007,6 +2041,7 @@ static int preach(int i)
 		return 0;
 	}
 	case 22:
+		bark(i, 8, 4);                  /* "Say it with me, brother!" */
 		POST(i, P(F_STAND), WAIT(30));
 		return 0;
 	case 30:
@@ -2486,8 +2521,10 @@ static int waiter(int i)
 		}
 		return 0;
 	case 13:
-		if (chance(3))
+		if (chance(3)) {
+			bark(i, 27, 5);             /* "Can I help thee?", "What wilt thou have?" */
 			POST(i, WAIT(15), P(F_READY), WAIT(2));
+		}
 		else
 			POST(i, P(F_READY), WAIT(2));
 		return 0;
@@ -2585,9 +2622,11 @@ static int farm(int i)
 		push(i, K_GOTO_ITEM, TF(423, rnd(8) * 4 + rnd(3)), -1);
 		return 0;
 	case 4:
-		if (d->result < 0)
+		if (d->result < 0) {
+			if (chance(8))
+				bark(i, 96, 3);         /* "Whew!  'Tis hot!", "We need rain..." */
 			l->state = 3;
-		else if (chance(2))
+		} else if (chance(2))
 			POST(i, P(F_READY), WAIT(1), P(F_RAISE1), WAIT(1), P(F_EXTEND1), WAIT(1), P(F_THRUST1), WAIT(2),
 				P(F_READY));
 		else
@@ -2602,7 +2641,11 @@ static int farm(int i)
 				e_thing_set(&t, (uint16_t) (t.tf | 3u << 10));
 			l->state = 2;
 		} else {
-			d->value = d->value >= 5 ? 0 : d->value + 1;
+			if (d->value >= 5) {
+				bark(i, 63, 3);         /* "Blast!", "Ouch - cut myself!" */
+				d->value = 0;
+			} else
+				d->value++;
 			l->state = 4;
 		}
 		return 0;
@@ -2660,6 +2703,8 @@ static int miner(int i)
 				uint16_t found = chance(2) ? 645 : 760;
 				if (e_thing_remove(&t))
 					e_thing_add(found, t.x, t.y, t.z, NULL);
+				if (chance(2))
+					bark(i, 69, 3);     /* "Eureka!", "I am rich!" */
 				l->state = 2;
 				return 0;
 			}
@@ -2670,8 +2715,11 @@ static int miner(int i)
 				return 0;
 			}
 			l->x = 0;
+		} else if (l->x >= 5) {
+			bark(i, 66, 3);             /* "Still no gold!", "Whew!" */
+			l->x = 0;
 		} else
-			l->x = l->x >= 5 ? 0 : l->x + 1;
+			l->x++;
 		return 0;
 	}
 	return 0;
@@ -3102,8 +3150,10 @@ static int thief(int i)
 	case 2:
 		if (!path_next_to(i, avatar, 100))
 			l->state = 1;
-		else if (far_of(npc[i].x, npc[i].y, me_x, me_y) <= 2)
-			POST(i, WAIT(15));  /* (the greeting, and the pack: not yet) */
+		else if (far_of(npc[i].x, npc[i].y, me_x, me_y) <= 2) {
+			bark(i, 16, 4);             /* "Nice weather today.", "Good day." */
+			POST(i, WAIT(15));  /* (the pack picked: not yet) */
+		}
 		return 0;
 	case 3:
 		d->value = 0;

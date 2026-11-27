@@ -196,6 +196,15 @@ void e_copy_view(struct ESurface *frame, const struct ESurface *ring, int16_t sx
  * original plays one at an item. Nothing without the dataset's sounds. */
 void e_sound(int number, int16_t x, int16_t y);
 
+/* The game's text (STATIC/TEXT.FLX, Black Gate's sections): entry n of section s (1: the
+ * barks), into a buffer of the engine's kept till the next call ("" when there is none). */
+const char *e_text(int section, int n);
+/* A line said over mover i's head (as the original's barks: yellow, above its picture) for
+ * blanks; its last one gives way. */
+void e_bark(int mover, const char *text, int blanks);
+/* The barks' time going on (e_world_step does it). */
+void e_barks_age(int blanks);
+
 /* Things that move (NPCs): up to E_MOVERS, re-placed every frame. */
 #define E_MOVERS 32
 int e_mover_add(uint16_t typeFrame, int16_t x, int16_t y, uint8_t z);
