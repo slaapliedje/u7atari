@@ -8,11 +8,9 @@
  * moved on, as the original's ContinueScheduleWalk and schedule scripts do. The states, ranges,
  * waits and chances are the original's (the decompilation's main/schedule/ files).
  *
- * Not yet: usecode, held items and missiles (no weapons drawn, so archery and
- * fencing are the poses and sounds alone, and the arrows hit), items carried, made or put down
- * (food on a plate, a desk's items, a plant on a grave), looking round the area (CHECK_AREA
- * finds nothing), combat, waking to chase the avatar; and the kinds that carry and make things
- * (waiter, farmer, miner, smith, baker, seamstress, alchemist, thief, grazing).
+ * Not yet: usecode (but what using shutters and lights does), held weapons and missiles (no
+ * weapons drawn, so archery and fencing are the poses and sounds alone, and the arrows hit),
+ * combat, the thief's pickpocketing, waking to chase the avatar.
  */
 #include <stdio.h>
 #include <string.h>
@@ -1265,6 +1263,186 @@ static int fill_trough(int i)
 		return 0;
 	case 6:
 		pop(i, 0);
+		return 0;
+	}
+	return 0;
+}
+
+/* ---- looking round: the lights and the shutters ---- */
+
+static int daytime(void)       /* the original's IsDaytime: from 5:00 till 21:00 */
+{
+	int hour = e_world_minutes() / 60;
+
+	return hour > 4 && hour < 21;
+}
+
+/* Item t used, as its usecode does for shutters and lights: shutters opened or shut (their
+ * sound, 2), a lamp post lit (its glow, 440, put 3 cells along; sound 106) or put out (46), a
+ * light source lit or put out. 1 when it was one of these. */
+static int use_item(struct EThing *t)
+{
+	uint16_t type = t->tf & 0x3ff, to;
+	struct EThing glow;
+
+	switch (type) {
+	case 290: to = 372; break;
+	case 291: to = 322; break;
+	case 322: to = 291; break;
+	case 372: to = 290; break;
+	case 336: to = 338; break;
+	case 338: to = 336; break;
+	case 889: to = 526; break;
+	case 526: to = 889; break;
+	default: return 0;
+	}
+	if (!e_thing_set(t, (uint16_t) ((t->tf & ~0x3ffu) | to)))
+		return 0;
+	if (type == 889) {
+		e_thing_add(440, (int16_t) (t->x + 3), (int16_t) (t->y + 3), t->z, NULL);
+		e_sound(106, t->x, t->y);
+	} else if (type == 526) {
+		if (e_things(440, (int16_t) (t->x + 3), (int16_t) (t->y + 3), (int16_t) (t->x + 3),
+			(int16_t) (t->y + 3), &glow, 1) && glow.z == t->z)
+			e_thing_remove(&glow);
+		e_sound(46, t->x, t->y);
+	} else if (type < 336 || type > 338)
+		e_sound(2, t->x, t->y);
+	return 1;
+}
+
+/* Look round (DoWorkCheckArea): the lights or the shutters, whichever comes up, then the other
+ * if that found nothing to do. */
+static int check_area(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+
+	switch (l->state) {
+	case 0:
+		l->state++;
+		return 0;
+	case 1:
+		l->y = chance(2) ? K_CHECK_LIGHT : K_CHECK_SHUTTERS;
+		push(i, l->y, l->x, -1);
+		return 0;
+	case 2:
+		if (d->result < 0)
+			push(i, l->y == K_CHECK_LIGHT ? K_CHECK_SHUTTERS : K_CHECK_LIGHT, l->x, -1);
+		else
+			pop(i, 0);
+		return 0;
+	case 3:
+		pop(i, d->result < 0 ? -1 : 0);
+		return 0;
+	}
+	return 0;
+}
+
+/* The nearer of what t0 and t1 found (have0, have1): 1 with it in t. */
+static int nearer(int i, int have0, const struct EThing *t0, int have1, const struct EThing *t1,
+	struct EThing *t)
+{
+	if (!have0 && !have1)
+		return 0;
+	*t = !have1 || (have0 && far_of(npc[i].x, npc[i].y, t0->x, t0->y)
+		< far_of(npc[i].x, npc[i].y, t1->x, t1->y)) ? *t0 : *t1;
+	return 1;
+}
+
+/* Check the lights (DoWorkCheckLight) or the shutters (DoWorkCheckShutters): to the nearest in the
+ * wrong state for the hour (lit by day, dark by night; shut by day, open by night; a spent light
+ * at any hour), used; with x 1, walked back after. */
+static int check_lights(int i, int shutters)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	struct EThing a, b, c, t;
+	uint8_t under = d->level[0].kind;
+	int done = 0;
+
+	switch (l->state) {
+	case 0: {
+		if (planned || searched) {
+			d->wait = 1;
+			return 0;
+		}
+		searched = 1;
+		if (l->x == 1) {
+			l->x = npc[i].x;
+			l->y = npc[i].y;
+		}
+		int x = npc[i].x, y = npc[i].y, day = daytime(), r;
+		if (shutters) {
+			r = under == K_PREACH ? 12 : under == K_SLEEP || under == K_WAITER ? 10 : 15;
+			int ha = nearest(day ? 291 : 372, x, y, r, 0, 15, -1, &a);
+			int hb = nearest(day ? 290 : 322, x, y, r, 0, 15, -1, &b);
+			if (!nearer(i, ha, &a, hb, &b, &t)) {
+				pop(i, -1);
+				return 0;
+			}
+		} else {
+			r = under == K_SLEEP || under == K_WAITER ? 8 : 12;
+			int ha = nearest(day ? 526 : 889, x, y, r, 0, 15, -1, &a);        /* lamp posts */
+			int hb = nearest(day ? 338 : 336, x, y, r, 0, 15, -1, &b);        /* light sources */
+			int hc = nearest(997, x, y, r, 0, 15, -1, &c);                    /* spent */
+			struct EThing ab;
+			int hab = nearer(i, ha, &a, hb, &b, &ab);
+			if (!nearer(i, hab, &ab, hc, &c, &t)) {
+				pop(i, -1);
+				return 0;
+			}
+			/* a lit light source in frame 7 or 9 is passed over for a lamp or a spent light */
+			if ((t.tf & 0x3ff) == 338 && ((t.tf >> 10 & 31) == 7 || (t.tf >> 10 & 31) == 9)
+				&& !nearer(i, ha, &a, hc, &c, &t)) {
+				pop(i, -1);
+				return 0;
+			}
+		}
+		push(i, K_GOTO_ITEM, t.tf & 0x3ff, -1);
+		return 0;
+	}
+	case 1:
+		if (d->result < 0)
+			pop(i, -1);
+		else
+			POST(i, P(F_STAND), WAIT(1), P(F_READY), WAIT(2));
+		return 0;
+	case 2: {
+		int type = d->result, w = d->dir * 2;
+		int x = npc[i].x + way_x[w], y = npc[i].y + way_y[w], found;
+		if (shutters)
+			found = nearest((uint16_t) type, npc[i].x, npc[i].y, 3, 0, 15, -1, &t);
+		else
+			found = e_things((uint16_t) type, (int16_t) x, (int16_t) y, (int16_t) x, (int16_t) y, &t, 1);
+		if (found) {
+			if (type == 997) {
+				/* a spent light swapped for a fresh one */
+				if (e_thing_remove(&t))
+					e_thing_add((uint16_t) ((daytime() ? 336 : 338) | (t.tf & 0x7c00)), t.x, t.y, t.z, NULL);
+			} else
+				use_item(&t);
+			done = 1;
+			if (shutters)
+				/* "These should be closed." ..., else "Ah, 'tis better!" ... */
+				bark(i, type == 372 || type == 322 ? 113 : 116, 3);
+			else if (chance(3))
+				bark(i, 99, 3);         /* "Ah, 'tis better." */
+			else if (chance(3))
+				bark(i, type == 336 || type == 889 ? 102 : type == 997 ? 104 : 103, 1);
+		}
+		POST(i, P(F_STAND), WAIT(15));
+		if (l->x == -1)
+			pop(i, done ? 0 : -1);
+		else if (start_path(i, l->x, l->y, 0, 100) == 0) {
+			l->x = (int16_t) done;
+			/* the walk back ends the state on */
+		} else
+			pop(i, -1);
+		return 0;
+	}
+	case 4:
+		pop(i, l->x ? 0 : -1);
 		return 0;
 	}
 	return 0;
@@ -3270,14 +3448,14 @@ int kind_tick(int i)
 	case K_FILL_BUCKET: return fill_bucket(i);
 	case K_FILL_TROUGH: return fill_trough(i);
 	/* not yet: these say they are done (READY_HAND: no weapon in hand, drawn; GOTO_REM_L: where
-	 * it was is where it is; CHECK_AREA: nothing found) */
+	 * it was is where it is) */
 	case K_READY_HAND:
 	case K_GOTO_REM_L:
 		pop(i, 0);
 		return 0;
-	case K_CHECK_AREA:
-		pop(i, -1);
-		return 0;
+	case K_CHECK_AREA: return check_area(i);
+	case K_CHECK_LIGHT: return check_lights(i, 0);
+	case K_CHECK_SHUTTERS: return check_lights(i, 1);
 	case K_STAND: return stand_kind(i);
 	case K_LOITER: return loiter(i);
 	case K_WANDER: return wander(i);

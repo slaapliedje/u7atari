@@ -57,6 +57,8 @@
 #define K_DROP_ITEM 34
 #define K_FILL_BUCKET 36
 #define K_FILL_TROUGH 39
+#define K_CHECK_LIGHT 45
+#define K_CHECK_SHUTTERS 51
 
 /* a level of what an NPC does: a kind pushed over another runs, then the other goes on (as the
  * original's schedule stack): its state, its two arguments, a counter */

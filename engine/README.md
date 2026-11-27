@@ -84,9 +84,15 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   15 ticks, a newer one clearing those it would overlap: diners calling for service, a
   preacher and the faithful, children at tag, a farmer in the heat, a miner finding gold, ...
 
-  Not yet: usecode and conversation, held weapons and missiles (no weapon drawn, no arrow
-  flying), looking round the area, combat, the thief's pickpocketing, waking to chase the
-  avatar. A game hour is a real minute for now (`E_WORLD_MINUTE`);
+  Looking round (the original's CHECK_AREA, which most kinds do now and then, and a sleeper
+  before bed): the nearest lights or shutters in the wrong state for the hour, walked to and
+  used as their usecode does it (shutters opened by day and shut by night, sound 2; lamp posts
+  lit at night with their glow, 106, put out by day, 46; light sources lit and put out; a
+  spent light replaced), with their barks ("Ah, 'tis better!", "This need not be on.").
+
+  Not yet: usecode and conversation (beyond the lights and shutters), held weapons and
+  missiles (no weapon drawn, no arrow flying), combat, the thief's pickpocketing, waking to
+  chase the avatar. A game hour is a real minute for now (`E_WORLD_MINUTE`);
   `-DSTART_MINUTES=` sets the time to start at (535: five minutes before the 9:00 change, to see
   them go). On the PC `--trace n` logs NPC n's kinds and states as they change, and `--appear f`
   keeps the avatar far off till frame f (so those whose period starts then are put at their
