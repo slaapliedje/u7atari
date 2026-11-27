@@ -1100,6 +1100,18 @@ int e_blocked(uint16_t tf, int16_t x, int16_t y, uint8_t z)
 	return (levels_taken(x - fx, y - fy, x, y, 0) & body) != 0;
 }
 
+int32_t e_read_file(const char *dir, const char *name, uint8_t *to, uint32_t most)
+{
+	int16_t f = open_file(dir, name);
+	int32_t n;
+
+	if (f < 0)
+		return -1;
+	n = plat_file_read(f, to, (int32_t) most);
+	plat_file_close(f);
+	return n;
+}
+
 /* ---- the NPCs of NPC.DAT (engine.h) ---- */
 
 static int16_t npc_file;
@@ -1173,44 +1185,13 @@ int e_npcs(struct ENpc *out, int max)
 		out[n].x = (int16_t) (region % 12 * 256 + rec[0]);
 		out[n].y = (int16_t) (region / 12 * 256 + rec[1]);
 		out[n].z = rec[9] >> 4;
-		out[n].pad = 0;
+		out[n].activity = rec[22];      /* its work type: what it is doing */
 		out[n].number = (uint16_t) i;
 		n++;
 	}
 done:
 	plat_file_close(npc_file);
 	return n;
-}
-
-void e_movers_near(const struct ENpc *npcs, int n, int16_t x, int16_t y)
-{
-	static uint16_t near[E_MOVERS];
-	static int32_t far[E_MOVERS];
-	int nnear = 0;
-
-	/* those in a window round it, then the nearest of them: no multiplying for the rest */
-	for (int i = 0; i < n; i++) {
-		int dx = npcs[i].x - x, dy = npcs[i].y - y;
-		if (npcs[i].number == 0 || dx < -48 || dx > 48 || dy < -40 || dy > 40)
-			continue;
-		int32_t d = (int32_t) (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
-		int at = nnear < E_MOVERS - 1 ? nnear++ : E_MOVERS - 2;
-		if (at == E_MOVERS - 2 && nnear == E_MOVERS - 1 && d >= far[at])
-			continue;
-		while (at > 0 && far[at - 1] > d) {
-			far[at] = far[at - 1];
-			near[at] = near[at - 1];
-			at--;
-		}
-		far[at] = d;
-		near[at] = (uint16_t) i;
-	}
-	for (int slot = 1; slot < E_MOVERS; slot++)
-		if (slot - 1 < nnear) {
-			const struct ENpc *p = &npcs[near[slot - 1]];
-			e_mover_set(slot, p->tf, p->x, p->y, p->z);
-		} else
-			e_mover_set(slot, 0, 0, 0, 0);
 }
 
 int e_mover_add(uint16_t tf, int16_t x, int16_t y, uint8_t z)

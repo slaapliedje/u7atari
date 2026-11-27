@@ -757,7 +757,10 @@ static int rnd(int n)
 #define WALK_BLANKS 8           /* a cell every 8 blanks: 7.5 a second */
 static struct ENpc npcs[400];
 static int nnpcs, me = -1;
-static int16_t ax, ay, picked_x, picked_y;
+static int16_t ax, ay;
+#ifndef START_MINUTES
+#define START_MINUTES (6 * 60)  /* the world's time to start at */
+#endif
 static uint8_t az, walk_dir;
 static uint16_t walk_steps;
 static uint32_t walk_tick;
@@ -768,6 +771,15 @@ static const struct { int8_t dx, dy, n; } demo[] = {
 };
 static uint8_t demo_leg, demo_left, touched;
 
+/* The world's clock: blanks; under ENGINE_FRAME_SUMS, 4 a frame, so the frames hang on the
+ * frame count alone. */
+#ifdef ENGINE_FRAME_SUMS
+static uint32_t sum_frames;
+#define world_clock() (sum_frames * 4)
+#else
+#define world_clock() jag_ticks
+#endif
+
 static int walk_init(void)
 {
 	nnpcs = e_npcs(npcs, 400);
@@ -776,13 +788,14 @@ static int walk_init(void)
 			me = i;
 	if (me < 0)
 		return 0;
-	ax = picked_x = npcs[me].x;
-	ay = picked_y = npcs[me].y;
+	ax = npcs[me].x;
+	ay = npcs[me].y;
 	az = npcs[me].z;
 	for (int m = 0; m < E_MOVERS; m++)
 		e_mover_add(0, 0, 0, 0);
 	e_mover_set(0, npcs[me].tf, ax, ay, az);
-	e_movers_near(npcs, nnpcs, ax, ay);
+	e_world_init(npcs, nnpcs, START_MINUTES, world_clock());
+	e_world_step(world_clock(), ax, ay);
 	e_follow(0);
 #ifdef ENGINE_FRAME_SUMS
 	walk_tick = 0;
@@ -802,8 +815,7 @@ static void walk_update(void)
 
 #ifdef ENGINE_FRAME_SUMS
 	/* by frames, not time, so the frames hang on the frame count alone */
-	static uint32_t frames;
-	uint32_t now = (frames++ / 2) * WALK_BLANKS;
+	uint32_t now = (sum_frames++ / 2) * WALK_BLANKS;
 	while (now - walk_tick >= WALK_BLANKS) {
 #else
 	while (jag_ticks - walk_tick >= WALK_BLANKS) {
@@ -845,15 +857,9 @@ static void walk_update(void)
 	}
 	if (walking || moved)
 		e_mover_set(0, e_walk_frame(type, walk_dir, walk_steps), ax, ay, az);
-	if (moved) {
-		if ((ax > picked_x ? ax - picked_x : picked_x - ax)
-			+ (ay > picked_y ? ay - picked_y : picked_y - ay) >= 8) {
-			e_movers_near(npcs, nnpcs, ax, ay);
-			picked_x = ax;
-			picked_y = ay;
-		}
+	e_world_step(world_clock(), ax, ay);
+	if (moved)
 		e_follow(0);
-	}
 }
 #endif
 

@@ -30,6 +30,14 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   the GPU does the rest each frame (`jaguar/movers_gpu.s`): each mover's picture from its frame,
   those in view put in order, and the shape list for them and their fronts; the 68000 only keeps
   the fronts and the shapes they use in the cache.
+- **The NPCs** (`core/world.c`) keep the original's schedules (`SCHEDULE.DAT`): for each three
+  hours of the day, what each takes up and where. As the original, an NPC goes on with what it
+  is doing (its work type in `NPC.DAT`) until its next entry comes round. Then those near the
+  avatar walk to the place (a cell every 10 blanks, along walls when one way is free), and the
+  rest are put there. At the place the roaming kinds (loiter, wander, pace, patrol, graze, ...)
+  walk to places within 4 cells in turn; the others stand. A game hour is a real minute for now
+  (`E_WORLD_MINUTE`); `-DSTART_MINUTES=` sets the time to start at (535: five minutes before the
+  9:00 change, to see them go).
 - **Roofs.** As the original works it out (`UpdateCeiling`): the levels the solid statics (not
   doors) over the avatar's row of cells take, its own left out; the highest of them less one is
   the ceiling, and statics and movers above it are not drawn (`e_follow`). When it changes, the
@@ -52,12 +60,13 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
 ## Layout
 
 - `core/` — portable C: the data files, the order, the layer, the movers; `shapes.c`, the
-  shape conversion, on its own so the dataset tool can use it. It needs files
+  shape conversion, on its own so the dataset tool can use it; `world.c`, the clock and the
+  NPCs on their schedules. It needs files
   (plat.h's `plat_file_*` names), a clock, and three drawing calls (`eb_copy`, `eb_tiles`,
   `eb_shape`) into 8-bit surfaces.
 - `host/` — the PC: draws views to PPM pictures (`u7engine <dir>/ <x> <y> [--walk dx dy n]
   [--movers n] [--out p] [--every k] [--sheet shape] [--layers] [--avatar [--path
-  "dx,dy,n;..."]]`): `--avatar` walks the avatar as the Jaguar does. Build: `cmake --build build-host
+  "dx,dy,n;..."] [--time m]]`): `--avatar` walks the avatar as the Jaguar does. Build: `cmake --build build-host
   --target u7engine`.
 - `tools/jagdata.c` — `u7jagdata <data dir> <out dir>` (the data dir holding `STATIC/`) writes
   the dataset, in the Jaguar's byte order: `SHAPES.FLX` (7.1 MB), SHAPES.VGA with every object
@@ -70,8 +79,8 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
 - `jaguar/` — the Jaguar: GameDrive files, a triple-buffered 8-bit bitmap object, the blitter,
   the GPU. Build: `cmake --build <jaguar build> --target u7engine_jag`, which gives `U7ENGINE.rom`.
   It uses the same card as the game (`U7/STATIC`, `U7/GAMEDAT`) and `U7/ENGINE`. It starts a new
-  game's world at Trinsic: the avatar and the NPCs of `ENGINE/NPC.DAT` (the 31 nearest it), and
-  the new game's movable items (`ENGINE/U7IREGxx`, before `GAMEDAT/`'s). The pad walks the
+  game's world at Trinsic at 6:00: the avatar and the NPCs of `ENGINE/NPC.DAT` (the 31 nearest
+  it), and the new game's movable items (`ENGINE/U7IREGxx`, before `GAMEDAT/`'s). The pad walks the
   avatar, 7.5 cells a second, the view on it; walls stop it (doors do not, there being no way to
   open one); a roof over it is lifted (below). Untouched, it walks into the stables and out.
   Built with `-DENGINE_TOUR`, it tours Britain with 12 walkers instead (a cell every
@@ -159,8 +168,9 @@ call chains (`tools/jag-profile.py --frames`).
 - **Animation.** Animated statics and terrain (water, fire, clocks) belong with the movers, not in
   the ring.
 - **Translucency**; **NPCs** from a save (it holds them as the game's memory, `U7NBUF.DAT` and
-  `U7IBUF.DAT`, not as `NPC.DAT`), their schedules and walking; **doors** opened; steps and
-  stairs (the avatar keeps its level).
+  `U7IBUF.DAT`, not as `NPC.DAT`); what their schedules' kinds do at the place (sleep, eat,
+  work, sell), finding a way round more than a wall, and keeping out of each other's way;
+  **doors** opened; steps and stairs (the avatar keeps its level).
 - **Order.** `order_of()` is a simple rule. It still needs checking against the original's frames
   at the same places (the PC reference can draw them). The ring version already draws doors and
   benches that the first version lost.

@@ -181,17 +181,33 @@ void e_copy_view(struct ESurface *frame, const struct ESurface *ring, int16_t sx
 #define E_MOVERS 32
 int e_mover_add(uint16_t typeFrame, int16_t x, int16_t y, uint8_t z);
 void e_mover_set(int i, uint16_t typeFrame, int16_t x, int16_t y, uint8_t z);
+/* Up to most bytes of dir/name under the data's root into to: how many, or -1. */
+int32_t e_read_file(const char *dir, const char *name, uint8_t *to, uint32_t most);
 /* The NPCs on the map and alive in NPC.DAT: ENGINE/NPC.DAT (a new game's, from INITGAME.DAT: the
  * dataset tool) or else GAMEDAT/NPC.DAT. Up to max into out; how many. */
 struct ENpc {
 	uint16_t tf;                /* type-frame word */
 	int16_t x, y;               /* world cell */
-	uint8_t z, pad;
+	uint8_t z;
+	uint8_t activity;           /* what it is doing (a schedule's type: 11 loiter, 14 sleep, ..) */
 	uint16_t number;            /* in NPC.DAT; the avatar is 0 */
 };
 int e_npcs(struct ENpc *out, int max);
-/* Movers 1 to E_MOVERS - 1: the NPCs nearest x, y (not the avatar), within 48 by 40 cells. */
-void e_movers_near(const struct ENpc *npcs, int n, int16_t x, int16_t y);
+
+/* ---- the world (core/world.c): a clock, and the NPCs on their schedules (SCHEDULE.DAT) ---- */
+
+/* The NPCs to keep (npcs stays the caller's, changed as they move), the time to start at (minutes
+ * from midnight) and the clock then (blanks). Each goes on with what it is doing where it is,
+ * until its schedule's next period (3 hours). */
+void e_world_init(struct ENpc *npcs, int n, int start, uint32_t blanks);
+/* The world at clock (eb_clock's units: blanks), the avatar at x, y: the time; the NPCs whose
+ * period has come walk to their place if near the avatar, else are put there; those near walk
+ * and wander; movers 1 to E_MOVERS - 1 are the NPCs nearest the avatar. */
+void e_world_step(uint32_t blanks, int16_t x, int16_t y);
+/* The time of day, in minutes from midnight. */
+int e_world_minutes(void);
+/* Blanks a game minute (the original's is slower: a game hour a real minute here, for now). */
+#define E_WORLD_MINUTE 60
 /* The ceiling over mover i (the avatar), as the original works it out: statics and movers above
  * it are not drawn (roofs over it lifted). The view is drawn again when it changes. Call when it
  * has moved; returns the ceiling (15: none). */

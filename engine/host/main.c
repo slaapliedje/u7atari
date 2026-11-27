@@ -10,6 +10,7 @@
  *                      walks (--walk moves it, not the view; x y are ignored), the view on it,
  *                      roofs over it lifted, walls in its way
  *     --path "dx,dy,n;..." with --avatar: legs of a walk, n cells each
+ *     --time m         with --avatar: the time to start at, minutes from midnight (default 360)
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -201,10 +202,7 @@ static void save(const char *name)
  * with it, picked again when it has gone 8 cells; the view on it; the ceiling over it */
 static struct ENpc npcs[400];
 static int nnpcs;
-static void pick_near(int16_t ax, int16_t ay)
-{
-	e_movers_near(npcs, nnpcs, ax, ay);
-}
+static int start_minutes = 6 * 60;
 
 static void save(const char *name);
 
@@ -223,14 +221,15 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 		fprintf(stderr, "no avatar in NPC.DAT\n");
 		return;
 	}
-	int16_t ax = npcs[me].x, ay = npcs[me].y, px = ax, py = ay;
+	int16_t ax = npcs[me].x, ay = npcs[me].y;
 	uint8_t az = npcs[me].z;
 	uint16_t type = npcs[me].tf & 0x3ff;
 	int dir = dy < 0 ? 0 : dx > 0 ? 1 : dy > 0 ? 2 : 3;
 	for (int m = 0; m < E_MOVERS; m++)
 		e_mover_add(0, 0, 0, 0);
 	e_mover_set(0, npcs[me].tf, ax, ay, az);
-	pick_near(ax, ay);
+	e_world_init(npcs, nnpcs, start_minutes, 0);
+	e_world_step(0, ax, ay);
 	if (path)
 		n = 100000;
 	for (int f = 0; f < n; f++) {
@@ -270,11 +269,8 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 			ay = ny;
 		}
 		e_mover_set(0, dx || dy ? e_walk_frame(type, dir, f / 2) : npcs[me].tf, ax, ay, az);
-		if (abs(ax - px) + abs(ay - py) >= 8) {
-			pick_near(ax, ay);
-			px = ax;
-			py = ay;
-		}
+		/* a frame here is 4 blanks (the avatar a cell every 2 frames, the Jaguar's 8 blanks) */
+		e_world_step((uint32_t) f * 4, ax, ay);
 		int ceiling = e_follow(0);
 		e_set_view((int16_t) (ax - E_VIEW_CELLS_X / 2), (int16_t) (ay - E_VIEW_CELLS_Y / 2));
 		static uint8_t layer_buf[3][E_VIEW_H * E_VIEW_W];
@@ -329,6 +325,8 @@ int main(int argc, char **argv)
 			avatar = 1;
 		else if (!strcmp(argv[i], "--path") && i + 1 < argc)
 			path = argv[++i];
+		else if (!strcmp(argv[i], "--time") && i + 1 < argc)
+			start_minutes = atoi(argv[++i]);
 	}
 	e_surface_rows(&frame);
 	int r = e_init(argv[1], memory, sizeof memory);
