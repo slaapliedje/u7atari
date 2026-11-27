@@ -12,6 +12,14 @@
 #include "engine.h"
 #include "gd.h"
 
+/* The GameDrive's debug text: only when asked for (-DENGINE_GD_DEBUG; the emulator's runs). On
+ * the console, with nothing on the USB side reading it, the second line never returns. */
+#ifdef ENGINE_GD_DEBUG
+#define DEBUG_TEXT(t) GD_DebugString(t)
+#else
+#define DEBUG_TEXT(t) ((void) (t))
+#endif
+
 extern const uint8_t gpu_tiles[], gpu_tiles_end[], gpu_shapes[], gpu_shapes_end[];
 extern const uint8_t gpu_convert[], gpu_convert_end[], gpu_movers[], gpu_movers_end[];
 extern const uint8_t dsp_sound[], dsp_sound_end[];
@@ -85,7 +93,7 @@ static int profile_saved;
 #define SCROLL_FRAMES 1
 #endif
 
-static uint32_t gd_bios[1024];
+static uint32_t gd_bios[1024] __attribute__((aligned(8)));   /* (long aligned, its README says) */
 /* The object list: two branches (above and below the picture: stop), up to OBJECTS bitmaps, a
  * stop. The bitmaps are put back at each blank from one of obj_lists (startup.S,
  * jag_vbl_list). */
@@ -106,7 +114,7 @@ static int16_t view_sx, view_sy;
 #define FRAMES 3
 #endif
 static uint8_t frames[FRAMES][W * H] __attribute__((aligned(16)));
-static uint8_t store[1484 * 1024] __attribute__((aligned(8)));
+static uint8_t store[1476 * 1024] __attribute__((aligned(8)));
 static uint8_t row_table[H * 4];
 static struct ESurface surfaces[FRAMES] = {
 	{ frames[0], W, W, H, row_table }, { frames[1], W, W, H, row_table },
@@ -117,7 +125,7 @@ static struct ESurface surfaces[FRAMES] = {
 
 void eb_log(const char *text)
 {
-	GD_DebugString(text);
+	DEBUG_TEXT(text);
 }
 
 /* startup.S's exception handler */
@@ -127,7 +135,12 @@ void jag_crash(int32_t long_frame, const uint16_t *frame)
 	const uint16_t *f = frame + 1 + (long_frame ? 4 : 0);
 
 	snprintf(text, sizeof text, "crash: vector %u at %04x%04x\n", frame[0], f[1], f[2]);
-	GD_DebugString(text);
+#ifdef ENGINE_STAGES
+	/* the screen: orange a bus error, purple an address error, grey another */
+	for (int i = 0; i < 256; i++)
+		((volatile uint16_t *) 0xF00400)[i] = frame[0] == 2 ? 0xF810 : frame[0] == 3 ? 0x7FC0 : 0x8410;
+#endif
+	DEBUG_TEXT(text);
 	for (;;)
 		;
 }
@@ -145,7 +158,7 @@ void fault_report(const uint16_t *sp)
 	char text[96];
 	snprintf(text, sizeof text, "FAULT words %04x %04x %04x %04x %04x %04x %04x %04x\n", sp[0], sp[1], sp[2],
 		sp[3], sp[4], sp[5], sp[6], sp[7]);
-	GD_DebugString(text);
+	DEBUG_TEXT(text);
 	for (;;)
 		;
 }
@@ -157,20 +170,140 @@ static void faults_catch(void)
 #endif
 /* ---- files: the GameDrive's, a handful open ---- */
 
-#define FILES 6
-static struct { uint16_t gd; uint8_t open; int32_t size; } files[FILES];
+/* The engine's files (up to FILES) on at most GD_LIVE of the GameDrive's: the console's own
+ * hangs with a sixth open (the emulator's takes eight). One not open there is opened again
+ * where it was when next read, the least lately used giving way; one being written stays. */
+#define FILES 8
+#define GD_LIVE 5
+static struct {
+	char name[48];
+	uint16_t gd;
+	uint8_t open, live, writing;
+	int32_t size, pos;
+	uint32_t used;
+} files[FILES];
+static uint32_t file_clock;
+
+/* A GameDrive handle free, the least lately used (not being written) closed for it. */
+static int gd_room(void)
+{
+	int live = 0, oldest = -1;
+	for (int i = 0; i < FILES; i++)
+		if (files[i].open && files[i].live) {
+			live++;
+			if (!files[i].writing && (oldest < 0 || files[i].used < files[oldest].used))
+				oldest = i;
+		}
+	if (live < GD_LIVE)
+		return 1;
+	if (oldest < 0)
+		return 0;
+	GD_FClose(files[oldest].gd);
+	files[oldest].live = 0;
+	return 1;
+}
+
+/* The file open on the GameDrive at its place. */
+static int gd_live(int16_t f)
+{
+	files[f].used = ++file_clock;
+	if (files[f].live)
+		return 1;
+	if (!gd_room())
+		return 0;
+	uint16_t gd = GD_FOpen(files[f].name, GD_FOPEN_READ);
+	if ((int16_t) gd < 0)
+		return 0;
+	files[f].gd = gd;
+	files[f].live = 1;
+	if (files[f].pos != 0 && (int16_t) GD_FSeek(gd, GD_FSEEK_SET, files[f].pos) < 0)
+		return 0;
+	return 1;
+}
+
+#ifdef ENGINE_STAGES
+/* (on the console, without the GameDrive's debug text) how far the start has gone, as the whole
+ * screen's colour: red the start, blue and cyan by turns at each file read, white the world
+ * loaded, green past the first debug line, yellow the sound going, magenta the world failed */
+static void stage(uint16_t rgb)
+{
+	for (int i = 0; i < 256; i++)
+		((volatile uint16_t *) 0xF00400)[i] = rgb;
+}
+static uint8_t staging = 1;
+/* and while the files are read: the files opened and the reads so far as two rows of 12 bars
+ * (white a 1, purple a 0, the highest bit leftmost) on a background red while it waits for the
+ * GPU, blue in the GameDrive's read, green between */
+static uint16_t stage_opens, stage_reads;
+static void stage_bars(int row, uint16_t v)
+{
+	static uint16_t was[3] = { 0xffff, 0xffff, 0xffff };
+	uint16_t changed = (uint16_t) (v ^ was[row]);
+	was[row] = v;
+	for (int k = 0; k < 12; k++) {
+		uint8_t c = v & (0x800 >> k) ? 1 : 2;
+		if (!(changed & (0x800 >> k)))
+			continue;
+		for (int f = 0; f < FRAMES; f++)
+			for (int y = 40 + row * 60; y < 76 + row * 60; y++)
+				for (int x = 14 + k * 25; x < 30 + k * 25; x++)
+					frames[f][y * W + x] = c;
+	}
+}
+/* the third row: the GameDrive call it is in (1 opening, 2 opened, 3 sized; 4 closing, 5
+ * closed; 6 seeking, 7 sought; 8 reading, 9 read) */
+#define STEP(n) do { if (staging) stage_bars(2, n); } while (0)
+static void blit_wait(void);
+static void gpu_load(void);
+static void gpu_start(uint32_t pc);
+
+static void stage_clut(uint16_t back)
+{
+	volatile uint16_t *clut = (volatile uint16_t *) 0xF00400;
+	clut[0] = back;
+	clut[1] = 0xFFFF;
+	clut[2] = 0x8410;
+}
+#define STAGE(c) stage(c)
+#else
+#define STAGE(c) ((void) 0)
+#define STEP(n) ((void) 0)
+#endif
 
 int16_t plat_file_open(const char *name, int16_t mode)
 {
 	for (int16_t i = 0; i < FILES; i++)
 		if (!files[i].open) {
+			if (strlen(name) >= sizeof files[i].name || !gd_room())
+				return -1;
+			STEP(1);
 			uint16_t gd = GD_FOpen(name, mode == PLAT_WRITE ? GD_FOPEN_WRITE | GD_FOPEN_CREATE_ALWAYS
 				: GD_FOPEN_READ);
-			if ((int16_t) gd < 0)
+			STEP(2);
+			if ((int16_t) gd < 0) {
+#ifdef ENGINE_STAGES
+				/* (grey 2 s: the GameDrive would not open it) */
+				volatile uint16_t *clut = (volatile uint16_t *) 0xF00400;
+				uint16_t was = clut[0];
+				clut[0] = 0x8410;
+				for (uint32_t t = jag_ticks; jag_ticks - t < 120; )
+					;
+				clut[0] = was;
+#endif
 				return -1;
+			}
+			strcpy(files[i].name, name);
 			files[i].gd = gd;
-			files[i].open = 1;
+			files[i].open = files[i].live = 1;
+			files[i].writing = mode == PLAT_WRITE;
+			files[i].pos = 0;
+			files[i].used = ++file_clock;
+#ifdef ENGINE_STAGES
+			if (staging)
+				stage_bars(0, ++stage_opens);
+#endif
 			files[i].size = (int32_t) GD_FSize(gd);
+			STEP(3);
 			return i;
 		}
 	return -1;
@@ -179,23 +312,76 @@ int16_t plat_file_open(const char *name, int16_t mode)
 void plat_file_close(int16_t f)
 {
 	if (f >= 0 && f < FILES && files[f].open) {
-		GD_FClose(files[f].gd);
-		files[f].open = 0;
+		STEP(4);
+		if (files[f].live)
+			GD_FClose(files[f].gd);
+		STEP(5);
+		files[f].open = files[f].live = 0;
 	}
 }
 
+/* The GameDrive's own reads and writes (on the console; not the emulator's) fail on a buffer
+ * not long aligned: those go through this one. */
+static uint8_t bounce[4096] __attribute__((aligned(8)));
+#define READ_MOST 16384
+
 int32_t plat_file_read(int16_t f, void *buffer, int32_t count)
 {
+#ifdef ENGINE_STAGES
+	if (staging) {
+		stage_bars(1, ++stage_reads);
+		stage_clut(0xF800);
+	}
+#endif
 	gpu_finish();
-	if ((int16_t) GD_FRead(files[f].gd, buffer, (uint32_t) count, GD_FREAD_CPU) < 0)
+#ifdef ENGINE_STAGES
+	if (staging)
+		stage_clut(0x07C0);
+#endif
+	STEP(8);
+	if (!gd_live(f))
 		return -1;
+	/* never past the file's end, nor more than READ_MOST at once (the console's GameDrive hangs
+	 * on a 32K read past the end; the emulator's does not) */
+	if (count > files[f].size - files[f].pos)
+		count = files[f].size - files[f].pos;
+	for (int32_t done = 0; done < count; ) {
+		int32_t n = count - done > READ_MOST ? READ_MOST : count - done;
+		uint8_t *to = (uint8_t *) buffer + done;
+		if ((uint32_t) to & 3) {
+			if (n > (int32_t) sizeof bounce)
+				n = (int32_t) sizeof bounce;
+			if ((int16_t) GD_FRead(files[f].gd, bounce, (uint32_t) n, GD_FREAD_CPU) < 0)
+				return -1;
+			memcpy(to, bounce, (size_t) n);
+		} else if ((int16_t) GD_FRead(files[f].gd, to, (uint32_t) n, GD_FREAD_CPU) < 0)
+			return -1;
+		done += n;
+	}
+	files[f].pos += count;
+	STEP(9);
+#ifdef ENGINE_STAGES
+	if (staging)
+		stage_clut(0x003F);
+#endif
 	return count;
 }
 
 int32_t plat_file_write(int16_t f, const void *buffer, int32_t count)
 {
 	gpu_finish();
-	if ((int16_t) GD_FWrite(files[f].gd, buffer, (uint32_t) count) < 0)
+	if (!gd_live(f))
+		return -1;
+	files[f].pos = files[f].pos + count < files[f].size ? files[f].pos + count : files[f].size;
+	if ((uint32_t) buffer & 3) {
+		for (int32_t done = 0; done < count; ) {
+			int32_t n = count - done > (int32_t) sizeof bounce ? (int32_t) sizeof bounce : count - done;
+			memcpy(bounce, (const uint8_t *) buffer + done, (size_t) n);
+			if ((int16_t) GD_FWrite(files[f].gd, bounce, (uint32_t) n) < 0)
+				return -1;
+			done += n;
+		}
+	} else if ((int16_t) GD_FWrite(files[f].gd, (void *) buffer, (uint32_t) count) < 0)
 		return -1;
 	return count;
 }
@@ -203,8 +389,13 @@ int32_t plat_file_write(int16_t f, const void *buffer, int32_t count)
 int32_t plat_file_seek(int16_t f, int32_t offset, int16_t origin)
 {
 	(void) origin;
-	if (offset > files[f].size || (int16_t) GD_FSeek(files[f].gd, GD_FSEEK_SET, offset) < 0)
+	if (offset > files[f].size)
 		return -1;
+	STEP(6);
+	files[f].pos = offset;
+	if (files[f].live && (int16_t) GD_FSeek(files[f].gd, GD_FSEEK_SET, offset) < 0)
+		return -1;
+	STEP(7);
 	return offset;
 }
 
@@ -419,7 +610,7 @@ static void gpu_wait(void)
 			if (jag_ticks - t0 > 120) {
 				char text[64];
 				snprintf(text, sizeof text, "FAULT gpu stuck at pc %08lx\n", (unsigned long) REG32(0xF02110));
-				GD_DebugString(text);
+				DEBUG_TEXT(text);
 				for (;;)
 					;
 			}
@@ -457,6 +648,7 @@ static void gpu_finish(void)
 	gpu_flush();
 	gpu_wait();
 }
+
 
 void eb_shape(struct ESurface *dst, const int16_t clip[4], const uint32_t *runs, int16_t x,
 	int16_t y, uint8_t flipped)
@@ -592,12 +784,12 @@ uint32_t eb_convert(const uint8_t *raw, uint32_t size, uint8_t *out, uint32_t ro
 		if (again != made || gpu_sum != c_sum) {
 			snprintf(text, sizeof text, "convert differs: size %lu gpu %lu c %lu\n",
 				(unsigned long) size, (unsigned long) made, (unsigned long) again);
-			GD_DebugString(text);
+			DEBUG_TEXT(text);
 			differ++;
 		}
 		if (++checked == 24) {
 			snprintf(text, sizeof text, "convert check: %d of 24 differ\n", differ);
-			GD_DebugString(text);
+			DEBUG_TEXT(text);
 		}
 	}
 #else
@@ -939,7 +1131,7 @@ static void bench_shapes(void)
 	snprintf(text, sizeof text, "bench: shape 721, %lu bytes to %lu; blanks for 4: measured %lu, "
 		"written %lu\n", (unsigned long) size, (unsigned long) made, (unsigned long) tm,
 		(unsigned long) tw);
-	GD_DebugString(text);
+	DEBUG_TEXT(text);
 	for (int k = 0; k < 5; k++) {
 		blit_shortest = shortest[k];
 		for (int flip = 0; flip < 2; flip++) {
@@ -953,7 +1145,7 @@ static void bench_shapes(void)
 		}
 		snprintf(text, sizeof text, "bench: 200 walkers, blitted from %lu: %lu blanks, flipped "
 			"%lu\n", (unsigned long) shortest[k], (unsigned long) t[0], (unsigned long) t[1]);
-		GD_DebugString(text);
+		DEBUG_TEXT(text);
 	}
 	blit_shortest = 16;
 }
@@ -999,9 +1191,15 @@ static uint32_t sum_frames;
 #define world_clock() jag_ticks
 #endif
 
+#ifdef ENGINE_STAGES
+#define MARK(rgb) (((volatile uint16_t *) 0xF00400)[0] = (rgb))
+#else
+#define MARK(rgb) ((void) 0)
+#endif
 static int walk_init(void)
 {
 	nnpcs = e_npcs(npcs, 400);
+	MARK(0xF800);               /* red: the NPCs read */
 	for (int i = 0; i < nnpcs; i++)
 		if (npcs[i].number == 0)
 			me = i;
@@ -1019,6 +1217,7 @@ static int walk_init(void)
 		e_mover_add(0, 0, 0, 0);
 	e_mover_set(0, npcs[me].tf, ax, ay, az);
 	e_world_init(npcs, nnpcs, START_MINUTES, world_clock());
+	MARK(0x7FC0);               /* purple: the world set going */
 	e_world_step(world_clock(), ax, ay);
 	e_follow(0);
 #ifdef ENGINE_FRAME_SUMS
@@ -1058,7 +1257,7 @@ static void route_bench(void)
 			"%lu.%lu, worst %lu.%lu\n", pass, (unsigned long) tried, (unsigned long) found,
 			(unsigned long) (e_stats.route_steps - steps), tenths(all) / 10, tenths(all) % 10,
 			tenths(most) / 10, tenths(most) % 10);
-		GD_DebugString(text);
+		DEBUG_TEXT(text);
 	}
 }
 #endif
@@ -1105,7 +1304,7 @@ static void walk_update(void)
 			touched = 1;
 			char text[64];
 			snprintf(text, sizeof text, "combat test: %d joined, %d skeletons\n", joined, made);
-			GD_DebugString(text);
+			DEBUG_TEXT(text);
 		}
 #endif
 #ifdef ENGINE_USE_TEST
@@ -1128,7 +1327,7 @@ static void walk_update(void)
 			int used = best >= 0 && e_talk_use(&found[best]);
 			char text[64];
 			snprintf(text, sizeof text, "use test: %d found, used %d\n", n, used);
-			GD_DebugString(text);
+			DEBUG_TEXT(text);
 		}
 #endif
 		int16_t aim_x, aim_y;
@@ -1375,21 +1574,38 @@ void jag_main(void)
 	e_surface_rows(&surfaces[0]);
 	shown_tick = jag_ticks - 1;
 	video_init();
+	STAGE(0xF800);
 #ifdef ENGINE_FAULTS
 	faults_catch();
 #endif
 	jag_vbl_hook = pad_vbl;     /* (the pad read each blank from now on) */
 	if ((r = e_init("U7/", store, sizeof store)) != 0) {
 		snprintf(text, sizeof text, "e_init failed: %d\n", r);
-		GD_DebugString(text);
+		STAGE(0xFFC0);
+		DEBUG_TEXT(text);
 		for (;;)
 			;
 	}
+#ifdef ENGINE_STAGES
+	staging = 0;
+	stage(0xFFFF);
+#endif
 	snprintf(text, sizeof text, "shape pool %luK of %luK\n", (unsigned long) e_pool_size() / 1024,
 		(unsigned long) sizeof store / 1024);
-	GD_DebugString(text);
+	DEBUG_TEXT(text);
+#ifdef ENGINE_STAGES
+	stage(0x003F);
+	for (uint32_t t = jag_ticks; jag_ticks - t < 60; )
+		;
+#endif
 	set_palette(e_palette());
 	sound_init();
+#ifdef ENGINE_STAGES
+	stage(0xF83F);
+	for (uint32_t t = jag_ticks; jag_ticks - t < 60; )
+		;
+	set_palette(e_palette());
+#endif
 #ifdef ENGINE_MUSIC_TEST
 	/* song n alone, nothing else going on (its audio against the host's --music); its samples
 	 * captured into the frames (not shown) for a RAM dump to hold against the host's */
@@ -1419,7 +1635,7 @@ void jag_main(void)
 		uint32_t t2 = eb_clock();
 		snprintf(text, sizeof text, "cpu: 1M cycles of loop in %lu half-lines, 2.6M of reads in %lu "
 			"(a field %u)\n", (unsigned long) (t1 - t0), (unsigned long) (t2 - t1), vc_period);
-		GD_DebugString(text);
+		DEBUG_TEXT(text);
 	}
 #endif
 #ifdef ENGINE_TOUR
@@ -1434,29 +1650,48 @@ void jag_main(void)
 	(void) nm;
 	(void) leg;
 	(void) step;
+#ifdef ENGINE_STAGES
+	((volatile uint16_t *) 0xF00400)[0] = 0x07C0;     /* blue: in walk_init */
+#endif
 	if (!walk_init()) {
-		GD_DebugString("no NPC.DAT: no avatar\n");
+		DEBUG_TEXT("no NPC.DAT: no avatar\n");
 		for (;;)
 			;
 	}
 #endif
 	/* the profile's samples by Tom's timer, at 37 Hz (26.59 MHz / 1000 / 719), apart from the
 	 * frames, which keep to the blanks */
+#ifdef ENGINE_STAGES
+	((volatile uint16_t *) 0xF00400)[0] = 0xFFC0;     /* magenta: past it */
+#endif
+#ifdef ENGINE_PROFILE
+	/* Tom's timer for the profile's samples (37 Hz, apart from the frames): only in a profile
+	 * build, not yet tried on a console */
 	REG16(0xF00050) = 999;
 	REG16(0xF00052) = 718;
 	jag_int_enable = 1 | 8;
 	jag_prof_pit = 1;
-#ifdef ENGINE_PROFILE
 	jag_prof_end = profile + sizeof profile;
 	jag_prof_next = profile;
 #endif
 #ifdef ENGINE_ROUTE_BENCH
 	route_bench();
 #endif
-	GD_DebugString("engine test: running\n");
+#ifdef ENGINE_STAGES
+	((volatile uint16_t *) 0xF00400)[0] = 0xFFFF;     /* white: the loop next */
+#endif
+	DEBUG_TEXT("engine test: running\n");
 	mark_ticks = last_shown = jag_ticks;
 	for (;;) {
 		e_music_service();
+#ifdef ENGINE_STAGES
+		{
+			/* the main loop's turns, as the bars' top row (white the 1s), drawn into every frame */
+			static uint16_t turns;
+			/* the background green and cyan by turns */
+			((volatile uint16_t *) 0xF00400)[0] = ++turns & 1 ? 0x003F : 0x07FF;
+		}
+#endif
 #ifndef ENGINE_TOUR
 		walk_update();
 		x = (int16_t) (ax - E_VIEW_CELLS_X / 2);
@@ -1495,7 +1730,7 @@ void jag_main(void)
 			if ((int16_t) f >= 0) {
 				GD_FWrite(f, profile, sizeof profile);
 				GD_FClose(f);
-				GD_DebugString("profile saved\n");
+				DEBUG_TEXT("profile saved\n");
 			}
 		}
 #endif
@@ -1541,7 +1776,7 @@ void jag_main(void)
 				sum = (sum << 1 | sum >> 31) ^ p[i];
 			snprintf(text, sizeof text, "sum %lu %08lx\n", (unsigned long) frame,
 				(unsigned long) sum);
-			GD_DebugString(text);
+			DEBUG_TEXT(text);
 		}
 #endif
 		show(drawing->pixels);
@@ -1574,10 +1809,10 @@ void jag_main(void)
 			e_stats.load_time = e_stats.chunk_time = e_stats.order_time = 0;
 			e_stats.front_time = e_stats.front_misses = 0;
 			e_stats.build_time = e_stats.copy_time = e_stats.object_time = e_stats.finish_time = 0;
-			GD_DebugString(text);
+			DEBUG_TEXT(text);
 			snprintf(text, sizeof text, "world %lu.%lu blanks over 64 frames\n", tenths(world_time) / 10,
 				tenths(world_time) % 10);
-			GD_DebugString(text);
+			DEBUG_TEXT(text);
 			world_time = 0;
 			if (e_stats.routes_planned != 0) {
 				/* routes planned (found), steps tried, blanks spent in all and the most one took */
@@ -1585,7 +1820,7 @@ void jag_main(void)
 					(unsigned long) e_stats.routes_planned, (unsigned long) e_stats.route_steps,
 					tenths(e_stats.route_time) / 10, tenths(e_stats.route_time) % 10,
 					tenths(e_stats.route_worst) / 10, tenths(e_stats.route_worst) % 10);
-				GD_DebugString(text);
+				DEBUG_TEXT(text);
 			}
 			mark_ticks = now;
 			mark_frame = frame;

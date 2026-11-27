@@ -33,6 +33,10 @@ int16_t plat_file_open(const char *name, int16_t mode)
 		if (files[i] == NULL) {
 			if ((files[i] = fopen(name, mode == PLAT_WRITE ? "wb" : "rb")) == NULL)
 				return -1;
+			if (getenv("U7_TRACE_FILES")) {
+				static int opens;
+				fprintf(stderr, "open %d: %s (%d)\n", ++opens, name, i);
+			}
 			return i;
 		}
 	return -1;
@@ -53,6 +57,11 @@ void plat_file_close(int16_t f)
 
 int32_t plat_file_read(int16_t f, void *buffer, int32_t count)
 {
+	if (getenv("U7_TRACE_FILES")) {
+		static int reads;
+		fprintf(stderr, "read %d: file %d, %ld bytes at %ld, into %p\n", ++reads, f, (long) count,
+			ftell(files[f]), buffer);
+	}
 	return (int32_t) fread(buffer, 1, (size_t) count, files[f]);
 }
 
