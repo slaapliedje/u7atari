@@ -9,7 +9,10 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
 
 - **Chunks.** Each chunk in use keeps its cell words and its static objects once read. The
   objects are the chunk's own object shapes, the fixed items (`U7IFIX`) and the movable items
-  (`U7IREG`). Each object keeps its picture's rectangle, binned 8 by 8 by where it lies. With the
+  (`U7IREG`; after a container's or a body's record its contents follow, not drawn, as the
+  original reads them: an egg's record is followed by the next item). The markers the original
+  blanks (eggs, path markers, 200 and 961) are kept, to be found, but not drawn. Each object
+  keeps its picture's rectangle, binned 8 by 8 by where it lies. With the
   dataset, a chunk's own objects and fixed items come ready made, binned, with the flat types its
   cells use; only the movable items are worked out as the chunk is read.
 - **The ring.** The static layer is a ring of 4 by 3 chunk areas (512 by 384 pixels). An area holds
@@ -30,35 +33,44 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   the GPU does the rest each frame (`jaguar/movers_gpu.s`): each mover's picture from its frame,
   those in view put in order, and the shape list for them and their fronts; the 68000 only keeps
   the fronts and the shapes they use in the cache.
-- **The NPCs** (`core/world.c`) keep the original's schedules (`SCHEDULE.DAT`): for each three
-  hours of the day, what each takes up and where. As the original, an NPC goes on with what it
-  is doing (its work type in `NPC.DAT`) until its next entry comes round. Then those near the
-  avatar walk to the place (a cell every 10 blanks) on a route, and the rest are put there. No
-  route found, part way is tried (14, 10, then 6 cells along), and then, as the original, the
-  NPC is put there if the avatar is far from both, counts as there within 5 cells, or else
-  wanders. At the place each kind does what the original's schedule of that kind does, with
-  its ranges and waits (a tick is a step's 10 blanks here):
+- **The NPCs** (`core/world.c`, `core/kinds.c`) keep the original's schedules (`SCHEDULE.DAT`):
+  for each three hours of the day, what each takes up and where. As the original, an NPC goes
+  on with what it is doing (its work type in `NPC.DAT`) until its next entry comes round. Then
+  those near the avatar walk to the place (a cell every 10 blanks) on a route, and the rest are
+  put there. No route found, part way is tried (14, 10, then 6 cells along), and then, as the
+  original, the NPC is put there if the avatar is far from both, counts as there within 5
+  cells, or else wanders.
+
+  What each kind does there is the original's schedule of that kind, ported state by state
+  (`kinds.c`): numbered states run a tick at a time (a tick is a step's 10 blanks here), a kind
+  pushing another over itself (walk to the place, sit, walk to an item, pause, loiter, read,
+  pay respects, tag, archery, fencing) that runs till it pops; a walk or a script of poses,
+  turns, waits and sounds ends with the state moved on. The ranges, waits and chances are the
+  original's. Done:
   - *sleep*: the nearest bed within 25 cells (a futon for one wider than a cell), got into from
     one of the spots the original lists for its type; in it lying along it, the cover (a bed
     item a level up, an odd frame) turned to the next frame, which the original's sort draws
     over the sleeper. No bed: it lies down where it is. At its next entry it gets up where it
     got in, the cover put back.
-  - *sit*, *eat at the inn*: a chair (else a seat) within 12 cells picked at random; it walks
-    in front of it, faces the chair's way (its frame's low bits), stands, bends and sits, 2
-    ticks each. At the inn it now and then eats the food a cell or two ahead (taken out of the
-    world). *Eat*: a chair by the nearest plate, the food ahead eaten once, after a while.
-    *Desk work*: a chair by the nearer desk.
-  - *tend shop*: walks within 8 cells of where it got to, rests after a few walks not found,
-    and half the time goes to stand by the avatar when it is within 20 cells of there.
-  - *loiter* (patrol): walks within 15 (8) cells of where it got to, resting 20-40 ticks
-    between walks. *Wander*: to places within 15 cells of where it is.
-  - the other roaming kinds (pace, hound, graze, ...) walk within 4 cells; the rest stand.
+  - *sit*, *eat at the inn*, *eat*, *desk work*: a chair (else a seat) in front of which it
+    stands, faces the chair's way, bends and sits; at the inn it now and then eats the food a
+    cell or two ahead (taken out of the world), eating sits by a plate, desk work by a desk.
+  - *tend shop*, *loiter*, *wander*, *stand*, *pace* (back and forth, turning about where
+    blocked), *hound* (keeps near the avatar), *talk* (walks up to it), *shy* (keeps away).
+  - *patrol*: from path marker to path marker by their numbers (frames), back and forth, doing
+    what each marker's quality says (pause, sit, kneel, look about, pace, loiter, read, go to a
+    grave, hammer, wait for another patroller, ...).
+  - *preach*: at the podium, visiting one of the congregation, praying at the Fellowship's
+    icon. *Duel*: fencing at a dummy (the sword's sounds) or archery at a target (the arrows
+    pulled out, fourteen steps back, shots that show on the target). *Dance*, *kid games* (tag).
 
-  A bed or chair that cannot be reached, or is taken, and the NPC loiters, as the original's.
-  What the original's schedules say (barks), check round them, put on a plate, or wake for (the
-  avatar near a sleeper) is not done yet. A game hour is a real minute for now
-  (`E_WORLD_MINUTE`); `-DSTART_MINUTES=` sets the time to start at (535: five minutes before the
-  9:00 change, to see them go).
+  Not yet: barks (no text), usecode and conversation, held items and missiles (no weapon drawn,
+  no arrow flying), items carried, made or put down (food on a plate, a desk's items, a plant
+  on a grave), looking round the area, combat, waking to chase the avatar; and the kinds that
+  carry and make things (waiter, farmer, miner, smith, baker, seamstress, alchemist, thief,
+  grazing), which loiter for now. A game hour is a real minute for now (`E_WORLD_MINUTE`);
+  `-DSTART_MINUTES=` sets the time to start at (535: five minutes before the 9:00 change, to see
+  them go). On the PC `--trace n` logs NPC n's kinds and states as they change.
 - **Roofs.** As the original works it out (`UpdateCeiling`): of the levels the solid statics (not
   doors) take over the avatar's row of cells, those above it; the lowest of them less one is the
   ceiling (so an upper floor goes with the roof), and statics and movers above it are not drawn
@@ -175,11 +187,11 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
 
 ## Measured (2026-11-26, timing core, `-DENGINE_TOUR`: Britain, 12 walkers)
 
-The walk at Trinsic (into the stables and out, about 10 NPCs in view) runs at 30-59 frames a
-second, the worst frame 2-10 blanks. (It was 41-59 and 4-6 before the movable items were read
-right: many were lost, and the areas hold more now.) At 21:00 (`-DSTART_MINUTES=1259`), when NPCs
-near the avatar set off for their evening places, the first 64 frames are 21 a second, the
-worst 16 blanks; then as at 6:00. A route costs the 68000 about 0.4 ms a step tried: planning to
+The walk at Trinsic (into the stables and out, about 10 NPCs in view) runs at 29-58 frames a
+second, the worst frame 3-13 blanks. (It was 41-59 and 4-6 before the movable items were read
+right, and 32-58 and 2-10 before the items after an egg were: many were lost, and the areas
+hold more now.) At 21:00 (`-DSTART_MINUTES=1259`), when NPCs near the avatar set off for their
+evening places, the first 64 frames are 16 a second, the worst 26 blanks; then as at 6:00. A route costs the 68000 about 0.4 ms a step tried: planning to
 every sixth cell near Trinsic's gate (`-DENGINE_ROUTE_BENCH`), 4.7 blanks a route, the most 20.
 
 Frames a second, averaged over 64 frames; the view scrolls a cell every frame (60 cells a second,
@@ -258,7 +270,7 @@ call chains (`tools/jag-profile.py --frames`).
   the ring.
 - **Translucency**; **NPCs** from a save (it holds them as the game's memory, `U7NBUF.DAT` and
   `U7IBUF.DAT`, not as `NPC.DAT`); the schedules' kinds not yet done at the place (the
-  waiter, the smith, baker, farmer, miner, preacher, duel, thieves, ...), barks, and usecode;
+  waiter, the smith, baker, farmer, miner, thieves, ...), barks, and usecode;
   the other sounds (the effects are all in the dataset, only doors play them), looped sounds
   and music; the party.
 - **Order.** `order_of()` is a simple rule. It still needs checking against the original's frames

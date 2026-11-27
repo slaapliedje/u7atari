@@ -223,6 +223,9 @@ void e_world_init(struct ENpc *npcs, int n, int start, uint32_t blanks);
  * period has come walk to their place if near the avatar, else are put there; those near walk
  * and wander; movers 1 to E_MOVERS - 1 are the NPCs nearest the avatar. */
 void e_world_step(uint32_t blanks, int16_t x, int16_t y);
+/* The NPC (by number) whose schedule's kinds and states are logged as they change (eb_log), or -1:
+ * for tests. */
+extern int e_world_trace;
 /* The time of day, in minutes from midnight. */
 int e_world_minutes(void);
 /* Blanks a game minute (the original's is slower: a game hour a real minute here, for now). */
@@ -320,6 +323,8 @@ int e_things(uint16_t type, int16_t x0, int16_t y0, int16_t x1, int16_t y1, stru
 /* A movable item made tf where it is (t too), kept so when its region is read again: 1; 0 when
  * it is not there (or not a movable item). */
 int e_thing_set(struct EThing *t, uint16_t tf);
+/* A movable item's quality (a path marker's what to do), or -1 when it is not one there. */
+int e_thing_quality(const struct EThing *t);
 /* A movable item taken out of the world, as eaten: 1; 0 when it is not there. */
 int e_thing_remove(const struct EThing *t);
 

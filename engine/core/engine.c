@@ -256,6 +256,7 @@ struct Item {
 	uint16_t tf;                /* type, frame << 10, mirrored 0x8000 */
 	uint8_t x, y;               /* cell in the region */
 	uint8_t z;
+	uint8_t quality;            /* a movable one's (a path marker's number of what to do) */
 };
 
 struct Region {
@@ -280,6 +281,7 @@ static void add_ifix(struct Region *r, uint16_t *n, const uint8_t *e, int count,
 		it->y = (uint8_t) (by + (e[0] & 15));
 		it->z = e[1] & 15;
 		it->tf = rd16(e + 2);
+		it->quality = 0;
 	}
 }
 
@@ -363,9 +365,13 @@ static struct Region *region(int id)
 					it->y = d[1];
 					it->tf = rd16(d + 2);
 					it->z = (l == 6 ? d[4] : d[9]) >> 4;
+					it->quality = l == 6 ? d[5] : 0;
 					in_chunk[ireg++] = (uint8_t) ((d[1] >> 4) * 16 + (d[0] >> 4));
 				}
-				if (l >= 12 && rd16(d + 4) != 0)
+				/* contents follow only a type whose class has them (the original's
+				 * CLASS_CONTENTS: containers, 6, and bodies, 12 and 13), not an egg's data */
+				uint8_t cls = info[rd16(d + 2) & 0x3ff].cls;
+				if (l >= 12 && rd16(d + 4) != 0 && (cls == 6 || cls == 12 || cls == 13))
 					depth++;
 			}
 			/* by chunk, as they came within each (merged, below, lent for it) */
@@ -712,6 +718,13 @@ static struct Chunk *chunk_statics_now(int cx, int cy)
 		}
 		if ((s->tf & 0x3ff) < TILE_TYPES || !picture_rect(s->tf, s->x, s->y, s->z, s->r))
 			continue;
+		/* the markers the original blanks (HideMarkerShapes: eggs, path markers, ...): kept, to
+		 * be found, but drawn nowhere */
+		uint16_t type = s->tf & 0x3ff;
+		if (type == 275 || type == 200 || type == 961 || type == 607) {
+			s->r[0] = s->r[1] = 32767;
+			s->r[2] = s->r[3] = -32768;
+		}
 		set_footprint(s);
 		k->nstatic++;
 	}
@@ -1799,6 +1812,15 @@ int e_thing_set(struct EThing *t, uint16_t tf)
 		return 0;
 	t->tf = tf;
 	return 1;
+}
+
+int e_thing_quality(const struct EThing *t)
+{
+	if (t->x < 0 || t->y < 0 || t->x >= E_WORLD_CELLS || t->y >= E_WORLD_CELLS)
+		return -1;
+	struct Region *r = region(region_of(t->x, t->y));
+	int i = find_item(r, list_of(t->x, t->y), t->tf, t->x & 255, t->y & 255, t->z);
+	return i < 0 ? -1 : r->items[i].quality;
 }
 
 int e_thing_remove(const struct EThing *t)

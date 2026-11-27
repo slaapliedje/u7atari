@@ -496,7 +496,9 @@ int main(int argc, char **argv)
 				return 1;
 			}
 			wav_header();
-		} else if (!strcmp(argv[i], "--npcs"))
+		} else if (!strcmp(argv[i], "--trace") && i + 1 < argc)
+			e_world_trace = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--npcs"))
 			list_npcs = 1;
 		else if (!strcmp(argv[i], "--time") && i + 1 < argc)
 			start_minutes = atoi(argv[++i]);
