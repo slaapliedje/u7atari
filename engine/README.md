@@ -275,6 +275,32 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   a place of one's own in a gump. On the PC `--inv keys` presses keys (`l r u d a b c`, `o` for
   Option) in the container ahead, `--inv-avatar` opens the backpack.
 
+- **The party** (kinds.c). `JoinParty` (Iolo's "join", or `e_uc_join`) puts an NPC in the
+  party: it leaves its schedule, is always in a mover slot, and follows the avatar as the
+  original's `MoveParty` has it: a place in the original's formation for the party's size, hung
+  off a leader and turned with the avatar a quarter at a time; after each of the avatar's steps
+  (two passes; one when it stands) each member steps to the free cell nearest its place within
+  reach of its leader, never into a doorway nor onto a member ahead of it. Over 3 cells off it is
+  lost: it walks a route back at a run, or with none (and off the screen) is put just past the
+  screen's edge on its side.
+- **Combat** (kinds.c), the original's simply. C on the Jaguar turns combat mode on (the party
+  to work 0) and off (back to following). Each combatant gains its dexterity in points a tick (56
+  at most; a step 16, a swing 24), fights the nearest hostile by alignment, steps toward it, and
+  swings with the original's roll and damage (strength, the weapon it holds or its kind's own
+  attack, less the armour: `WEAPONS.DAT`, `ARMOR.DAT`, `MONSTERS.DAT`, read into 4.5 KB of the
+  pool). Under 0 hit points it is knocked out (lies down); under minus a third of its strength it
+  dies, leaving the original's body for its kind with what it carried in it. The party finishes
+  off a monster lying helpless. The avatar, the pad left be, fights on its own. A new game's NPCs
+  start with their strength in hit points (NPC.DAT has none). Not yet: missiles, spells,
+  fleeing, guards and crimes, slots (the weapon and armour are those it carries itself), the
+  avatar's death (it stays at 1). On the PC `--party 1,3,4 --spawn type,n --combat`; on the
+  Jaguar `-DENGINE_COMBAT_TEST=n` (Iolo, Shamino and Dupre, n skeletons, combat on).
+  Measured (timing core, 4 skeletons against the four of them, the avatar walking into it): 25 to
+  42 frames a second while they fight (55 after), the world's step (schedules, the party,
+  combat, routes) at most 33 blanks in 64 frames; the rest is the areas drawn as the view moves
+  and the bodies are put down, and the movers. The shapes' pool has 336 KB of 1484 KB left (256 KB
+  needed), the statics 4.4 KB below the stack.
+
 ## Layout
 
 - `core/` — portable C: the data files, the order, the layer, the movers; `shapes.c`, the

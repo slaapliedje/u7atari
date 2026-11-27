@@ -343,6 +343,9 @@ static int appear_frame;        /* --appear f: the avatar far off till frame f *
 static int use_dx, use_dy, use_ahead;     /* --use-ahead dx,dy: the item ahead used (as A does) */
 static int aim_dx, aim_dy, aim_given;  /* --aim dx,dy: pointed at, pixels from the avatar's feet */
 static int put_type = -1;
+static int party_numbers[8], nparty_numbers;
+static int spawn_type = -1, spawn_n;    /* --spawn type,n: monsters put 6 cells south, fighting */
+static int combat_on;           /* --combat: the party in combat mode */   /* --party a,b,..: NPCs joining at the start */
 static int uc_function = -1;
 static int after_ticks;         /* --ticks n: the scripts run n ticks after (the functions they ask for) */    /* --uc-function n: run on the item ahead instead of its own */
 static const char *inv_keys;    /* --inv k..: keys pressed in the container opened (l r u d a b c) */
@@ -387,6 +390,13 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 	e_mover_set(0, npcs[me].tf, ax, ay, az);
 	e_world_init(npcs, nnpcs, start_minutes, 0);
 	e_world_step(0, ax, ay);
+	for (int k = 0; k < nparty_numbers; k++)
+		printf("party: NPC %d joins: %d\n", party_numbers[k], e_uc_join(party_numbers[k]));
+	for (int k = 0; k < spawn_n; k++)
+		printf("spawn: %d\n", e_world_spawn(spawn_type, (int16_t) (ax - spawn_n + 2 * k), (int16_t) (ay + 6), az));
+	nnpcs = nnpcs + spawn_n;    /* (the world's own count went on) */
+	if (combat_on)
+		e_combat_mode(1);
 	if (talk_npc >= 0 && out_pictures) {
 		/* the conversation shown: a picture at each stop, the answers picked from the list (then
 		 * bye, else the first offered) */
@@ -720,10 +730,28 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 				dir = dy < 0 ? 0 : dx > 0 ? 1 : dy > 0 ? 2 : 3;
 			/* a step, veering round what is in the way, up or down stairs; a door opened */
 			e_mover_self(0);
+			int16_t was_x = ax, was_y = ay;
 			if ((dx || dy) && e_walk(e_walk_frame(type, dir, 0), &ax, &ay, &az, dx, dy, 1)
 				== E_STEP_DOOR)
 				printf("frame %d: a door opened at %d,%d\n", f, ax + dx, ay + dy);
 			e_mover_self(-1);
+			/* in combat, left be: its own turn */
+			static uint16_t swing_tf;
+			swing_tf = 0;
+			if (combat_on && !dx && !dy) {
+				int fx, fy;
+				int r = e_world_avatar_fight(&fx, &fy, &swing_tf);
+				if (r == 1) {
+					dir = fy < 0 ? 0 : fx > 0 ? 1 : fy > 0 ? 2 : 3;
+					e_mover_self(0);
+					e_walk(e_walk_frame(type, dir, 0), &ax, &ay, &az, fx, fy, 1);
+					e_mover_self(-1);
+				} else if (r == 2)
+					printf("frame %d: the avatar swings\n", f);
+			}
+			/* the party after it */
+			e_world_avatar_place(ax, ay, az, dir);
+			e_world_party_step(ax != was_x || ay != was_y);
 		}
 		sound_frame = f;
 		if (appear_frame > 0 && f == appear_frame) {
@@ -757,6 +785,19 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 			snprintf(name, sizeof name, "%s.%04d.ppm", out, f);
 			save(name);
 			printf("frame %d: avatar %d,%d,%d ceiling %d\n", f, ax, ay, az, ceiling);
+			for (int i = 0; i < nnpcs; i++)
+				for (int k = 0; k < nparty_numbers; k++)
+					if (npcs[i].number == party_numbers[k])
+						printf("  party %d at %d,%d,%d (%+d,%+d) frame %d hp %d%s\n", npcs[i].number, npcs[i].x, npcs[i].y,
+							npcs[i].z, npcs[i].x - ax, npcs[i].y - ay, npcs[i].tf >> 10 & 31, (int8_t) npcs[i].hit_points,
+							npcs[i].status & 0x8000 ? " dead" : npcs[i].status & 0x80 ? " out" : "");
+			for (int i = 0; i < nnpcs; i++)
+				if (npcs[i].number >= 1000)
+					printf("  monster %d type %d at %d,%d (%+d,%+d) hp %d%s\n", npcs[i].number, npcs[i].tf & 0x3ff,
+						npcs[i].x, npcs[i].y, npcs[i].x - ax, npcs[i].y - ay, (int8_t) npcs[i].hit_points,
+						npcs[i].status & 0x8000 ? " dead" : npcs[i].status & 0x80 ? " out" : "");
+			if (npcs[me].number == 0 && combat_on)
+				printf("  avatar hp %d\n", (int8_t) npcs[me].hit_points);
 			/* the NPCs in view: number, place, frame (10 sitting, 13 lying) */
 			for (int i = 0; i < nnpcs && list_npcs; i++)
 				if (i != me && npcs[i].x >= ax - 20 && npcs[i].x < ax + 20 && npcs[i].y >= ay - 13
@@ -835,7 +876,14 @@ int main(int argc, char **argv)
 			after_ticks = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--uc-function") && i + 1 < argc)
 			uc_function = (int) strtol(argv[++i], NULL, 0);
-		else if (!strcmp(argv[i], "--put") && i + 1 < argc)
+		else if (!strcmp(argv[i], "--spawn") && i + 1 < argc)
+			sscanf(argv[++i], "%d,%d", &spawn_type, &spawn_n);
+		else if (!strcmp(argv[i], "--combat"))
+			combat_on = 1;
+		else if (!strcmp(argv[i], "--party") && i + 1 < argc) {
+			for (char *t = strtok(argv[++i], ","); t != NULL && nparty_numbers < 8; t = strtok(NULL, ","))
+				party_numbers[nparty_numbers++] = atoi(t);
+		} else if (!strcmp(argv[i], "--put") && i + 1 < argc)
 			put_type = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--uc-trace"))
 			e_uc_trace = 1;

@@ -691,7 +691,23 @@ static void party_add(int k)
 	if (k >= 0 && !in_party(k) && nparty < PARTY_MOST) {
 		party[nparty++] = (int16_t) k;
 		npc[k].status |= 0x0800;
+		kind_join(k, 1);
 	}
+}
+
+int uc_party(int j)
+{
+	return j >= 0 && j < nparty ? party[j] : -1;
+}
+
+int e_uc_join(int number)
+{
+	for (int k = 0; k < nnpc; k++)
+		if (npc[k].number == number) {
+			party_add(k);
+			return in_party(k);
+		}
+	return 0;
 }
 
 static void party_remove(int k)
@@ -701,7 +717,13 @@ static void party_remove(int k)
 			memmove(&party[j], &party[j + 1], (size_t) (nparty - j - 1) * sizeof party[0]);
 			nparty--;
 			npc[k].status &= (uint16_t) ~0x0800;
+			kind_join(k, 0);
 		}
+}
+
+void uc_party_leave(int k)
+{
+	party_remove(k);
 }
 
 /* ---- the intrinsics ---- */

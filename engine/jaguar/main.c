@@ -938,6 +938,9 @@ static void route_bench(void)
 /* A cell for each WALK_BLANKS blanks gone: the pad's way, or the demo's; veering round what is in
  * the way, up and down stairs, a shut door in the way opened. A: the door ahead opened or shut.
  * The NPCs near it picked again when it has gone 8 cells; the ceiling over it. */
+static uint32_t world_time;      /* blanks the world's step took (the stats' 64 frames) */
+static int swing_ticks;         /* the avatar's swing shown, walk ticks left */
+
 static void walk_update(void)
 {
 	uint16_t type = npcs[me].tf & 0x3ff;
@@ -964,6 +967,20 @@ static void walk_update(void)
 		static int frames_in;
 		if (++frames_in == 40)
 			e_talk_start(ENGINE_TALK_TEST);
+#endif
+#ifdef ENGINE_COMBAT_TEST
+		/* Iolo, Shamino and Dupre join; ENGINE_COMBAT_TEST skeletons 6 cells south; combat on */
+		static int fight_in;
+		if (++fight_in == 40) {
+			int joined = e_uc_join(1) + e_uc_join(3) + e_uc_join(4), made = 0;
+			for (int k = 0; k < ENGINE_COMBAT_TEST; k++)
+				made += e_world_spawn(528, (int16_t) (ax - ENGINE_COMBAT_TEST + 2 * k), (int16_t) (ay + 6), az) >= 0;
+			e_combat_mode(1);
+			touched = 1;
+			char text[64];
+			snprintf(text, sizeof text, "combat test: %d joined, %d skeletons\n", joined, made);
+			GD_DebugString(text);
+		}
 #endif
 #ifdef ENGINE_USE_TEST
 		/* the nearest item of shape ENGINE_USE_TEST used, two seconds in (to see a book, a
@@ -1071,6 +1088,10 @@ static void walk_update(void)
 			} else if (e_thing_ahead(ax, ay, az, face_x[walk_dir], face_y[walk_dir], e_inv_actionable, &t)
 				&& !e_inv_open_thing(&t))
 				e_talk_use(&t);
+		} else if (pressed & PAD_C) {
+			/* C: combat mode on or off (the original's C key) */
+			touched = 1;
+			e_combat_mode(!e_combat_mode(-1));
 		} else if (pressed & PAD_OPTION) {
 			/* Option: the avatar's backpack opened */
 			touched = 1;
@@ -1125,8 +1146,27 @@ static void walk_update(void)
 				demo_left = (uint8_t) demo[demo_leg].n;
 			}
 		}
-		if (dx == 0 && dy == 0)
+		if (dx == 0 && dy == 0 && !posed && e_combat_mode(-1)) {
+			/* in combat, the pad leaving it be: the avatar fights on its own */
+			int fx, fy;
+			uint16_t tf;
+			int r = e_world_avatar_fight(&fx, &fy, &tf);
+			if (r == 1) {
+				dx = fx;
+				dy = fy;
+			} else if (r == 2) {
+				e_mover_set(0, tf, ax, ay, az);
+				swing_ticks = 2;
+			}
+		}
+		if (swing_ticks > 0 && --swing_ticks == 0)
+			e_mover_set(0, e_walk_frame(type, walk_dir, 0), ax, ay, az);
+		if (dx == 0 && dy == 0) {
+			/* the party settles about it */
+			e_world_avatar_place(ax, ay, az, walk_dir);
+			e_world_party_step(0);
 			continue;
+		}
 		if (posed) {
 			/* up out of the chair or the bed first */
 			e_world_avatar_stand();
@@ -1138,6 +1178,8 @@ static void walk_update(void)
 		e_mover_self(0);            /* the avatar out of its own way */
 		int step = e_walk(e_walk_frame(type, walk_dir, 0), &ax, &ay, &az, dx, dy, 1);
 		e_mover_self(-1);
+		e_world_avatar_place(ax, ay, az, walk_dir);
+		e_world_party_step(step == E_STEP_MADE);
 		if (step != E_STEP_MADE)
 			continue;
 		walk_steps++;
@@ -1149,7 +1191,9 @@ static void walk_update(void)
 	{
 		if (!posed)
 			e_world_avatar_place(ax, ay, az, walk_dir);
+		uint32_t t0 = eb_clock();
 		e_world_step(world_clock(), ax, ay);
+		world_time += eb_clock() - t0;
 	}
 #ifdef ENGINE_BARK_TEST
 	/* a line over mover 1 every two seconds, to see barks drawn */
@@ -1190,6 +1234,9 @@ void jag_main(void)
 		for (;;)
 			;
 	}
+	snprintf(text, sizeof text, "shape pool %luK of %luK\n", (unsigned long) e_pool_size() / 1024,
+		(unsigned long) sizeof store / 1024);
+	GD_DebugString(text);
 	set_palette(e_palette());
 	sound_init();
 #ifdef ENGINE_BENCH_SHAPES
@@ -1359,6 +1406,10 @@ void jag_main(void)
 			e_stats.front_time = e_stats.front_misses = 0;
 			e_stats.build_time = e_stats.copy_time = e_stats.object_time = e_stats.finish_time = 0;
 			GD_DebugString(text);
+			snprintf(text, sizeof text, "world %lu.%lu blanks over 64 frames\n", tenths(world_time) / 10,
+				tenths(world_time) % 10);
+			GD_DebugString(text);
+			world_time = 0;
 			if (e_stats.routes_planned != 0) {
 				/* routes planned (found), steps tried, blanks spent in all and the most one took */
 				snprintf(text, sizeof text, "routes %lu steps %lu blanks %lu.%lu worst %lu.%lu\n",

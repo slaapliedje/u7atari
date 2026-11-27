@@ -2910,7 +2910,11 @@ int32_t e_read_file(const char *dir, const char *name, uint8_t *to, uint32_t mos
 
 	if (f < 0)
 		return -1;
-	n = plat_file_read(f, to, (int32_t) most);
+	/* (exactly its length: the GameDrive's read of more than is there fails) */
+	n = plat_file_length(f);
+	if (n > (int32_t) most)
+		n = (int32_t) most;
+	n = n > 0 ? plat_file_read(f, to, n) : n;
 	plat_file_close(f);
 	return n;
 }
@@ -3006,6 +3010,8 @@ int e_npcs(struct ENpc *out, int max)
 		out[n].intelligence = rec[20];
 		out[n].combat = rec[21];
 		out[n].hit_points = rec[26];
+		if (out[n].hit_points == 0)
+			out[n].hit_points = rec[18];    /* (a new game's: none yet, so its strength, the most) */
 		out[n].magic = rec[27];
 		out[n].mana = rec[28];
 		out[n].face = rec[29];
@@ -3416,11 +3422,17 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 				e_uc_memory(c, h);
 		}
 	}
+	e_combat_memory(take(E_COMBAT_ROOM), E_COMBAT_ROOM);
 	pool = pool_next = pool_pinned = mem_next;
 	pool_end = mem_end;
 	if (pool_end - pool < 256 * 1024)
 		return -8;
 	return 0;
+}
+
+uint32_t e_pool_size(void)
+{
+	return (uint32_t) (pool_end - pool);
 }
 
 void e_surface_rows(struct ESurface *s)

@@ -114,6 +114,8 @@ static void set_kind(int i, int kind)
 
 	d->depth = 0;
 	push(i, kind, -1, -1);
+	if (kind == K_COMBAT)
+		d->value = 0;           /* (its armour not yet worked out) */
 }
 
 static int show(int i)
@@ -1741,6 +1743,610 @@ static void wake_up(int i)
 		step(i, w1);
 	d->pose = F_STAND;
 	show(i);
+}
+
+/* ---- the party following the avatar (the original's MoveParty): each member's place in a
+ * formation by party size (member 0 the avatar), hanging off a leader, turned with the avatar
+ * a quarter at a time; after each step of the avatar every member steps (two passes, one when it
+ * stands) to the free cell nearest its place within reach of its leader, never into a doorway
+ * nor onto a member ahead of it in the party. Over 3 cells from its leader it is lost: walks back
+ * to the avatar on a route, or (off the screen) is put just past the screen's edge. ---- */
+
+static const int8_t form_x[8][8] = {
+	{ 0 }, { 0, -2 }, { 0, -2, 2 }, { 0, -2, 2, 0 }, { 0, -2, 2, -1, 1 }, { 0, -2, 2, -2, 2, 0 },
+	{ 0, -2, 2, -1, 1, -2, 2 }, { 0, -2, 2, 0, -3, 3, -2, 2 },
+};
+static const int8_t form_y[8][8] = {
+	{ 0 }, { 0, 2 }, { 0, 2, 2 }, { 0, 2, 2, 4 }, { 0, 2, 2, 4, 4 }, { 0, 2, 2, 4, 4, 6 },
+	{ 0, 2, 2, 4, 4, 6, 6 }, { 0, 2, 2, 4, 4, 4, 6, 6 },
+};
+static const int8_t form_lead[8][8] = {
+	{ 0 }, { 0, 0 }, { 0, 0, 0 }, { 0, 0, 0, 1 }, { 0, 0, 0, 1, 2 }, { 0, 0, 0, 1, 2, 3 },
+	{ 0, 0, 0, 1, 2, 3, 4 }, { 0, 0, 0, 1, 1, 2, 3, 3 },
+};
+
+static void party_at(int j, int *x, int *y, int *z)
+{
+	int i = uc_party(j);
+
+	*x = j == 0 ? me_x : npc[i].x;
+	*y = j == 0 ? me_y : npc[i].y;
+	*z = npc[i].z;
+}
+
+/* An offset in the formation (written facing north) turned to the avatar's facing. */
+static void turned(int dx, int dy, int *ox, int *oy)
+{
+	switch (avatar >= 0 ? doing[avatar].dir : 0) {
+	case 1: *ox = -dy; *oy = dx; break;
+	case 2: *ox = -dx; *oy = -dy; break;
+	case 3: *ox = dy; *oy = -dx; break;
+	default: *ox = dx; *oy = dy; break;
+	}
+}
+
+static int manhattan(int x0, int y0, int x1, int y1)
+{
+	return (x1 > x0 ? x1 - x0 : x0 - x1) + (y1 > y0 ? y1 - y0 : y0 - y1);
+}
+
+/* Member j's step toward its place: 1 when it moved. */
+static int follow_step(int j, int n)
+{
+	int i = uc_party(j), lead = form_lead[n - 1][j], lx, ly, lz, tx, ty, ox, oy;
+	struct ENpc *p = &npc[i];
+	struct Doing *d = &doing[i];
+	uint16_t tf = e_walk_frame(p->tf & 0x3ff, d->dir, 0);
+
+	party_at(lead, &lx, &ly, &lz);
+	turned(form_x[n - 1][j] - form_x[n - 1][lead], form_y[n - 1][j] - form_y[n - 1][lead], &ox, &oy);
+	tx = lx + ox;
+	ty = ly + oy;
+	if (far_of(p->x, p->y, lx, ly) > 3 || p->z > lz + 3 || p->z + 3 < lz) {
+		d->lost = 1;
+		return 0;
+	}
+	/* staying, beside its leader, no further from its place: it stays */
+	if (far_of(p->x, p->y, lx, ly) <= 1 && p->z == lz && p->x == tx && p->y == ty)
+		return 0;
+	int best = -2, best_score = 0, best_lead = 0, best_m = 0, bx = p->x, by = p->y, bz = p->z;
+	for (int w = -1; w < 8; w++) {
+		int16_t cx = p->x, cy = p->y;
+		uint8_t cz = p->z;
+		if (w >= 0 && e_step(tf, &cx, &cy, &cz, way_x[w], way_y[w]) != E_STEP_MADE)
+			continue;
+		if (e_door_at(tf, cx, cy, cz) >= 0)
+			continue;
+		int taken = 0;
+		for (int k = 0; k < j && !taken; k++) {
+			int kx, ky, kz;
+			party_at(k, &kx, &ky, &kz);
+			taken = kx == cx && ky == cy;
+		}
+		if (taken || far_of(cx, cy, lx, ly) > 2 || cz > lz + 1 || cz + 1 < lz)
+			continue;
+		int on = cx == tx && cy == ty, near_lead = far_of(cx, cy, lx, ly);
+		int score = on ? 0 : far_of(cx, cy, tx, ty) + near_lead, m = manhattan(cx, cy, tx, ty);
+		/* staying first; a step only when it is better (by its place, then its leader, then
+		 * straight distance to its place) */
+		if (best == -2 || score < best_score || (score == best_score && (near_lead < best_lead
+			|| (near_lead == best_lead && m < best_m)))) {
+			best = w;
+			best_score = score;
+			best_lead = near_lead;
+			best_m = m;
+			bx = cx;
+			by = cy;
+			bz = cz;
+		}
+	}
+	if (best < 0)
+		return 0;               /* (staying, or nowhere to go) */
+	face(i, best);
+	p->x = (int16_t) bx;
+	p->y = (int16_t) by;
+	p->z = (uint8_t) bz;
+	d->steps++;
+	d->pose = F_STAND;
+	p->tf = e_walk_frame(p->tf & 0x3ff, d->dir, d->steps);
+	return 1;
+}
+
+void kind_party_step(int moved)
+{
+	int n = 0;
+
+	while (n < 8 && uc_party(n) >= 0)
+		n++;
+	for (int pass = 0; pass < (moved ? 2 : 1); pass++)
+		for (int j = 1; j < n; j++) {
+			int i = uc_party(j), s = in_slot(i);
+			if (doing[i].lost || doing[i].depth == 0 || cur(&doing[i])->kind != K_FOLLOW
+				|| doing[i].walking != W_NONE)
+				continue;
+			e_mover_self(s);
+			if (follow_step(j, n) && s)
+				e_mover_set(s, npc[i].tf, npc[i].x, npc[i].y, npc[i].z);
+			e_mover_self(-1);
+		}
+}
+
+/* Put just past the screen's edge on its side of the avatar (the original's FindArrivalSpot). */
+static int arrive(int i)
+{
+	struct ENpc *p = &npc[i];
+	int dx = p->x - me_x, dy = p->y - me_y, ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+	uint16_t tf = e_walk_frame(p->tf & 0x3ff, 2, 0);
+
+	for (int tries = 0; tries < 12; tries++) {
+		int x, y;
+		if (ay * 22 >= ax * 14) {
+			x = me_x - 22 + rnd(45);
+			y = dy < 0 ? me_y - 18 + rnd(5) : me_y + 14 + rnd(5);
+		} else {
+			x = dx < 0 ? me_x - 26 + rnd(5) : me_x + 22 + rnd(5);
+			y = me_y - 14 + rnd(29);
+		}
+		if (!in_near_window(x, y))
+			continue;
+		for (int z = 0; z < 16; z++)
+			if (e_can_stand(tf, (int16_t) x, (int16_t) y, (uint8_t) z)) {
+				p->x = (int16_t) x;
+				p->y = (int16_t) y;
+				p->z = (uint8_t) z;
+				return 1;
+			}
+	}
+	return 0;
+}
+
+/* The follow kind's own: a lost member walked or put back. */
+static int follow(int i)
+{
+	struct Doing *d = &doing[i];
+	struct ENpc *p = &npc[i];
+	int az = avatar >= 0 ? npc[avatar].z : 0;
+
+	if (!d->lost)
+		return 0;
+	if (far_of(p->x, p->y, me_x, me_y) <= 2 && p->z <= az + 1 && p->z + 1 >= az) {
+		d->lost = 0;
+		d->walking = W_NONE;
+		return 0;
+	}
+	if (d->walking != W_NONE)
+		return 0;
+	/* a route to beside the avatar; none, and off the screen: put just past its edge (and from
+	 * there a route next time) */
+	int r = start_path(i, me_x + 1, me_y, az, 100);
+	d->wait = TICK_BLANKS;
+	if (r == 2 && (p->x < me_x - 20 || p->x > me_x + 20 || p->y < me_y - 13 || p->y > me_y + 13))
+		return arrive(i);
+	return 0;
+}
+
+void kind_join(int i, int on)
+{
+	struct Doing *d = &doing[i];
+
+	stop_walk(i);
+	if (on) {
+		set_kind(i, K_FOLLOW);
+		d->lost = 1;            /* (as the original: found its place from wherever it is) */
+		d->pose = F_STAND;
+		show(i);
+	} else {
+		d->lost = 0;
+		set_kind(i, K_LOITER);
+	}
+}
+
+/* ---- combat (the original's, simply): melee only. Each combatant gains its dexterity in
+ * points a tick (56 at most); a step costs 16, a swing 24. It fights the nearest hostile (by
+ * alignment: good, evil and chaotic each against the other two; neutral against none), steps
+ * toward it (straight, else 45 degrees either side) till within reach, and swings: the
+ * original's roll (1-30: 1 misses, 30 hits, else roll + its combat + 6 - the other's combat
+ * >= 15), its damage (1 to a third of its strength, plus 1 to its weapon's: the weapon it
+ * holds, else its kind's own attack, else 1), less 1 to the other's armour (its kind's, and the
+ * armour it holds). Hit points under nothing knock it out (it lies there); under minus a third
+ * of its strength it dies, leaving its body (the original's table) with what it carried in it.
+ *
+ * Not the original's: reach is a cell (two for a range of 4 or more); the weapon and armour are
+ * those it carries itself, not in a bag (no slots kept yet); no missiles, spells, fleeing,
+ * blood; the avatar is not killed (it stays at 1). ---- */
+
+static const uint8_t *weapons_dat, *armor_dat, *monsters_dat;
+static uint8_t combat_mode;
+
+void e_combat_memory(void *room, uint32_t size)
+{
+	uint8_t *r = room;
+	int32_t n;
+
+	weapons_dat = armor_dat = monsters_dat = NULL;
+	if (r == NULL)
+		return;
+	if ((n = e_read_file("STATIC", "WEAPONS.DAT", r, size)) > 0 && n == 1 + r[0] * 21) {
+		weapons_dat = r;
+		r += n;
+		size -= (uint32_t) n;
+	}
+	if ((n = e_read_file("STATIC", "ARMOR.DAT", r, size)) > 0 && n == 1 + r[0] * 10) {
+		armor_dat = r;
+		r += n;
+		size -= (uint32_t) n;
+	}
+	if ((n = e_read_file("STATIC", "MONSTERS.DAT", r, size)) > 0 && n == 1 + r[0] * 25)
+		monsters_dat = r;
+}
+
+static const uint8_t *record(const uint8_t *dat, int size, int type)
+{
+	for (int k = 0; dat != NULL && k < dat[0]; k++) {
+		const uint8_t *r = dat + 1 + k * size;
+		if ((r[0] | r[1] << 8) == type)
+			return r;
+	}
+	return NULL;
+}
+
+static int avatar_weapon = -1, avatar_armour = -1;     /* the avatar's, worked out (-1: not yet) */
+
+/* Where i keeps its weapon (a WEAPONS.DAT record + 1, 0 none; -1 not yet) and its armour (+1;
+ * 0 not yet), worked out once a fight (the held items are many to look through). */
+static int16_t *weapon_cache(int i)
+{
+	return i == avatar ? (int16_t *) NULL : doing[i].depth && cur(&doing[i])->kind == K_COMBAT
+		? &cur(&doing[i])->y : (int16_t *) NULL;
+}
+
+static const uint8_t *weapon_held(int i);
+
+/* The weapon it holds (on itself, melee), or NULL. */
+static const uint8_t *weapon_of(int i)
+{
+	int16_t *c = weapon_cache(i);
+	int v = i == avatar ? avatar_weapon : c != NULL ? *c : -1;
+
+	if (v < 0) {
+		const uint8_t *w = weapon_held(i);
+		v = w == NULL ? 0 : (int) ((w - weapons_dat - 1) / 21) + 1;
+		if (i == avatar)
+			avatar_weapon = v;
+		else if (c != NULL)
+			*c = (int16_t) v;
+	}
+	return v == 0 ? NULL : weapons_dat + 1 + (v - 1) * 21;
+}
+
+static const uint8_t *weapon_held(int i)
+{
+	int in = E_HELD_ON(npc[i].number);
+
+	for (int k = e_held_find(in, -1, -1, -1, -1); k >= 0; k = e_held_find(in, -1, -1, -1, k)) {
+		const uint8_t *w;
+		if (e_held_in(k) == in && (w = record(weapons_dat, 21, e_held_tf(k) & 0x3ff)) != NULL
+			&& (w[8] >> 1 & 3) == 0)
+			return w;
+	}
+	return NULL;
+}
+
+static int armour_held(int i);
+
+static int armour_of(int i)
+{
+	int16_t *c = i == avatar ? NULL : doing[i].depth && cur(&doing[i])->kind == K_COMBAT ? &doing[i].value : NULL;
+	int v = i == avatar ? avatar_armour + 1 : c != NULL ? *c : 0;
+
+	if (v <= 0) {
+		v = armour_held(i) + 1;
+		if (i == avatar)
+			avatar_armour = v - 1;
+		else if (c != NULL)
+			*c = (int16_t) v;
+	}
+	return v - 1;
+}
+
+static int armour_held(int i)
+{
+	int in = E_HELD_ON(npc[i].number), a = 0;
+	const uint8_t *m = record(monsters_dat, 25, npc[i].tf & 0x3ff), *r;
+
+	if (m != NULL)
+		a += m[6] >> 4;
+	for (int k = e_held_find(in, -1, -1, -1, -1); k >= 0; k = e_held_find(in, -1, -1, -1, k))
+		if (e_held_in(k) == in && (r = record(armor_dat, 10, e_held_tf(k) & 0x3ff)) != NULL)
+			a += (int8_t) r[2];
+	return a;
+}
+
+static int alignment(int i)
+{
+	return i == avatar || (npc[i].status & 0x0800) ? 1 : npc[i].status >> 3 & 3;
+}
+
+static int hostile(int a, int b)
+{
+	int x = alignment(a), y = alignment(b);
+
+	return x != 0 && y != 0 && x != y;
+}
+
+static int fighting(int i)
+{
+	return i >= 0 && !(npc[i].status & 0x8080);    /* (not dead, not out) */
+}
+
+static int reach_of(int i)
+{
+	const uint8_t *w = weapon_of(i), *m = record(monsters_dat, 25, npc[i].tf & 0x3ff);
+	int range = w != NULL ? w[8] >> 3 : m != NULL ? m[8] & 15 : 3;
+
+	return range >= 4 ? 2 : 1;
+}
+
+static void npc_place(int k, int *x, int *y)
+{
+	place_of(k, x, y);
+}
+
+/* Whether i fights k: hostile, standing (or, for the party, a monster lying helpless: finished). */
+static int foe(int i, int k)
+{
+	if (k < 0 || k == i || (npc[k].status & 0x8000) || !hostile(i, k))
+		return 0;
+	return !(npc[k].status & 0x0080) || (alignment(i) == 1 && alignment(k) != 1);
+}
+
+/* The nearest hostile within r cells of i, among those that act (the mover slots, the avatar). */
+static int nearest_foe(int i, int r)
+{
+	int best = -1, best_far = r * 2 + 2, x, y;
+
+	npc_place(i, &x, &y);
+	for (int s = 0; s < E_MOVERS; s++) {
+		int k = s == 0 ? avatar : slot_npc[s], kx, ky;
+		if (!foe(i, k))
+			continue;
+		npc_place(k, &kx, &ky);
+		int f = far_of(x, y, kx, ky) * 2 + ((npc[k].status & 0x0080) != 0);   /* (standing first) */
+		if (f < best_far) {
+			best_far = f;
+			best = k;
+		}
+	}
+	return best;
+}
+
+static void knock_out(int i);
+static void kill_npc(int i);
+
+/* i swings at k: hit or not, its damage done. */
+static void swing(int i, int k)
+{
+	const uint8_t *w = weapon_of(i), *m = record(monsters_dat, 25, npc[i].tf & 0x3ff);
+	int roll = rnd(30) + 1, str = npc[i].strength;
+
+	if (roll == 1 || (roll != 30 && roll + npc[i].combat + 6 - npc[k].combat < 15))
+		return;
+	int damage = w != NULL ? (int8_t) w[6] : m != NULL ? m[8] >> 4 : 1, d = 0;
+	if (str / 3 > 0)
+		d += 1 + rnd(str / 3);
+	if (damage > 0)
+		d += 1 + rnd(damage);
+	int armour = armour_of(k);
+	if (armour > 0)
+		d -= 1 + rnd(armour);
+	if (d <= 0) {
+		if (!(npc[k].status & 0x0080))
+			return;             /* (a harmless hit) */
+		d = (npc[k].strength / 3 > 0 ? rnd(npc[k].strength / 3) : 0) + 1;
+	}
+	int hp = (int8_t) npc[k].hit_points - d;
+	if (k == avatar && hp < 1)
+		hp = 1;                 /* (the avatar does not die yet) */
+	npc[k].hit_points = (uint8_t) (hp < -100 ? -100 : hp);
+	if (hp < -(npc[k].strength / 3))
+		kill_npc(k);
+	else if (hp <= 0 && !(npc[k].status & 0x0080))
+		knock_out(k);
+	else if (k != avatar && doing[k].depth && cur(&doing[k])->kind == K_COMBAT)
+		cur(&doing[k])->x = (int16_t) i;     /* it fights back at whoever hit it */
+}
+
+static void knock_out(int i)
+{
+	struct Doing *d = &doing[i];
+
+	npc[i].status |= 0x0080;
+	stop_walk(i);
+	d->script_len = 0;
+	d->pose = F_LIE;
+	show(i);
+	int s = in_slot(i);
+	if (s)
+		e_mover_set(s, npc[i].tf, npc[i].x, npc[i].y, npc[i].z);
+}
+
+/* The body it leaves (the original's BodyTable: its type, the body's shape and frame). */
+static const uint16_t bodies[120][3] = {
+	{ 721, 400, 1 }, { 989, 400, 2 }, { 445, 400, 3 }, { 446, 400, 4 }, { 318, 400, 5 }, { 448, 400, 6 },
+	{ 449, 400, 7 }, { 450, 400, 8 }, { 319, 400, 9 }, { 452, 400, 10 }, { 455, 400, 11 }, { 454, 400, 12 },
+	{ 451, 400, 13 }, { 456, 400, 14 }, { 457, 400, 15 }, { 458, 400, 16 }, { 459, 400, 17 }, { 460, 400, 18 },
+	{ 461, 400, 19 }, { 462, 400, 20 }, { 463, 400, 21 }, { 464, 400, 22 }, { 720, 400, 23 }, { 467, 400, 24 },
+	{ 468, 400, 25 }, { 469, 400, 26 }, { 265, 400, 27 }, { 304, 400, 28 }, { 864, 400, 29 }, { 471, 400, 30 },
+	{ 472, 400, 31 }, { 473, 414, 1 }, { 274, 414, 2 }, { 475, 414, 3 }, { 299, 414, 4 }, { 317, 414, 5 },
+	{ 477, 414, 6 }, { 382, 414, 7 }, { 952, 414, 8 }, { 957, 414, 9 }, { 478, 414, 10 }, { 479, 414, 11 },
+	{ 519, 414, 12 }, { 466, 414, 13 }, { 480, 414, 14 }, { 482, 414, 16 }, { 485, 414, 17 }, { 465, 414, 18 },
+	{ 487, 414, 19 }, { 488, 414, 20 }, { 489, 414, 21 }, { 490, 414, 22 }, { 617, 414, 23 }, { 229, 414, 27 },
+	{ 228, 414, 28 }, { 476, 778, 1 }, { 375, 778, 2 }, { 381, 778, 3 }, { 380, 778, 4 }, { 861, 778, 5 },
+	{ 501, 778, 6 }, { 504, 778, 7 }, { 505, 778, 8 }, { 727, 778, 9 }, { 533, 778, 10 }, { 500, 778, 11 },
+	{ 502, 778, 12 }, { 882, 892, 1 }, { 881, 892, 2 }, { 227, 892, 3 }, { 805, 892, 4 }, { 884, 892, 5 },
+	{ 929, 892, 6 }, { 946, 892, 7 }, { 806, 892, 8 }, { 534, 892, 9 }, { 394, 892, 10 }, { 447, 892, 11 },
+	{ 491, 892, 12 }, { 492, 892, 13 }, { 493, 892, 14 }, { 494, 892, 15 }, { 716, 892, 16 }, { 811, 892, 17 },
+	{ 495, 892, 18 }, { 506, 892, 19 }, { 498, 892, 20 }, { 499, 892, 21 }, { 496, 892, 24 }, { 784, 892, 25 },
+	{ 509, 377, 12 }, { 510, 892, 27 }, { 230, 892, 28 }, { 226, 892, 29 }, { 883, 762, 1 }, { 511, 762, 2 },
+	{ 337, 762, 3 }, { 513, 762, 4 }, { 532, 762, 5 }, { 514, 762, 6 }, { 517, 762, 7 }, { 354, 762, 8 },
+	{ 661, 762, 9 }, { 521, 762, 10 }, { 523, 762, 11 }, { 524, 762, 12 }, { 525, 762, 13 }, { 970, 762, 14 },
+	{ 528, 762, 16 }, { 529, 762, 17 }, { 530, 762, 18 }, { 865, 762, 19 }, { 753, 762, 20 }, { 537, 762, 21 },
+	{ 154, 762, 22 }, { 247, 762, 23 }, { 259, 762, 24 }, { 401, 762, 25 }, { 706, 762, 26 }, { 965, 400, 30 },
+};
+
+static void kill_npc(int i)
+{
+	int type = npc[i].tf & 0x3ff, shape = 400, frame = 0;
+	const uint8_t *m = record(monsters_dat, 25, type);
+	struct EThing t;
+
+	for (int k = 0; k < 120; k++)
+		if (bodies[k][0] == type) {
+			shape = bodies[k][1];
+			frame = bodies[k][2];
+		}
+	npc[i].status |= 0x8000;
+	stop_walk(i);
+	if ((m == NULL || !(m[9] & 0x10))
+		&& e_thing_add((uint16_t) (shape | frame << 10 | (npc[i].tf & 0x8000)), npc[i].x, npc[i].y, npc[i].z, &t)) {
+		/* what it carried, in its body */
+		int d = e_container_fill(&t), in = E_HELD_ON(npc[i].number);
+		for (int k = e_held_find(in, -1, -1, -1, -1); d >= 0 && k >= 0; k = e_held_find(in, -1, -1, -1, k))
+			if (e_held_in(k) == in)
+				e_held_place(k, E_HELD_WORLD(d), 0);
+	}
+	world_gone(i);
+}
+
+/* A combatant's turn (the K_COMBAT kind): 1 when its look or place changed. */
+static int combat_kind(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	int x, y, kx, ky;
+
+	if (!fighting(i))
+		return 0;
+	l->counter = (uint8_t) (l->counter + npc[i].dexterity > 56 ? 56 : l->counter + npc[i].dexterity);
+	int k = l->x;
+	if (l->state == 0 || k < 0 || k >= nnpc || !foe(i, k) || (k != avatar && !in_slot(k))) {
+		k = nearest_foe(i, 12);
+		l->x = (int16_t) k;
+		l->state = 1;
+	}
+	npc_place(i, &x, &y);
+	if ((npc[i].status & 0x0800) && (far_of(x, y, me_x, me_y) > 8 || d->walking != W_NONE)) {
+		/* a party member far off: back as when following (walked, or put past the screen) */
+		d->lost = 1;
+		return follow(i);
+	}
+	if (k < 0) {
+		/* none: a party member keeps near the avatar */
+		if ((npc[i].status & 0x0800) && far_of(x, y, me_x, me_y) > 3 && l->counter >= 16) {
+			l->counter -= 16;
+			return step(i, e_way_of(me_x - x, me_y - y));
+		}
+		return 0;
+	}
+	npc_place(k, &kx, &ky);
+	int far = far_of(x, y, kx, ky), w = e_way_of(kx - x, ky - y);
+	if (far <= reach_of(i)) {
+		if (l->counter < 24)
+			return 0;
+		l->counter -= 24;
+		face(i, w);
+		POST(i, P(F_READY), WAIT(1), P(F_RAISE1), WAIT(1), P(F_THRUST1), WAIT(1), P(F_STAND));
+		swing(i, k);
+		return show(i);
+	}
+	if (l->counter < 16)
+		return 0;
+	l->counter -= 16;
+	for (int t = 0; t < 3; t++)
+		if (step(i, (w + (t == 1 ? 1 : t == 2 ? 7 : 0)) & 7))
+			return 1;
+	return 0;
+}
+
+void kind_fight(int i, int on)
+{
+	stop_walk(i);
+	set_kind(i, on ? K_COMBAT : K_FOLLOW);
+	doing[i].value = 0;
+	doing[i].lost = !on;
+}
+
+int e_combat_mode(int on)
+{
+	if (on >= 0) {
+		combat_mode = (uint8_t) on;
+		for (int j = 1; uc_party(j) >= 0; j++)
+			if (fighting(uc_party(j)))
+				kind_fight(uc_party(j), on);
+		if (avatar >= 0)
+			doing[avatar].level[0].counter = 0;
+		avatar_weapon = avatar_armour = -1;    /* (worked out again: what it holds may change) */
+	}
+	return combat_mode;
+}
+
+int e_world_avatar_fight(int *dx, int *dy, uint16_t *tf)
+{
+	int i = avatar;
+
+	if (i < 0 || !combat_mode)
+		return 0;
+	struct Doing *d = &doing[i];
+	uint8_t *points = &d->level[0].counter;
+	*points = (uint8_t) (*points + npc[i].dexterity > 56 ? 56 : *points + npc[i].dexterity);
+	int k = nearest_foe(i, 10);
+	if (k < 0)
+		return 0;
+	int kx, ky;
+	npc_place(k, &kx, &ky);
+	int w = e_way_of(kx - me_x, ky - me_y);
+	face(i, w);
+	if (far_of(me_x, me_y, kx, ky) <= reach_of(i)) {
+		if (*points < 24)
+			return 0;
+		*points -= 24;
+		swing(i, k);
+		*tf = e_pose_frame(npc[i].tf & 0x3ff, d->dir, F_THRUST1);
+		return 2;
+	}
+	if (*points < 16)
+		return 0;
+	*points -= 16;
+	*dx = way_x[w];
+	*dy = way_y[w];
+	return 1;
+}
+
+int e_world_spawn(int type, int16_t x, int16_t y, uint8_t z)
+{
+	const uint8_t *m = record(monsters_dat, 25, type);
+
+	if (nnpc >= MOST_NPCS || m == NULL)
+		return -1;
+	int i = nnpc++;
+	struct ENpc *p = &npc[i];
+	memset(p, 0, sizeof *p);
+	p->tf = (uint16_t) type;
+	p->x = x;
+	p->y = y;
+	p->z = z;
+	p->strength = m[2] >> 2;
+	p->dexterity = m[3] >> 2;
+	p->intelligence = m[4] >> 2;
+	p->combat = m[5] >> 2;
+	p->hit_points = p->strength;
+	p->status = (uint16_t) ((m[5] & 3) << 3);
+	p->activity = K_COMBAT;
+	p->number = (uint16_t) (1000 + i);
+	memset(&doing[i], 0, sizeof doing[i]);
+	doing[i].door = doing[i].route = -1;
+	kind_init(i);
+	return i;
 }
 
 /* ---- the avatar put in a chair or a bed by the usecode ---- */
@@ -3590,6 +4196,8 @@ int kind_tick(int i)
 	case K_WANDER: return wander(i);
 	case K_SHOP: return shop(i);
 	case K_SLEEP: return sleep_kind(i);
+	case K_FOLLOW: return follow(i);
+	case K_COMBAT: return combat_kind(i);
 	case K_MAJOR_SIT: return major_sit(i);
 	case K_EAT_INN: return eat_inn(i);
 	case K_EAT: return eat(i);

@@ -296,6 +296,7 @@ int e_uc_resume(const char *answer);
 int e_uc_number(int *low, int *high, int *step, int *initial);
 int e_uc_resume_number(int value);
 int e_uc_strength(int number);          /* NPC number's strength (0: none) */
+int e_uc_join(int number);              /* NPC number into the party (as JoinParty): 1 */
 /* The items' scripts (Post) a tick on (the original's: about 8 a second); a function they or the
  * schedules asked to be run, taken: 1 and it (run it through e_talk_start_ref); whether the
  * usecode has faded the screen out (FadePalette). */
@@ -439,6 +440,18 @@ void e_world_advance(int m);
 void e_world_avatar_place(int16_t x, int16_t y, uint8_t z, int dir);
 int e_world_avatar_pose(int16_t *x, int16_t *y, uint8_t *z, uint16_t *tf);
 void e_world_avatar_stand(void);
+/* Combat (kinds.c): its data files read into room (WEAPONS, ARMOR, MONSTERS: 4.5 KB) by
+ * e_init; the party into combat mode or out of it (-1: only asked), whether it is; in combat,
+ * the avatar's own turn when the pad leaves it be: 0 nothing, 1 a step (dx, dy), 2 a swing (tf
+ * the frame to show); a monster of type put at x, y, z fighting (its NPC index, or -1). */
+#define E_COMBAT_ROOM (4608)
+void e_combat_memory(void *room, uint32_t size);
+uint32_t e_pool_size(void);             /* the shapes' pool e_init left (bytes) */
+int e_combat_mode(int on);
+int e_world_avatar_fight(int *dx, int *dy, uint16_t *tf);
+int e_world_spawn(int type, int16_t x, int16_t y, uint8_t z);
+/* The party's step after the avatar's (moved: it stepped; else it stood a step's time). */
+void e_world_party_step(int moved);
 /* The number of the NPC in mover slot s (0: the avatar), or -1. */
 int e_world_mover_npc(int s);
 /* The time of day, in minutes from midnight. */

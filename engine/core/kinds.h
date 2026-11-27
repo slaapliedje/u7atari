@@ -59,6 +59,7 @@
 #define K_FILL_TROUGH 39
 #define K_CHECK_LIGHT 45
 #define K_CHECK_SHUTTERS 51
+#define K_FOLLOW 31             /* the party's: following the avatar */
 
 /* a level of what an NPC does: a kind pushed over another runs, then the other goes on (as the
  * original's schedule stack): its state, its two arguments, a counter */
@@ -101,6 +102,7 @@ struct Doing {
 	uint8_t spot_z;
 	uint8_t pc, script_len, loops, mark;
 	uint8_t script[30];         /* a script of poses and waits (kinds.c's S_ ops) */
+	uint8_t lost;               /* a party member too far from its place (walks, or is put, back) */
 };
 
 extern struct Doing doing[MOST_NPCS];
@@ -122,6 +124,7 @@ int in_slot(int i);
 int start_path(int i, int x, int y, int z, int limit);
 /* To its schedule's place (planned and walked as world.c does it; put there when far). */
 void start_place(int i);
+void stop_walk(int i);          /* its walk given up (a door it opened shut behind it) */
 
 /* kinds.c */
 int kind_tick(int i);           /* the next thing it does: 1 when its look or place changed */
@@ -140,7 +143,14 @@ void kind_avatar_stand(void);
 int kind_avatar_moved(void);
 int kind_avatar_posed(void);    /* sitting or in bed (its place the usecode's, not the pad's) */
 
+void kind_join(int i, int on);  /* into the party (following the avatar), or out of it */
+void kind_party_step(int moved);        /* the party's step after the avatar's (or its pause) */
+void kind_fight(int i, int on); /* a party member into combat, or back to following */
+void world_gone(int i);         /* dead: out of the mover slots and the party */
+
 /* usecode.c */
 void uc_world_init(void);       /* the party: the avatar alone */
+int uc_party(int j);            /* party member j's NPC index (0: the avatar), or -1 */
+void uc_party_leave(int i);     /* out of the party (dead) */
 
 #endif

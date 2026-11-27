@@ -326,9 +326,14 @@ static void pick(int16_t x, int16_t y)
 	static int16_t near[E_MOVERS];
 	int nnear = 0;
 
+	/* the party first, wherever it is */
+	for (int j = 1; uc_party(j) >= 0 && nnear < E_MOVERS - 1; j++) {
+		far[nnear] = -1;
+		near[nnear++] = (int16_t) uc_party(j);
+	}
 	for (int i = 0; i < nnpc; i++) {
 		int dx = npc[i].x - x, dy = npc[i].y - y;
-		if (npc[i].number == 0 || dx < -48 || dx > 48 || dy < -40 || dy > 40)
+		if (npc[i].number == 0 || (npc[i].status & 0x8800) || dx < -48 || dx > 48 || dy < -40 || dy > 40)
 			continue;
 		int32_t dist = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
 		int at = nnear < E_MOVERS - 1 ? nnear++ : E_MOVERS - 2;
@@ -370,7 +375,7 @@ static void new_period(int p)
 {
 	for (int i = 0; i < nnpc; i++) {
 		const uint8_t *e = entry_at(npc[i].number, p);
-		if (e == NULL || npc[i].number == 0)
+		if (e == NULL || npc[i].number == 0 || (npc[i].status & 0x0800))
 			continue;
 		struct Doing *d = &doing[i];
 		drop_route(d);
@@ -613,6 +618,8 @@ void e_world_step(uint32_t blanks, int16_t x, int16_t y)
 			continue;
 		e_mover_self(s);
 		int changed = doing[i].walking ? walk(i) : kind_tick(i);
+		if (doing[i].walking && doing[i].lost && doing[i].wait > STEP_BLANKS / 3)
+			doing[i].wait = STEP_BLANKS / 3;    /* (lost party: back at a run, as the original's) */
 		e_mover_self(-1);
 		mind_door(i);
 		if (changed)
@@ -679,4 +686,28 @@ int e_world_avatar_pose(int16_t *x, int16_t *y, uint8_t *z, uint16_t *tf)
 void e_world_avatar_stand(void)
 {
 	kind_avatar_stand();
+}
+
+void e_world_party_step(int moved)
+{
+	kind_party_step(moved);
+}
+
+void stop_walk(int i)
+{
+	shut_behind(&doing[i]);
+	drop_route(&doing[i]);
+	doing[i].walking = W_NONE;
+}
+
+void world_gone(int i)
+{
+	int s = in_slot(i);
+
+	if (s) {
+		slot_npc[s] = -1;
+		e_mover_set(s, 0, 0, 0, 0);
+	}
+	if (npc[i].status & 0x0800)
+		uc_party_leave(i);
 }
