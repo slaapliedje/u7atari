@@ -32,6 +32,8 @@ static const int16_t box_bottom[2] = { 70, 202 };
 #define PAGE_LINES 3            /* lines a page shows, as the original's break gives them */
 #define LINE_TEXT 96
 #define MOST_ANSWERS 40
+#define SLIDER_X 104            /* where the usecode's slider is put (the original's) */
+#define SLIDER_Y 57
 
 static int status;              /* E_UC_ the usecode stopped with, or E_UC_DONE: none */
 static uint32_t changes;        /* counts what changes the picture */
@@ -43,6 +45,7 @@ static int nlines[2];
 static const char *answers[MOST_ANSWERS];
 static int nanswers, picked;
 static struct { int16_t x, line; } spot[MOST_ANSWERS];
+static int low, high, step, value;      /* a number asked for (the original's slider) */
 
 /* Lays out the next page of said from page_at: its lines into the place's, page_next set. */
 static void make_page(void)
@@ -69,6 +72,8 @@ static void make_page(void)
 			}
 			if (c == ' ')
 				space = k;
+			else if (n >= PAGE_LINES)
+				;               /* (a line past the page: no place to cut it) */
 			else if (c == ',' || c == ':' || c == ';')
 				cut_punct = k + 1;
 			else if (c == '.' || c == '!' || c == '?')
@@ -82,14 +87,16 @@ static void make_page(void)
 			line_start[n] = at;
 			line_end[n] = end;
 			n++;
+			next = end + 1;
 			if (said[end] == '~') {
-				cut_line = end + 1;
-				next = end + 1;
-			} else if (said[end] == '*') {
-				page_next = end + 1 < len ? end + 1 : -1;
-				break;
-			} else
-				break;          /* the end */
+				if (n <= PAGE_LINES)
+					cut_line = end + 1;
+			} else {
+				if (n <= PAGE_LINES) {
+					page_next = said[end] == '*' && end + 1 < len ? end + 1 : -1;
+					break;
+				}
+			}
 		} else {
 			int brk = space > at ? space : k;
 			line_start[n] = at;
@@ -100,7 +107,7 @@ static void make_page(void)
 		at = next;
 		if (n > PAGE_LINES) {
 			/* runs over: cut at the last line break, sentence, mark, else after the lines */
-			int cut = cut_line > page_at && cut_line <= line_end[PAGE_LINES - 1] ? cut_line
+			int cut = cut_line > page_at && cut_line <= line_end[PAGE_LINES - 1] + 1 ? cut_line
 				: cut_sentence > page_at && cut_sentence <= line_end[PAGE_LINES - 1] ? cut_sentence
 				: cut_punct > page_at && cut_punct <= line_end[PAGE_LINES - 1] ? cut_punct
 				: line_start[PAGE_LINES];
@@ -175,6 +182,10 @@ static void took(int r)
 	} else if (r == E_UC_ASK) {
 		picked = 0;
 		lay_out();
+	} else if (r == E_UC_NUMBER) {
+		e_uc_number(&low, &high, &step, &value);
+		if (value < low)
+			value = low;
 	}
 }
 
@@ -219,6 +230,16 @@ void e_talk_key(int key)
 			make_page();
 		} else
 			took(e_uc_resume(NULL));
+		return;
+	}
+	if (status == E_UC_NUMBER) {
+		/* the slider: left (down) and right (up) a step, within its range; A takes it */
+		if (key == E_KEY_NEXT)
+			took(e_uc_resume_number(value));
+		else if ((key == E_KEY_LEFT || key == E_KEY_DOWN) && value - step >= low)
+			value -= step;
+		else if ((key == E_KEY_RIGHT || key == E_KEY_UP) && value + step <= high)
+			value += step;
 		return;
 	}
 	if (status != E_UC_ASK || nanswers == 0)
@@ -274,6 +295,28 @@ void e_talk_draw(struct ESurface *frame)
 		for (int i = 0; i < nlines[place]; i++)
 			if (box_top[place] + i * lh < box_bottom[place])
 				e_draw_text(frame, BOX_LEFT, (int16_t) (box_top[place] + i * lh), lines[place][i], LINE_TEXT);
+	}
+	if (status == E_UC_NUMBER) {
+		/* the original's slider: its back, the thumb along a line 55 long from 36 in, the
+		 * buttons, the number in font 2 */
+		int16_t x = SLIDER_X, y = SLIDER_Y, sw, sh;
+		char n[8];
+		e_draw_gump(NULL, 14, 0, 0, 0, &sw, &sh);
+		if (sw + x > 319)
+			x = (int16_t) (319 - sw);
+		if (sh + y > 199)
+			y = (int16_t) (199 - sh);
+		int left = x + 36, range = high - low;
+		int thumb = range <= 0 ? left : (int) ((55L * (value - low) + (long) left * range) / range);
+		e_draw_gump(frame, 14, 0, x, y, NULL, NULL);
+		e_draw_gump(frame, 15, 0, (int16_t) thumb, (int16_t) (y + 6), NULL, NULL);
+		e_draw_gump(frame, 13, 0, (int16_t) (x + 128), (int16_t) (y + 16), NULL, NULL);
+		e_draw_gump(frame, 2, 0, (int16_t) (x + 21), (int16_t) (y + 18), NULL, NULL);
+		e_draw_gump(frame, 17, 0, (int16_t) (x + 31), (int16_t) (y + 14), NULL, NULL);
+		e_draw_gump(frame, 16, 0, (int16_t) (x + 103), (int16_t) (y + 14), NULL, NULL);
+		snprintf(n, sizeof n, "%d", value);
+		e_draw_small(frame, (int16_t) (x + 108), (int16_t) (y + 15), n);
+		return;
 	}
 	if (status != E_UC_ASK)
 		return;

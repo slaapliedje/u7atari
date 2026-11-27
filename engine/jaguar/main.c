@@ -65,6 +65,10 @@ extern uint8_t *volatile jag_prof_end;
 extern volatile uint32_t jag_prof_mask;
 extern volatile uint32_t jag_prof_pit;
 extern volatile uint16_t jag_int_enable;
+#if defined JAG_PROF_FRAMES && !defined ENGINE_PROFILE
+#define ENGINE_PROFILE
+#endif
+#ifdef ENGINE_PROFILE           /* (-DENGINE_PROFILE: its 116K are wanted for the store else) */
 #ifdef JAG_PROF_FRAMES
 #define PROFILE_RECORD 260      /* and 32 return addresses up the frame pointers' chain */
 #define PROFILE_SAMPLES 450
@@ -74,6 +78,7 @@ extern volatile uint16_t jag_int_enable;
 #endif
 static uint8_t profile[PROFILE_SAMPLES * PROFILE_RECORD] __attribute__((aligned(4)));
 static int profile_saved;
+#endif
 
 /* The tour scrolls a cell every SCROLL_FRAMES frames (1: 60 cells a second, far past walking) */
 #ifndef SCROLL_FRAMES
@@ -101,7 +106,7 @@ static int16_t view_sx, view_sy;
 #define FRAMES 3
 #endif
 static uint8_t frames[FRAMES][W * H] __attribute__((aligned(16)));
-static uint8_t store[1396 * 1024] __attribute__((aligned(8)));
+static uint8_t store[1492 * 1024] __attribute__((aligned(8)));
 static uint8_t row_table[H * 4];
 static struct ESurface surfaces[FRAMES] = {
 	{ frames[0], W, W, H, row_table }, { frames[1], W, W, H, row_table },
@@ -912,10 +917,10 @@ static void walk_update(void)
 		uint32_t held = pad(), pressed = held & ~was_held;
 		was_held = held;
 #ifdef ENGINE_TALK_TEST
-		/* Iolo's conversation, two seconds in (to see one shown) */
+		/* NPC ENGINE_TALK_TEST's conversation (-DENGINE_TALK_TEST alone: Iolo's), two seconds in */
 		static int frames_in;
 		if (++frames_in == 40)
-			e_talk_start(1);
+			e_talk_start(ENGINE_TALK_TEST);
 #endif
 		if (e_talk_active()) {
 			/* talking: A on (or the answer picked), the pad moves the pointer; the world waits */
@@ -1078,8 +1083,10 @@ void jag_main(void)
 	REG16(0xF00052) = 718;
 	jag_int_enable = 1 | 8;
 	jag_prof_pit = 1;
+#ifdef ENGINE_PROFILE
 	jag_prof_end = profile + sizeof profile;
 	jag_prof_next = profile;
+#endif
 #ifdef ENGINE_ROUTE_BENCH
 	route_bench();
 #endif
@@ -1117,6 +1124,7 @@ void jag_main(void)
 				walker[m].y, 0);
 		}
 #endif
+#ifdef ENGINE_PROFILE
 		if (!profile_saved && jag_prof_next >= jag_prof_end) {
 			uint16_t f = GD_FOpen("U7/PCPROF.BIN", GD_FOPEN_WRITE | GD_FOPEN_CREATE_ALWAYS);
 			profile_saved = 1;
@@ -1126,6 +1134,7 @@ void jag_main(void)
 				GD_DebugString("profile saved\n");
 			}
 		}
+#endif
 		/* talking, the world waits: once each frame holds what it shows, nothing is drawn
 		 * till it changes (the letters, a shape each, would halve the frame rate) */
 		static uint32_t talk_seen, talk_drawn;

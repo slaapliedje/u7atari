@@ -429,6 +429,20 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 				r = e_uc_resume(NULL);
 				continue;
 			}
+			if (r == E_UC_NUMBER) {
+				/* a number: "#n" next in the list, else the first offered */
+				int lo, hi, step, init, v;
+				e_uc_number(&lo, &hi, &step, &init);
+				v = init;
+				if (next != NULL && *next == '#') {
+					v = atoi(next + 1);
+					const char *c = strchr(next, ',');
+					next = c ? c + 1 : NULL;
+				}
+				printf("  number %d to %d by %d (%d): > %d\n", lo, hi, step, init, v);
+				r = e_uc_resume_number(v);
+				continue;
+			}
 			const char *list[40];
 			char pick[64] = "";
 			int n = e_uc_answers(list, 40);
@@ -466,7 +480,8 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 			printf("> %s\n", pick);
 			r = e_uc_resume(pick);
 		}
-		printf("(conversation over)\n");
+		printf("(conversation over; the avatar's gold %d, held items %d)\n",
+			e_held_count(E_HELD_ON(0), 644, -1, -1), e_held_used());
 		return;
 	}
 	if (path || route_x >= 0)

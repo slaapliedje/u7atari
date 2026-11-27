@@ -39,6 +39,7 @@ struct EStats e_stats;
 
 static inline uint16_t rd16(const uint8_t *p) { return (uint16_t) (p[0] | p[1] << 8); }
 static inline int16_t rds16(const uint8_t *p) { return (int16_t) rd16(p); }
+static inline void wr16(uint8_t *p, uint16_t v) { p[0] = (uint8_t) v; p[1] = (uint8_t) (v >> 8); }
 static inline uint32_t rd32(const uint8_t *p)
 {
 	return (uint32_t) p[0] | (uint32_t) p[1] << 8 | (uint32_t) p[2] << 16 | (uint32_t) p[3] << 24;
@@ -1907,6 +1908,11 @@ int e_shape_frames(uint16_t type)
 	return s == NULL || type < TILE_TYPES ? 0 : (int) (s[1] / 4 - 1);
 }
 
+int e_shape_class(int type)
+{
+	return type >= 0 && type < 1024 ? info[type].cls : 0;
+}
+
 int e_thing_ref(const struct EThing *t)
 {
 	int d = thing_handle(t);
@@ -2293,6 +2299,142 @@ void e_draw_pointer(struct ESurface *frame, int fr, int16_t x, int16_t y)
 	}
 }
 
+/* ---- gumps (GUMPS.VGA: the slider's), read in as wanted, a few kept; font 2 (its numbers) ---- */
+
+#define GUMP_ROOM (8 * 1024)
+#define GUMPS_KEPT 8
+static uint8_t *gump_room, *font2;
+static uint32_t gump_used;
+static struct { int16_t n; uint32_t at; } gumps_kept[GUMPS_KEPT];
+static int ngumps_kept;
+
+static void open_gumps(void)
+{
+	static struct Flex fonts;
+	uint32_t made;
+
+	gump_room = take(GUMP_ROOM);
+	if (flex_open(&fonts, "STATIC", "FONTS.VGA") < 0 || fonts.count < 3) {
+		if (fonts.f >= 0)
+			plat_file_close(fonts.f);
+		return;
+	}
+	uint32_t at = fonts.table[2 * 2], size = fonts.table[2 * 2 + 1];
+	int ok = size != 0 && size <= SCRATCH && read_at(fonts.f, at, scratch, size);
+	plat_file_close(fonts.f);
+	if (ok && (made = e_convert_shape(scratch, size, NULL, 0)) != 0
+		&& (font2 = take(made + E_CONVERT_SLACK)) != NULL
+		&& !convert_into(scratch, size, font2, made + E_CONVERT_SLACK))
+		font2 = NULL;
+}
+
+/* A raw shape's hot spot moved dx to the right (its spans' offsets and boxes changed), so one
+ * wider than the converter's offsets reach converts; 1 when it walked it whole. */
+static int shift_raw(uint8_t *s, uint32_t size, int dx)
+{
+	uint32_t first = rd32(s + 4), frames = (first - 4) / 4;
+
+	for (uint32_t f = 0; f < frames; f++) {
+		uint32_t p = rd32(s + 4 + f * 4);
+		if (p + 8 > size)
+			return 0;
+		int16_t right = rds16(s + p), left = rds16(s + p + 2);
+		wr16(s + p, (uint16_t) (right - dx));
+		wr16(s + p + 2, (uint16_t) (left + dx));
+		for (p += 8;;) {
+			if (p + 2 > size)
+				return 0;
+			uint16_t head = rd16(s + p);
+			if (head == 0)
+				break;
+			if (p + 6 > size)
+				return 0;
+			int len = head >> 1;
+			wr16(s + p + 2, (uint16_t) (rds16(s + p + 2) - dx));
+			p += 6;
+			if (!(head & 1)) {
+				p += (uint32_t) len;
+				continue;
+			}
+			for (int pos = 0; pos < len && p < size;) {
+				int c = s[p] >> 1, fill = s[p] & 1;
+				p += 1 + (fill ? 1u : (uint32_t) c);
+				pos += c;
+			}
+		}
+	}
+	return 1;
+}
+
+static int16_t gump_shift[GUMPS_KEPT];
+
+static const uint8_t *gump_shape(int n)
+{
+	uint8_t head[8];
+
+	for (int k = 0; k < ngumps_kept; k++)
+		if (gumps_kept[k].n == n)
+			return gump_room + gumps_kept[k].at;
+	if (gump_room == NULL)
+		return NULL;
+	int16_t f = open_file("STATIC", "GUMPS.VGA");
+	if (f < 0)
+		return NULL;
+	int ok = read_at(f, 0x80 + 8 * (uint32_t) n, head, 8);
+	uint32_t at = rd32(head), size = rd32(head + 4);
+	ok = ok && size > 0 && size <= SCRATCH && read_at(f, at, scratch, size);
+	plat_file_close(f);
+	uint32_t made = ok ? e_convert_shape(scratch, size, NULL, 0) : 0;
+	int dx = 0;
+	if (made == 0 && ok && shift_raw(scratch, size, 64)) {
+		/* too wide for the converter's offsets from its hot spot: moved in */
+		dx = 64;
+		made = e_convert_shape(scratch, size, NULL, 0);
+	}
+	if (made == 0 || made + E_CONVERT_SLACK > GUMP_ROOM)
+		return NULL;
+	if (ngumps_kept == GUMPS_KEPT || gump_used + made + E_CONVERT_SLACK > GUMP_ROOM)
+		ngumps_kept = 0, gump_used = 0;     /* full: all given way */
+	if (!convert_into(scratch, size, gump_room + gump_used, made + E_CONVERT_SLACK))
+		return NULL;
+	gump_shift[ngumps_kept] = (int16_t) dx;
+	gumps_kept[ngumps_kept].n = (int16_t) n;
+	gumps_kept[ngumps_kept++].at = gump_used;
+	gump_used = (gump_used + made + E_CONVERT_SLACK + 7) & ~7u;
+	return gump_room + gumps_kept[ngumps_kept - 1].at;
+}
+
+void e_draw_gump(struct ESurface *frame, int n, int fr, int16_t x, int16_t y, int16_t *w, int16_t *h)
+{
+	static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
+	const uint8_t *g = gump_shape(n);
+	const int16_t *f = shape_frame(g, fr);
+
+	for (int k = 0; k < ngumps_kept && g != NULL; k++)
+		if (gump_room + gumps_kept[k].at == g)
+			x = (int16_t) (x + gump_shift[k]);     /* (its hot spot moved in) */
+	if (w != NULL)
+		*w = f != NULL ? (int16_t) (f[0] + f[1] + 1) : 0;
+	if (h != NULL)
+		*h = f != NULL ? (int16_t) (f[2] + f[3] + 1) : 0;
+	if (f != NULL && frame != NULL)
+		eb_shape(frame, whole, (const uint32_t *) (f + 4), x, y, 0);
+}
+
+void e_draw_small(struct ESurface *frame, int16_t x, int16_t y, const char *s)
+{
+	static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
+
+	/* font 2 as the slider sets it: no spacing, so a letter steps its width */
+	for (; *s; s++) {
+		const int16_t *f = shape_frame(font2, (uint8_t) *s);
+		if (f == NULL)
+			continue;
+		eb_shape(frame, whole, (const uint32_t *) (f + 4), (int16_t) (x + f[1]), y, 0);
+		x = (int16_t) (x + f[0] + f[1] + 1);
+	}
+}
+
 int e_letter_width(uint8_t c)
 {
 	const int16_t *f = letter(c);
@@ -2394,6 +2536,7 @@ int e_npcs(struct ENpc *out, int max)
 		&& (npc_file = open_file("GAMEDAT", "NPC.DAT")) < 0)
 		return 0;
 	npc_at = npc_have = npc_used = 0;
+	e_held_clear();
 	if (!npc_bytes(rec, 4)) {
 		plat_file_close(npc_file);
 		return 0;
@@ -2404,8 +2547,10 @@ int e_npcs(struct ENpc *out, int max)
 		 * NPC's own: .., its item (0: not on the map), status */
 		uint16_t tf = rd16(rec + 2), ref = rd16(rec + 14), status = rd16(rec + 16);
 		if (ref != 0 && (tf & 0x3ff) != 0 && rd16(rec + 4) != 0) {
-			/* what it carries, as a region's movable items: levels ended by 0 or 1 */
-			int depth = 0;
+			/* what it carries, as a region's movable items: levels ended by 0 or 1; each kept
+			 * (e_held_), in the NPC or the container it is in */
+			int depth = 0, in[8];
+			in[0] = E_HELD_ON(i);
 			for (;;) {
 				int l = npc_byte();
 				uint8_t item[18];
@@ -2418,8 +2563,14 @@ int e_npcs(struct ENpc *out, int max)
 				}
 				if ((l != 6 && l != 12 && l != 18) || !npc_bytes(item, l))
 					goto done;
-				if (l >= 12 && rd16(item + 4) != 0)
+				/* its quality: a plain one's sixth byte, a container's eighth */
+				int k = e_held_add(rd16(item + 2), l == 6 ? item[5] : l == 12 ? item[7] : 0,
+					in[depth < 8 ? depth : 7]);
+				if (l >= 12 && rd16(item + 4) != 0) {
 					depth++;
+					if (depth < 8)
+						in[depth] = k >= 0 ? k : in[depth - 1];
+				}
 			}
 		}
 		if (ref == 0 || (tf & 0x3ff) == 0 || (status & 0x8000) || n >= max)
@@ -2837,6 +2988,7 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 	open_sounds();
 	open_text();
 	open_faces();
+	open_gumps();
 	{
 		/* the usecode's rooms, when there is usecode to run */
 		int16_t f = open_file("STATIC", "USECODE");

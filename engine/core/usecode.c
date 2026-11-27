@@ -492,7 +492,8 @@ static struct Run {
 	int answered;
 	char answer[64];
 	int waiting;                /* E_UC_ what it waits for */
-	int wait_kind;              /* the intrinsic waiting (0x0a, 0x0b) or 0 for a converse */
+	int wait_kind;              /* the intrinsic waiting (0x0a, 0x0b, 0x0c) or 0 for a converse */
+	int16_t number[4];          /* a number asked for: low, high, step, initial */
 	char say[UC_SAY];
 	int speaker, speaker_frame;
 	int face[2], face_frame[2], speaking;      /* the two places faces are shown in */
@@ -590,11 +591,50 @@ static int thing_of(int ref, struct EThing *t)
 	return ref > 0 && ref < 0x4000 && e_ref_thing(ref, t);
 }
 
-/* Where what ref refers to is (an NPC, the avatar where the world step has it; an item): 1. */
+/* What NPCs carry (held.c): their numbers from HELD_REF up. */
+#define HELD_REF 0x4000
+#define NOWHERE (-32768)
+static int dragged = -1;        /* the item made or taken up, to be put somewhere (the original's
+                                 * item being dragged), or -1 */
+
+static int held_of(int ref)
+{
+	return ref >= HELD_REF && e_held_ok(ref - HELD_REF) ? ref - HELD_REF : -1;
+}
+
+static int ref_of_held(int i)
+{
+	return i < 0 ? 0 : HELD_REF + i;
+}
+
+/* Where ref puts what it is given (e_held_'s in: an NPC, a held container), or NOWHERE. */
+static int in_of_ref(int ref)
+{
+	int k = npc_of_ref(ref), i = held_of(ref);
+
+	return k >= 0 ? E_HELD_ON(npc[k].number) : i >= 0 ? i : NOWHERE;
+}
+
+/* The strength of the NPC that what is put in "in" comes to (0: none). */
+static int strength_for(int in)
+{
+	int owner = in <= E_HELD_ON(0) ? E_HELD_ON(0) - in : e_held_owner(in);
+
+	for (int k = 0; k < nnpc && owner >= 0; k++)
+		if (npc[k].number == owner)
+			return npc[k].strength;
+	return 0;
+}
+
+/* Where what ref refers to is (an NPC, the avatar where the world step has it; an item, a held
+ * one where its NPC is): 1. */
 static int place_of_ref(int ref, int *x, int *y, int *z)
 {
 	int k = npc_of_ref(ref);
 	struct EThing t;
+
+	if (held_of(ref) >= 0 && e_held_owner(held_of(ref)) >= 0)
+		k = npc_of_ref(e_held_owner(held_of(ref)) == 0 ? UC_AVATAR : -e_held_owner(held_of(ref)));
 
 	if (k < 0 && thing_of(ref, &t)) {
 		*x = t.x;
@@ -865,10 +905,177 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 				*p = (uint8_t) (*p + arg_int(args, 3));
 		}
 		return 0;
-	case 0x28:                  /* CountObjects (the avatar's belongings: not yet) */
-	case 0x67:                  /* WearingFellowship (likewise) */
-		*ret = val_int(0);
+	case 0x28: {                /* CountObjects: in an NPC, a container or the party; type,
+	                             * quality, frame (UC_ALL: any) */
+		int who = arg_int(args, 1), type = arg_int(args, 2), q = arg_int(args, 3), f = arg_int(args, 4);
+		int n = 0;
+		type = type == UC_ALL ? -1 : type;
+		q = q == UC_ALL ? -1 : q;
+		f = f == UC_ALL ? -1 : f;
+		if (who == UC_PARTY)
+			for (k = 0; k < nparty; k++)
+				n += e_held_count(E_HELD_ON(npc[party[k]].number), type, q, f);
+		else if (in_of_ref(who) != NOWHERE)
+			n = e_held_count(in_of_ref(who), type, q, f);
+		*ret = val_int(n);
 		return 0;
+	}
+	case 0x2a: {                /* GetContItems: container, type, quality, frame */
+		int in = in_of_ref(arg_int(args, 1)), type = arg_int(args, 2), q = arg_int(args, 3);
+		int f = arg_int(args, 4), n = 0;
+		int16_t refs[48];
+		type = type == UC_ALL ? -1 : type;
+		q = q == UC_ALL ? -1 : q;
+		f = f == UC_ALL ? -1 : f;
+		for (k = in == NOWHERE ? -1 : e_held_find(in, type, q, f, -1); k >= 0 && n < 48;
+			k = e_held_find(in, type, q, f, k))
+			refs[n++] = (int16_t) ref_of_held(k);
+		struct Atom *t = val_list(ret, n);
+		for (k = 0; t != NULL && k < n; k++) {
+			t[k].type = A_INT;
+			t[k].n = refs[k];
+			t[k].s = NULL;
+		}
+		return 0;
+	}
+	case 0x2b: {                /* RemovePartyItems: count, type, quality, frame; 0 when the
+	                             * party has too few */
+		int count = arg_int(args, 1), type = arg_int(args, 2), q = arg_int(args, 3), f = arg_int(args, 4);
+		int have = 0;
+		q = q == UC_ALL ? -1 : q;
+		f = f == UC_ALL ? -1 : f;
+		for (k = 0; k < nparty; k++)
+			have += e_held_count(E_HELD_ON(npc[party[k]].number), type, q, f);
+		if (have < count) {
+			*ret = val_int(0);
+			return 0;
+		}
+		for (k = 0; k < nparty && count > 0; k++) {
+			int in = E_HELD_ON(npc[party[k]].number), i;
+			while (count > 0 && (i = e_held_find(in, type, q, f, -1)) >= 0) {
+				int n = e_held_quantity(i);
+				if (n <= count) {
+					count -= n;
+					e_held_remove(i);
+				} else {
+					e_held_set_quantity(i, n - count);
+					count = 0;
+				}
+			}
+		}
+		*ret = val_int(1);
+		return 0;
+	}
+	case 0x2c: {                /* AddPartyItems: count, type, quality, frame, temporary; the
+	                             * members who took some (a stack of at most 100 at a time,
+	                             * each to the first who can carry it) */
+		int count = arg_int(args, 1), type = arg_int(args, 2) & 0x3ff, q = arg_int(args, 3);
+		int f = arg_int(args, 4), member = 0, mask = 0, n = 0;
+		int16_t refs[PARTY_MOST];
+		f = f == UC_ALL ? 0 : f;
+		q = q == UC_ALL ? 0 : q;
+		if (count <= 0) {
+			*ret = val_int(1);
+			return 0;
+		}
+		if (f >= e_shape_frames((uint16_t) type))
+			f = 0;
+		while (count > 0 && member < nparty) {
+			int counted = e_shape_class(type) == 3, amount = counted ? (count > 100 ? 100 : count) : 1;
+			int i = e_held_add((uint16_t) (type | f << 10), (uint8_t) (counted ? 0x80 : q), E_HELD_LOOSE);
+			if (i < 0)
+				break;
+			if (counted)
+				e_held_set_quantity(i, amount);
+			int in = E_HELD_ON(npc[party[member]].number);
+			if (e_held_place(i, in, strength_for(in)) != 0) {
+				e_held_remove(i);
+				member++;
+			} else {
+				mask |= 1 << member;
+				count -= amount;
+			}
+		}
+		for (k = nparty - 1; k >= 0; k--)
+			if (mask & 1 << k)
+				refs[n++] = (int16_t) ref_of_npc(party[k]);
+		if (n == 0) {
+			*ret = val_int(0);
+			return 0;
+		}
+		struct Atom *t = val_list(ret, n);
+		for (k = 0; t != NULL && k < n; k++) {
+			t[k].type = A_INT;
+			t[k].n = refs[k];
+			t[k].s = NULL;
+		}
+		return 0;
+	}
+	case 0x24:                  /* CreateNewObject: type; it is then the one to put somewhere */
+		if (e_held_ok(dragged) && e_held_in(dragged) == E_HELD_LOOSE)
+			e_held_remove(dragged);
+		dragged = e_held_add((uint16_t) (arg_int(args, 1) & 0x3ff), 0, E_HELD_LOOSE);
+		if (dragged >= 0 && e_shape_class(arg_int(args, 1) & 0x3ff) == 3)
+			e_held_set_quality(dragged, 0x81);
+		*ret = val_int(ref_of_held(dragged));
+		return 0;
+	case 0x25: {                /* SetLastCreated: an item taken up, to be put somewhere */
+		struct EThing t;
+		int i = held_of(arg_int(args, 1));
+		*ret = val_int(0);
+		if (e_held_ok(dragged) && e_held_in(dragged) == E_HELD_LOOSE && dragged != i)
+			e_held_remove(dragged);
+		dragged = -1;
+		if (i >= 0) {
+			e_held_place(i, E_HELD_LOOSE, 0);
+			dragged = i;
+		} else if (thing_of(arg_int(args, 1), &t)) {
+			int q = e_thing_quality(&t);
+			if (e_thing_remove(&t))
+				dragged = e_held_add(t.tf, (uint8_t) (q < 0 ? 0 : q), E_HELD_LOOSE);
+		}
+		*ret = val_int(dragged >= 0);
+		return 0;
+	}
+	case 0x26: {                /* PopToMap: the item taken up put at x, y, z (one value: gone) */
+		const struct Val *where = &args[-1];
+		struct EThing t;
+		*ret = val_int(0);
+		if (!e_held_ok(dragged) || e_held_in(dragged) != E_HELD_LOOSE)
+			return 0;
+		if (where->len == 3 && !e_thing_add(e_held_tf(dragged), (int16_t) to_int(atom(where, 0)),
+				(int16_t) to_int(atom(where, 1)), (uint8_t) to_int(atom(where, 2)), &t))
+			return 0;
+		if (where->len != 1 && where->len != 3)
+			return 0;
+		e_held_remove(dragged);
+		dragged = -1;
+		*ret = val_int(1);
+		return 0;
+	}
+	case 0x36: {                /* PopToNPC: the item taken up given to an NPC or container */
+		int in = in_of_ref(arg_int(args, 1));
+		*ret = val_int(0);
+		if (!e_held_ok(dragged) || in == NOWHERE || e_held_place(dragged, in, strength_for(in)) != 0)
+			return 0;
+		if (e_shape_class(e_held_tf(dragged) & 0x3ff) == 3)
+			e_held_set_quality(dragged, 0x80 | e_held_quantity(dragged));
+		dragged = -1;
+		*ret = val_int(1);
+		return 0;
+	}
+	case 0x67:                  /* WearingFellowship: the medallion's frame 1 on the avatar */
+		for (k = e_held_find(E_HELD_ON(0), 955, -1, 1, -1); k >= 0; k = e_held_find(E_HELD_ON(0), 955, -1, 1, k))
+			if (e_held_in(k) == E_HELD_ON(0))
+				break;
+		*ret = val_int(k >= 0);
+		return 0;
+	case 0x0c:                  /* InputNumericValue: low, high, step, initial */
+		for (k = 0; k < 4; k++)
+			run.number[k] = (int16_t) arg_int(args, k + 1);
+		run.wait_kind = num;
+		run.waiting = E_UC_NUMBER;
+		return 1;
 	case 0x2f: {                /* IsNPCNear: on the screen, and (an NPC) awake */
 		int x, y, z;
 		k = npc_of_ref(arg_int(args, 1));
@@ -915,7 +1122,10 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 	}
 	case 0x0d: {                /* SetItemShape: type, item */
 		struct EThing t;
-		if (thing_of(arg_int(args, 2), &t))
+		int i = held_of(arg_int(args, 2));
+		if (i >= 0)
+			e_held_set_tf(i, (uint16_t) ((e_held_tf(i) & ~0x3ffu) | (arg_int(args, 1) & 0x3ff)));
+		else if (thing_of(arg_int(args, 2), &t))
 			e_thing_set(&t, (uint16_t) ((t.tf & ~0x3ffu) | (arg_int(args, 1) & 0x3ff)));
 		return 0;
 	}
@@ -947,23 +1157,38 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 	case 0x12: {                /* GetItemFrame */
 		struct EThing t;
 		k = npc_of_ref(arg_int(args, 1));
-		uint16_t tf = k >= 0 ? npc[k].tf : thing_of(arg_int(args, 1), &t) ? t.tf : 0;
+		uint16_t tf = k >= 0 ? npc[k].tf : held_of(arg_int(args, 1)) >= 0 ? e_held_tf(held_of(arg_int(args, 1)))
+			: thing_of(arg_int(args, 1), &t) ? t.tf : 0;
 		*ret = val_int(num == 0x11 ? tf & 0x3ff : tf >> 10 & 31);
 		return 0;
 	}
 	case 0x13: {                /* SetItemFrame: item, frame */
 		struct EThing t;
-		if (thing_of(arg_int(args, 1), &t))
+		int i = held_of(arg_int(args, 1));
+		if (i >= 0)
+			e_held_set_tf(i, (uint16_t) ((e_held_tf(i) & ~(31u << 10)) | (uint16_t) (arg_int(args, 2) & 31) << 10));
+		else if (thing_of(arg_int(args, 1), &t))
 			e_thing_set(&t, (uint16_t) ((t.tf & ~(31u << 10)) | (uint16_t) (arg_int(args, 2) & 31) << 10));
 		return 0;
 	}
 	case 0x14:                  /* GetQuality */
 	case 0x16: {                /* GetItemQuantity (its quality byte, for those counted) */
 		struct EThing t;
+		int i = held_of(arg_int(args, 1));
+		if (i >= 0) {
+			*ret = val_int(num == 0x14 ? e_held_quality(i) : e_held_quantity(i));
+			return 0;
+		}
 		k = thing_of(arg_int(args, 1), &t) ? e_thing_quality(&t) : 0;
 		*ret = val_int(k < 0 ? 0 : num == 0x16 && k == 0 ? 1 : k);
 		return 0;
 	}
+	case 0x15:                  /* SetQuality: item, quality; whether it has one */
+		*ret = val_int(e_held_set_quality(held_of(arg_int(args, 1)), arg_int(args, 2)));
+		return 0;
+	case 0x17:                  /* SetQuantity: item, count; whether it has one */
+		*ret = val_int(e_held_set_quantity(held_of(arg_int(args, 1)), arg_int(args, 2)));
+		return 0;
 	case 0x31:                  /* IsNpc */
 		*ret = val_int(npc_of_ref(arg_int(args, 1)) >= 0);
 		return 0;
@@ -1013,7 +1238,12 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 	}
 	case 0x6f: {                /* RemoveItem */
 		struct EThing t;
-		if (thing_of(arg_int(args, 1), &t))
+		int i = held_of(arg_int(args, 1));
+		if (i >= 0) {
+			e_held_remove(i);
+			if (i == dragged)
+				dragged = -1;
+		} else if (thing_of(arg_int(args, 1), &t))
 			e_thing_remove(&t);
 		return 0;
 	}
@@ -1308,7 +1538,7 @@ static int go(void)
 				/* waits: its arguments dropped and its result pushed on resuming */
 				run.sp -= n2 < run.sp ? n2 : run.sp;
 				run.wait_kind |= op == OP_CFUNCTION ? 0x200 : 0;
-				return E_UC_ASK;
+				return run.waiting;
 			}
 			run.sp -= n2 < run.sp ? n2 : run.sp;
 			if (op == OP_CFUNCTION)
@@ -1395,6 +1625,27 @@ int e_uc_start(int function, int item, int event)
 		run.on = 0;
 		return E_UC_DONE;
 	}
+	return go();
+}
+
+int e_uc_number(int *low, int *high, int *step, int *initial)
+{
+	if (!run.on || run.waiting != E_UC_NUMBER)
+		return 0;
+	*low = run.number[0];
+	*high = run.number[1];
+	*step = run.number[2] > 0 ? run.number[2] : 1;
+	*initial = run.number[3];
+	return 1;
+}
+
+int e_uc_resume_number(int value)
+{
+	if (!run.on || run.waiting != E_UC_NUMBER)
+		return E_UC_DONE;
+	if (run.wait_kind & 0x200)
+		push(val_int(value));
+	run.waiting = 0;
 	return go();
 }
 

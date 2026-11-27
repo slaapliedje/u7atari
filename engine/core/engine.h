@@ -226,18 +226,53 @@ struct ENpc {
 };
 int e_npcs(struct ENpc *out, int max);
 
+/* What NPCs carry (core/held.c), read by e_npcs from NPC.DAT's contents: each item in an NPC
+ * (E_HELD_ON(its number)), in another held item (its index), or loose (made or taken up, not
+ * yet put anywhere). The original's rules: a counted item's count in its quality's low 7 bits;
+ * what a locked chest or sealed box holds not counted; an NPC carries twice its strength in
+ * stones, a container what its bulk leaves room for. */
+#define E_HELD_MOST 1200
+#define E_HELD_LOOSE (-1)
+#define E_HELD_ON(n) (-2 - (n))
+void e_held_clear(void);
+int e_held_add(uint16_t tf, uint8_t quality, int in);   /* its index, or -1: no room */
+int e_held_ok(int i);
+int e_held_in(int i);
+uint16_t e_held_tf(int i);
+void e_held_set_tf(int i, uint16_t tf);
+int e_held_quality(int i);
+int e_held_set_quality(int i, int q);   /* 0: it has none */
+int e_held_quantity(int i);             /* (1 for those not counted) */
+int e_held_set_quantity(int i, int n);
+int e_held_owner(int i);                /* the NPC (number) it is on, deep, or -1 */
+/* The next held item after "after" (deep) in "in" of type, quality, frame (< 0: any) and
+ * counted (none locked between), or -1; and the sum of their counts. */
+int e_held_find(int in, int type, int quality, int frame, int after);
+int e_held_count(int in, int type, int quality, int frame);
+/* i put in "in" (E_HELD_ON: its first container with room, else on it), the NPC it comes to
+ * of the strength given: 0, or the original's errors: 1 too heavy, 2 into itself, 3 no place
+ * (locked), 4 no room. */
+int e_held_place(int i, int in, int strength);
+void e_held_remove(int i);              /* and what it holds */
+int e_held_used(void);
+int e_shape_class(int type);            /* a type's class (TFA.DAT) */
+
 /* ---- usecode (core/usecode.c): the original's (STATIC/USECODE), run as its interpreter runs
  * it, stopping where the player is waited for ---- */
 
 #define E_UC_DONE 0             /* the run has ended */
 #define E_UC_SAY 1              /* text to show (e_uc_text); then e_uc_resume(NULL) */
 #define E_UC_ASK 2              /* an answer to pick (e_uc_answers); then e_uc_resume(it) */
+#define E_UC_NUMBER 3           /* a number to choose (e_uc_number); then e_uc_resume_number */
 #define E_UC_CODE (128 * 1024)  /* room for the functions a run calls (the engine's store) */
 #define E_UC_HEAP (64 * 1024)   /* ... the values it makes */
 /* Usecode function (an NPC's conversation is 0x400 + its number) for item (an NPC: -its
  * number, the avatar -356) on event (1: used, as spoken to): E_UC_. */
 int e_uc_start(int function, int item, int event);
 int e_uc_resume(const char *answer);
+/* The number asked for: its range, step and first value (1), or 0 when none is. */
+int e_uc_number(int *low, int *high, int *step, int *initial);
+int e_uc_resume_number(int value);
 /* What is said (the original's text: '~' a new line, '*' wait for a key, "@" quotes). */
 const char *e_uc_text(void);
 /* The answers offered, up to most into list: how many. */
@@ -280,6 +315,10 @@ void e_talk_key(int key);
 int e_talk_choose(const char *answer);
 /* Line n of what face place p shows now (for tests), or NULL. */
 const char *e_talk_line(int place, int line);
+/* Gump n (GUMPS.VGA's entry) drawn with its hot spot at x, y (frame NULL: only its size);
+ * text in font 2 (the slider's numbers) from x on its line at y. */
+void e_draw_gump(struct ESurface *frame, int n, int fr, int16_t x, int16_t y, int16_t *w, int16_t *h);
+void e_draw_small(struct ESurface *frame, int16_t x, int16_t y, const char *s);
 /* Counts the changes to what the conversation shows (while it is the same, so is the
  * picture: the world waits). */
 uint32_t e_talk_changes(void);

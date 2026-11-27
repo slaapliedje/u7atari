@@ -204,8 +204,22 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   Items in the world are given the usecode as numbers (`e_thing_ref`: their place in the
   table of moved items, so a number stays the item's while the game runs): finding the nearest
   or those about (`FindNearest`, `FindNearby`), their shape, frame, quality and quantity, a
-  new shape or frame, taking one away, sounds at one. Not yet: the avatar's belongings (gold,
-  items handed over, counted or taken), choosing a number, double-clicking items.
+  new shape or frame, taking one away, sounds at one.
+- **Belongings** (`core/held.c`, `e_held_`): what each NPC carries, read from `NPC.DAT`'s
+  contents (bags and backpacks holding more), kept as a table the usecode refers to by number
+  (from 0x4000). The original's rules: a counted item's count in its quality's low 7 bits, what
+  a locked chest or sealed box holds not counted, an NPC carrying twice its strength in stones
+  (`WGTVOL.DAT`'s weights, coins and reagents a tenth), a container what its bulk leaves room
+  for. The usecode counts (`CountObjects`), takes (`RemovePartyItems`: none when the party has
+  too few) and gives (`AddPartyItems`: stacks of at most 100, each to the first member who can
+  carry it) the party's, makes and takes up items and puts them in the world or on an NPC
+  (`CreateNewObject`, `SetLastCreated`, `PopToMap`, `PopToNPC`), reads and sets their quality
+  and count, lists a container's, and knows when the avatar wears the Fellowship's medallion.
+  So a shop sells: Camille's carrots cost one gold for three. `InputNumericValue` shows the
+  original's slider (`GUMPS.VGA`'s back, thumb and buttons, the number in font 2): left and
+  right step it, A takes it. Not the original's: an item given goes in its NPC's first
+  container with room, else on it (the original fills hands and slots first; nothing shows
+  where yet). Not yet: the paperdolls and bags shown, double-clicking items, saving.
 
 ## Layout
 
@@ -242,8 +256,9 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   Built with `-DENGINE_TOUR`, it tours Britain with 12 walkers instead (a cell every
   `SCROLL_FRAMES` frames, default 1): the measurements below.
   Every 64 frames the frame rate and timings go to `GD_DebugString` (in blanks, timed by the
-  vertical count to a half-line), and once a profile of 900 samples to `U7/PCPROF.BIN`
-  (`tools/jag-profile.py`). The samples are taken by Tom's timer at 37 Hz, apart from the frames:
+  vertical count to a half-line); built with `-DENGINE_PROFILE` (or `JAG_PROF_FRAMES`), once a
+  profile of 900 samples to `U7/PCPROF.BIN` (`tools/jag-profile.py`): its 116K buffer is the
+  store's else (the program's statics must end below the stack's 64K). The samples are taken by Tom's timer at 37 Hz, apart from the frames:
   taken at the blanks, they fell where the frame loop always is then, and misled.
 
 ## Measured (2026-11-26, timing core, `-DENGINE_TOUR`: Britain, 12 walkers)
