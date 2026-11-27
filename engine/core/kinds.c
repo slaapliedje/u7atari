@@ -2385,7 +2385,8 @@ int e_world_spawn(int type, int16_t x, int16_t y, uint8_t z)
  * Leaving the window it is reset (UnloadChunk). Hatched: a monster egg makes its monsters (data1:
  * count << 2 | alignment, their work; data2: their type), one to its count, about it when more
  * than one, where they can stand; a usecode egg runs its function (data2) for itself (event 2);
- * a sound egg plays its sound. Not yet: the other kinds, a monster egg's roof (the original's
+ * a sound egg plays its sound; a music egg its song (data1's low byte, if any) and says whether
+ * it comes again when it ends (the high byte), till all go away (a near one always repeats). Not yet: the other kinds, a monster egg's roof (the original's
  * only under a roof when the avatar is), the items it makes (fire fields), stepped-on eggs. ---- */
 
 #define EGG_OUT 0
@@ -2448,6 +2449,11 @@ static void hatch(struct EEgg *g)
 		e_uc_request_function(g->data2, t.tf ? e_thing_ref(&t) : 0, 2);
 	} else if (kind == 3)
 		e_sound(g->data1 & 255, g->x, g->y);
+	else if (kind == 2) {
+		if (g->data1 & 255)
+			e_music_play(g->data1 & 255);
+		e_music_resume(g->data1 >> 8 & 255);
+	}
 }
 
 void kind_eggs(void)
@@ -2464,14 +2470,17 @@ void kind_eggs(void)
 		}
 		if (g->state == EGG_OUT) {
 			int hour = e_world_minutes() / 60 % 24, night = hour < 5 || hour > 20;
-			g->state = (kind == 1 || kind == 3 || kind == 5) && crit <= 5 && rnd(100) < g->chance
+			g->state = (kind == 1 || kind == 2 || kind == 3 || kind == 5) && crit <= 5 && rnd(100) < g->chance
 				&& (!(g->bits & 0x80) || night) ? EGG_SET : EGG_ASLEEP;
 		}
 		if (g->state == EGG_SET && egg_near(g)) {
 			hatch(g);
-			g->state = (g->bits & 0x8000) && crit != 0 ? EGG_AWAY : EGG_ASLEEP;
-		} else if (g->state == EGG_AWAY && !egg_near(g))
+			g->state = ((g->bits & 0x8000) || (kind == 2 && crit <= 3)) && crit != 0 ? EGG_AWAY : EGG_ASLEEP;
+		} else if (g->state == EGG_AWAY && !egg_near(g)) {
 			g->state = EGG_SET;
+			if (kind == 2)
+				e_music_resume(0);
+		}
 	}
 	/* spawned monsters left far behind, gone (their places for the next) */
 	for (int i = 0; i < nnpc; i++)

@@ -2135,6 +2135,241 @@ void e_sound(int number, int16_t x, int16_t y)
 	eb_sound(sound_cache + sound_at[number] - 1, size / 2, volume, pan);
 }
 
+/* ---- the music (engine.h, e_music_): ENGINE/MUSIC.FLX, each entry the original's song of
+ * that number as its AdLib driver played it (engine/tools/muspack.py: the offset of its loop,
+ * its ticks, then its writes, 0xFD its end), streamed into the backend's ring, which its synth
+ * plays (core/opl.c's player) ---- */
+
+#define MUSIC_RING (16 * 1024)
+#define MUSIC_TRACKS 60
+#define MUSIC_CHUNK 4096
+/* the original's: 0 background, 2 a piece the background waits for, 1 one played once after the
+ * current song (MusicTrackModes) */
+static const uint8_t music_mode[MUSIC_TRACKS] = {
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 1, 1, 2,
+	2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+static struct Flex music;
+static uint8_t music_ok, *music_ring;
+static uint32_t music_wr;
+/* a song being streamed: its place in the file, size, loop's offset (or ~0), where it is */
+struct Song {
+	int track;
+	uint32_t at, size, loop, pos;
+};
+static struct Song mu_feeding = { -1, 0, 0, 0, 0 }, mu_back = { -1, 0, 0, 0, 0 };
+static int mu_short_due = -1;      /* a mode 1 song waiting for the current to come round */
+static int mu_current = E_MUSIC_NONE, mu_deferred = E_MUSIC_NONE, mu_special, mu_resume, mu_background_due = 1;
+static uint8_t music_end_written;
+
+static void open_music(void)
+{
+	uint8_t title[64];
+
+	if (flex_open(&music, "ENGINE", "MUSIC.FLX") < 0)
+		return;
+	if (!read_at(music.f, 0, title, sizeof title)
+		|| memcmp(title, E_MUSIC_TITLE, sizeof E_MUSIC_TITLE - 1) != 0
+		|| (music_ring = take(MUSIC_RING)) == NULL) {
+		plat_file_close(music.f);
+		return;
+	}
+	eb_music_ring(music_ring, MUSIC_RING);
+	music_ok = 1;
+}
+
+/* The song of that number ready to stream from its start: 0 when there is none. */
+static int song_of(int track, struct Song *g)
+{
+	uint8_t head[8];
+
+	if (track < 0 || track >= music.count)
+		return 0;
+	g->at = music.table[track * 2];
+	g->size = music.table[track * 2 + 1];
+	if (g->size < 9 || !read_at(music.f, g->at, head, 8))
+		return 0;
+	g->loop = (uint32_t) head[0] << 24 | (uint32_t) head[1] << 16 | (uint32_t) head[2] << 8 | head[3];
+	if (g->loop != 0xffffffffu && (g->loop < 8 || g->loop >= g->size))
+		g->loop = 8;
+	g->pos = 8;
+	g->track = track;
+	return 1;
+}
+
+static uint32_t music_room(void)
+{
+	return MUSIC_RING - 1 - ((music_wr - eb_music_read()) & (MUSIC_RING - 1));
+}
+
+static void music_put(const uint8_t *b, uint32_t n)
+{
+	for (uint32_t k = 0; k < n; k++) {
+		music_ring[music_wr] = b[k];
+		music_wr = (music_wr + 1) & (MUSIC_RING - 1);
+	}
+	eb_music_written(music_wr);
+}
+
+/* Between songs: every channel's key off, a tick. */
+static void music_keys_off(void)
+{
+	uint8_t b[19];
+
+	for (int c = 0; c < 9; c++) {
+		b[c * 2] = (uint8_t) (0xb0 + c);
+		b[c * 2 + 1] = 0;
+	}
+	b[18] = 0xff;
+	music_put(b, sizeof b);
+}
+
+/* The synth silenced and the song streamed from its start. */
+static void music_start(int track)
+{
+	eb_music_restart();
+	music_wr = 0;
+	eb_music_written(0);
+	mu_back.track = -1;
+	mu_short_due = -1;
+	music_end_written = 0;
+	if (!song_of(track, &mu_feeding))
+		mu_feeding.track = -1;
+}
+
+static void music_stop(void)
+{
+	eb_music_restart();
+	music_wr = 0;
+	eb_music_written(0);
+	mu_feeding.track = mu_back.track = mu_short_due = -1;
+	music_end_written = 0;
+}
+
+/* The ring topped up by a chunk at most; at the song's end, round to its loop, on to the short
+ * one due (and mu_back), or the end written. */
+static void music_feed(void)
+{
+	if (mu_feeding.track < 0 || music_room() < 64)
+		return;
+	uint32_t left = mu_feeding.size - 1 - mu_feeding.pos, n = music_room() - 32;
+	if (n > MUSIC_CHUNK)
+		n = MUSIC_CHUNK;
+	if (n > left)
+		n = left;
+	if (n > MUSIC_RING - music_wr)
+		n = MUSIC_RING - music_wr;
+	if (n > 0) {
+		if (!read_at(music.f, mu_feeding.at + mu_feeding.pos, music_ring + music_wr, n)) {
+			mu_feeding.track = -1;
+			return;
+		}
+		mu_feeding.pos += n;
+		music_wr = (music_wr + n) & (MUSIC_RING - 1);
+		eb_music_written(music_wr);
+	}
+	if (mu_feeding.pos < mu_feeding.size - 1)
+		return;
+	struct Song next;
+	if (mu_short_due >= 0 && song_of(mu_short_due, &next)) {
+		music_keys_off();
+		mu_back = mu_feeding;
+		mu_back.pos = mu_back.loop != 0xffffffffu ? mu_back.loop : 8;
+		mu_feeding = next;
+		mu_short_due = -1;
+	} else if (mu_back.track >= 0) {
+		music_keys_off();
+		mu_feeding = mu_back;
+		mu_back.track = -1;
+	} else if (mu_feeding.loop != 0xffffffffu)
+		mu_feeding.pos = mu_feeding.loop;
+	else {
+		static const uint8_t end = 0xfd;
+		music_put(&end, 1);
+		music_end_written = 1;
+		mu_feeding.track = -1;
+	}
+}
+
+static int song_stopped(void)
+{
+	return mu_feeding.track < 0 && (!music_end_written || eb_music_ended());
+}
+
+/* As the original's PlayMusic. */
+void e_music_play(int track)
+{
+	int mode;
+
+	if (!music_ok)
+		return;
+	mu_resume = 0;
+	if (track >= MUSIC_TRACKS && track != E_MUSIC_NONE)
+		return;
+	if (song_stopped()) {
+		mu_current = mu_deferred = E_MUSIC_NONE;
+		mu_special = 0;
+	}
+	mode = track == E_MUSIC_NONE ? 3 : music_mode[track];
+	if (mu_special && mode == 0) {
+		mu_deferred = track;
+		return;
+	}
+	if (mode == 1 && (mu_short_due >= 0 || mu_back.track >= 0)) {
+		mu_deferred = track;
+		return;
+	}
+	if (track == mu_current)
+		return;
+	if (track == E_MUSIC_NONE)
+		music_stop();
+	else if (mode == 1) {
+		struct Song g;
+		if (mu_feeding.track < 0)
+			music_start(track);
+		else if (song_of(track, &g))
+			mu_short_due = track;
+		track = mu_current;
+	} else {
+		music_start(track);
+		mu_background_due = 0;
+	}
+	mu_current = mu_deferred = track;
+	if (mode == 2 || mode == 1)
+		mu_special = 1;
+	else
+		mu_special = 0;
+}
+
+void e_music_resume(int r)
+{
+	mu_resume = r != 0;
+}
+
+int e_music_current(void)
+{
+	return mu_current;
+}
+
+void e_music_service(void)
+{
+	if (!music_ok)
+		return;
+	music_feed();
+	/* (the original's PlayAmbientSounds) a song over, the background again: the same if the
+	 * egg said so, else the land's (not yet the sea's 8 or the dungeons' 52) */
+	if ((song_stopped() && mu_current != E_MUSIC_NONE) || mu_background_due) {
+		mu_background_due = 0;
+		if (mu_resume) {
+			e_music_play(mu_deferred);
+			mu_resume = 1;
+		} else
+			e_music_play(6);
+	}
+}
+
 /* ---- text (STATIC/TEXT.FLX) and barks: a line over an NPC's head a while, in the original's
  * yellow font (FONTS.VGA's first: its frames are the letters by their codes) ---- */
 
@@ -3447,6 +3682,7 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 		if ((movers[i].near = take(MOVER_CANDS * sizeof *movers[i].near)) == NULL)
 			return -7;
 	open_sounds();
+	open_music();
 	open_text();
 	open_faces();
 	open_gumps();

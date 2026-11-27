@@ -176,11 +176,23 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   value pairs tick by tick, the loop's offset in each). `tools/mkmusic.sh <u7musdro> <STATIC>
   <out>` does both. `core/opl.c` is the engine's own OPL2 (nine two-operator channels, the four
   waveforms, feedback, both connections, envelopes with key scale rate and level, tremolo and
-  vibrato; no rhythm mode, which the music never uses), integers only, the envelopes stepped
-  every 16 samples, as the DSP's is to do it: its reference. On the PC `--music n[,seconds]
-  --wav out` plays song n through it (its loudness over time follows adlconvert's Nuked render
-  of the same writes, correlation 0.89-0.97; spectra 0.78). Next: the same on the Jaguar's DSP,
-  the songs streamed from the card, for the usecode's `PlayMusic` and the music eggs.
+  vibrato; no rhythm mode, which the music never uses), integers only, a block of 16 samples at
+  a time: the ticks due, the envelopes, each operator's step and the gain it glides to across
+  the block (a step at once clicks), then the samples a channel at a time. On the Jaguar the
+  DSP runs the same (`jaguar/sound_dsp.s`, beside the sound effects' mixer), a few blocks
+  ahead of the I2S interrupt, reading the song's writes itself from a 16 KB ring in DRAM that
+  the 68000 fills from the card (`e_music_service`, a chunk a frame at most) and keeping its
+  own 60 Hz ticks by the samples, so a PAL console plays at the same speed; its samples are
+  the C's bit for bit (a test build, `-DENGINE_MUSIC_TEST=n`, plays song n alone and copies
+  them into the frames for a RAM dump: 94,656 of song 22 matched). It takes about 1.4 % of the
+  frame rate (43.1 against 43.7 fps over the same run). The songs play as the original's
+  `PlayMusic` has them: the usecode's (0x2e), the music eggs' (their song, and whether it
+  comes again when it ends, till all go away), background songs looping or ending, a piece
+  holding the background off, a short one played after the current song comes round; a song
+  over, the background (6) again. On the PC `--music n[,seconds] --wav out` plays song n the
+  same way (its loudness over time follows adlconvert's Nuked render of the same writes,
+  correlation 0.89-0.97; spectra 0.89). Not yet: the sea's and dungeons' background songs,
+  whether a music egg's song comes again kept in a save.
 - **Shapes** are read on demand into a ring that gives the oldest way; the movers' are kept apart.
   They are in the engine's own form (`engine.h`, `E_RUN_`): per run one long for where it is, how
   long, and whether it is a fill, then its pixels padded to a long; colour 0 kept as 255, black

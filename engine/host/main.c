@@ -200,6 +200,52 @@ void eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
 	printf("frame %d: sound of %u samples, volume %d, pan %d\n", sound_frame, n, volume, pan);
 }
 
+/* The music: the ring played by the engine's OPL2 a block at a time, as the Jaguar's DSP. */
+static struct EOplStream music_stream;
+static int16_t music_block[E_OPL_BLOCK];
+static int music_left;
+
+void eb_music_ring(uint8_t *ring, uint32_t size)
+{
+	music_stream.ring = ring;
+	music_stream.mask = size - 1;
+	eb_music_restart();
+}
+
+uint32_t eb_music_read(void)
+{
+	return music_stream.rd;
+}
+
+void eb_music_written(uint32_t wr)
+{
+	music_stream.wr = wr;
+}
+
+void eb_music_restart(void)
+{
+	e_opl_reset();
+	music_stream.rd = music_stream.wr = music_stream.wait = music_stream.frac = 0;
+	music_stream.ended = 0;
+	music_left = 0;
+}
+
+int eb_music_ended(void)
+{
+	return music_stream.ended;
+}
+
+static int music_sample(void)
+{
+	if (music_stream.ring == NULL)
+		return 0;
+	if (music_left == 0) {
+		e_opl_block(&music_stream, music_block);
+		music_left = E_OPL_BLOCK;
+	}
+	return music_block[E_OPL_BLOCK - music_left--];
+}
+
 static void wav_put(uint32_t v, int bytes)
 {
 	for (int k = 0; k < bytes; k++)
@@ -230,7 +276,7 @@ static void mix(int blanks)
 
 	owed += (uint32_t) blanks * E_SOUND_RATE;
 	for (; owed >= 60; owed -= 60) {
-		int32_t l = 0, r = 0;
+		int32_t l = 0, r = 0, m = wav != NULL ? music_sample() : 0;
 		for (int c = 0; c < SOUND_CHANNELS; c++) {
 			if (channel[c].left == 0)
 				continue;
@@ -240,6 +286,8 @@ static void mix(int blanks)
 			l += v * channel[c].vl >> 8;
 			r += v * channel[c].vr >> 8;
 		}
+		l += m;
+		r += m;
 		l = l > 32767 ? 32767 : l < -32768 ? -32768 : l;
 		r = r > 32767 ? 32767 : r < -32768 ? -32768 : r;
 		if (wav != NULL) {
@@ -804,6 +852,7 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 			ax = appear_x;
 			ay = appear_y;
 		}
+		e_music_service();
 		mix(4);
 		e_mover_set(0, dx || dy ? e_walk_frame(type, dir, f / 2) : npcs[me].tf, ax, ay, az);
 		/* a frame here is 4 blanks (the avatar a cell every 2 frames, the Jaguar's 8 blanks) */
@@ -848,6 +897,7 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 				for (int k = 0; k < ne; k++)
 					states[t[k].state & 3]++;
 				printf("  eggs %d: out %d asleep %d set %d away %d\n", ne, states[0], states[1], states[2], states[3]);
+				printf("  music %d\n", e_music_current());
 				for (int k = 0; k < ne; k++)
 					if ((t[k].bits & 15) == 1 && t[k].state)
 						printf("    egg %d,%d kind %d crit %d state %d type %d\n", t[k].x, t[k].y, t[k].bits & 15,
@@ -877,79 +927,9 @@ static int rnd(int n)
 	return (int) ((rng >> 16) % (uint32_t) n);
 }
 
-/* --music n[,seconds] with --wav: song n of ENGINE/MUSIC.FLX played by the engine's OPL2 into
- * the WAV (seconds, 30 if not given; a song that loops goes round), alone. */
+/* --music n[,seconds] with --wav: song n played (as the usecode's PlayMusic) into the WAV for
+ * the seconds (30 if not given), alone, after the engine is up. */
 static int music_song = -1, music_seconds = 30;
-
-static int play_music(const char *dir, FILE *out)
-{
-	char name[1024];
-	snprintf(name, sizeof name, "%sENGINE/MUSIC.FLX", dir);
-	FILE *f = fopen(name, "rb");
-	if (f == NULL) {
-		perror(name);
-		return 1;
-	}
-	uint8_t head[0x80 + 8 * 64];
-	if (fread(head, 1, sizeof head, f) < 0x88)
-		return 1;
-	uint32_t count = head[0x54] | head[0x55] << 8;
-	if ((uint32_t) music_song >= count || (uint32_t) music_song >= 64)
-		return 1;
-	const uint8_t *e = head + 0x80 + 8 * music_song;
-	uint32_t at = e[0] | e[1] << 8 | e[2] << 16 | (uint32_t) e[3] << 24;
-	uint32_t size = e[4] | e[5] << 8 | e[6] << 16 | (uint32_t) e[7] << 24;
-	if (size < 9)
-		return 1;
-	uint8_t *song = malloc(size);
-	fseek(f, (long) at, SEEK_SET);
-	if (fread(song, 1, size, f) != size)
-		return 1;
-	fclose(f);
-	uint32_t loop = (uint32_t) song[0] << 24 | song[1] << 16 | song[2] << 8 | song[3], pos = 8;
-	int wait = 0;
-	long samples = (long) music_seconds * E_OPL_RATE, done = 0, frac = 0;
-	static int16_t buf[E_OPL_RATE / 60 + 2];
-	e_opl_reset();
-	while (done < samples) {
-		/* a tick's writes */
-		if (wait > 0)
-			wait--;
-		else
-			while (pos < size) {
-				uint8_t b = song[pos++];
-				if (b == 0xff)
-					break;
-				if (b == 0xfe) {
-					wait = song[pos++] - 1;
-					break;
-				}
-				if (b == 0xfd) {
-					if (loop == 0xffffffffu) {
-						pos = size;
-						break;
-					}
-					pos = loop;
-					continue;
-				}
-				e_opl_write(b, song[pos++]);
-			}
-		/* and its samples: RATE / 60 */
-		frac += E_OPL_RATE;
-		int n = (int) (frac / 60);
-		frac -= (long) n * 60;
-		e_opl_render(buf, n);
-		for (int k = 0; k < n; k++)
-			for (int side = 0; side < 2; side++) {
-				fputc(buf[k] & 255, out);
-				fputc(buf[k] >> 8 & 255, out);
-			}
-		wav_frames += (uint32_t) n;
-		done += n;
-	}
-	free(song);
-	return 0;
-}
 
 int main(int argc, char **argv)
 {
@@ -1056,22 +1036,26 @@ int main(int argc, char **argv)
 		else if (!strcmp(argv[i], "--time") && i + 1 < argc)
 			start_minutes = atoi(argv[++i]);
 	}
-	if (music_song >= 0) {
-		/* a song alone, into the WAV */
-		if (wav == NULL) {
-			fprintf(stderr, "--music needs --wav\n");
-			return 2;
-		}
-		int bad = play_music(argv[1], wav);
-		wav_header();
-		fclose(wav);
-		return bad;
+	if (music_song >= 0 && wav == NULL) {
+		fprintf(stderr, "--music needs --wav\n");
+		return 2;
 	}
 	e_surface_rows(&frame);
 	int r = e_init(argv[1], memory, sizeof memory);
 	if (r != 0) {
 		fprintf(stderr, "e_init: %d\n", r);
 		return 1;
+	}
+	if (music_song >= 0) {
+		/* the song alone, into the WAV */
+		e_music_play(music_song);
+		for (long b = 0; b < (long) music_seconds * 60; b++) {
+			e_music_service();
+			mix(1);
+		}
+		wav_header();
+		fclose(wav);
+		return 0;
 	}
 	if (sheet >= 0) {
 		/* the shape's 32 frames on a grid of 8 by 4: draw each as a mover in its own cell */

@@ -115,6 +115,31 @@ void eb_finish(void)
 {
 }
 
+void eb_music_ring(uint8_t *ring, uint32_t size)
+{
+	(void) ring;
+	(void) size;
+}
+
+uint32_t eb_music_read(void)
+{
+	return 0;
+}
+
+void eb_music_written(uint32_t wr)
+{
+	(void) wr;
+}
+
+void eb_music_restart(void)
+{
+}
+
+int eb_music_ended(void)
+{
+	return 0;
+}
+
 void eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
 {
 	(void) samples;

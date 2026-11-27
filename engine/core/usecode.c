@@ -1491,7 +1491,10 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 	case 0x02:                  /* PostInFuture: item, script, ticks */
 		script_post(arg_int(args, 1), &args[-2], num == 0x02 ? arg_int(args, 3) : 0);
 		return 0;
-	case 0x2e:                  /* PlayMusic */
+	case 0x2e:                  /* PlayMusic: track, item */
+		e_music_play(arg_int(args, 1) & 255);
+		*ret = val_int(0);
+		return 0;
 	case 0x5c:                  /* HaltScheduled */
 		*ret = val_int(0);
 		return 0;

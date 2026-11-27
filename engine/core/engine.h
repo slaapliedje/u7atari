@@ -488,11 +488,47 @@ struct EEgg {
 int e_eggs(struct EEgg **table);        /* the table, and how many are in it */
 
 /* ---- the OPL2 (core/opl.c): the engine's own, for the original's music (its register writes)
- * at E_OPL_RATE; written, rendered mono ---- */
+ * at E_OPL_RATE, mono, a block at a time; as the Jaguar's DSP plays it (jaguar/opl_dsp.s) ---- */
 #define E_OPL_RATE 15980
+#define E_OPL_BLOCK 16
+/* A song's writes as ENGINE/MUSIC.FLX has them (tick by tick), coming through a ring (its size
+ * a power of 2): the player's place in it (rd) and the end of what is there (wr). */
+struct EOplStream {
+	const uint8_t *ring;
+	uint32_t mask, rd, wr, wait, frac;
+	uint8_t ended;              /* its end (0xFD) reached */
+};
+/* The tables the DSP is given (made once): half a sine (13 bits), the gains 2^(-k/32) (<< 16),
+ * each rate's decay step and attack fraction a block. */
+struct EOplTables {
+	int32_t hsine[512], gain32[32], decay_step[64], attack_keep[64];
+};
+const struct EOplTables *e_opl_tables(void);
 void e_opl_reset(void);
 void e_opl_write(int reg, int value);
-void e_opl_render(int16_t *out, int n);
+/* A block's samples, the stream's ticks due first (none without one). */
+void e_opl_block(struct EOplStream *s, int16_t out[E_OPL_BLOCK]);
+
+/* ---- the music (engine.c): the original's songs from ENGINE/MUSIC.FLX (engine/tools/
+ * mkmusic.sh), streamed into the backend's ring and played there (eb_music), as the original's
+ * PlayMusic has them: background songs (mode 0) loop or end; a piece (2) holds the background
+ * off till it ends; a short one (1) plays once after the current song comes round, then that
+ * goes on. A song over, the background (6) again (not yet the sea's or dungeons'), or the same
+ * if a music egg asked. ---- */
+#define E_MUSIC_TITLE "U7 engine music 1, AdLib writes at 60 Hz"
+#define E_MUSIC_NONE 255
+void e_music_play(int track);           /* 255: stops it */
+void e_music_resume(int resume);        /* the music egg's: the song comes again when it ends */
+void e_music_service(void);             /* the ring kept filled, the songs' ends seen to */
+int e_music_current(void);
+/* The backend's: its ring (made once, by e_music_service), the player's place in it, telling it
+ * where what is written ends, starting over (the synth silenced, the place 0, waited for), and
+ * whether it has reached the song's end. */
+void eb_music_ring(uint8_t *ring, uint32_t size);
+uint32_t eb_music_read(void);
+void eb_music_written(uint32_t wr);
+void eb_music_restart(void);
+int eb_music_ended(void);
 
 /* ---- saved games (core/save.c): U7/ENGINE/SAVEn.DAT, the engine's own (not the original's
  * format): the clock, the NPCs, the usecode's flags and party, what is held and carried, the

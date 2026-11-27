@@ -283,6 +283,14 @@ void eb_copy(struct ESurface *dst, int16_t dx, int16_t dy, const struct ESurface
 /* each: the next sample's address, the end's, the left volume, the right (0-255) */
 #define SOUND_CHANNEL ((volatile uint32_t *) 0xF1CF00)
 
+/* the music's (sound_dsp.s): the OPL2's tables, and its controls (MCTL) */
+#define DSP_TABLES ((volatile uint32_t *) 0xF1BC00)
+#define MCTL ((volatile uint32_t *) 0xF1CF40)
+enum { M_RING, M_MASK, M_WR, M_RD, M_CMD, M_ENDED, M_VOL, M_ORD, M_OWR, M_WAIT, M_FRAC, M_LFOAM,
+	M_LFOVIB, M_WSE, M_BLOCKS, M_SHORT, M_CAP, M_CAPEND, M_LONGS };
+
+static uint32_t music_ring, music_mask;
+
 static void sound_init(void)
 {
 	const uint32_t *from = (const uint32_t *) dsp_sound;
@@ -293,12 +301,55 @@ static void sound_init(void)
 		to[i] = from[i];
 	for (int i = 0; i < SOUND_CHANNELS * 4; i++)
 		SOUND_CHANNEL[i] = 0;
+	/* the tables, one after another as struct EOplTables has them */
+	const uint32_t *t = (const uint32_t *) e_opl_tables();
+	for (uint32_t i = 0; i < sizeof (struct EOplTables) / 4; i++)
+		DSP_TABLES[i] = t[i];
+	for (int i = 0; i < M_LONGS; i++)
+		MCTL[i] = 0;
+	MCTL[M_VOL] = 256;
+	MCTL[M_RING] = music_ring;
+	MCTL[M_MASK] = music_mask;
+	MCTL[M_CMD] = 1;            /* (its first: the synth silenced) */
 	/* the I2S clock: 26.59 MHz / (64 * (25 + 1)), 15980 Hz (E_SOUND_RATE); internal, word
 	 * strobe on, the interrupt each word pair */
 	SCLK = 25;
 	SMODE = 0x15;
 	D_PC = 0xF1B000;
 	D_CTRL = 1;
+}
+
+void eb_music_ring(uint8_t *ring, uint32_t size)
+{
+	music_ring = (uint32_t) ring;
+	music_mask = size - 1;
+	MCTL[M_RING] = music_ring;
+	MCTL[M_MASK] = music_mask;
+	eb_music_restart();
+}
+
+uint32_t eb_music_read(void)
+{
+	return MCTL[M_RD];
+}
+
+void eb_music_written(uint32_t wr)
+{
+	MCTL[M_WR] = wr;
+}
+
+void eb_music_restart(void)
+{
+	MCTL[M_WR] = 0;
+	MCTL[M_CMD] = 1;
+	/* (a block's time at most; not forever, should the DSP not be going) */
+	for (uint32_t k = 0; (D_CTRL & 1) && MCTL[M_CMD] != 0 && k < 200000; k++)
+		;
+}
+
+int eb_music_ended(void)
+{
+	return MCTL[M_ENDED] != 0;
 }
 
 void eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
@@ -1339,6 +1390,19 @@ void jag_main(void)
 	GD_DebugString(text);
 	set_palette(e_palette());
 	sound_init();
+#ifdef ENGINE_MUSIC_TEST
+	/* song n alone, nothing else going on (its audio against the host's --music); its samples
+	 * captured into the frames (not shown) for a RAM dump to hold against the host's */
+	MCTL[M_CAPEND] = (uint32_t) frames + sizeof frames;
+	MCTL[M_CAP] = (uint32_t) frames;
+	e_music_play(ENGINE_MUSIC_TEST);
+	for (;;) {
+		uint32_t t0 = jag_ticks;
+		e_music_service();
+		while (jag_ticks == t0)
+			;
+	}
+#endif
 #ifdef ENGINE_BENCH_SHAPES
 	bench_shapes();
 #endif
@@ -1392,6 +1456,7 @@ void jag_main(void)
 	GD_DebugString("engine test: running\n");
 	mark_ticks = last_shown = jag_ticks;
 	for (;;) {
+		e_music_service();
 #ifndef ENGINE_TOUR
 		walk_update();
 		x = (int16_t) (ax - E_VIEW_CELLS_X / 2);
