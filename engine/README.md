@@ -90,9 +90,13 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   lit at night with their glow, 106, put out by day, 46; light sources lit and put out; a
   spent light replaced), with their barks ("Ah, 'tis better!", "This need not be on.").
 
+  A sleeper now and then wakes when the avatar is within 15 cells and in sight (the brighter,
+  its intelligence from `NPC.DAT`, the more often; sight is a line with nothing solid at chest
+  height between, standing in for the original's test missile): it steps off the bed, says so
+  ("Who's there?"), follows the avatar a while, and goes back to bed.
+
   Not yet: usecode and conversation (beyond the lights and shutters), held weapons and
-  missiles (no weapon drawn, no arrow flying), combat, the thief's pickpocketing, waking to
-  chase the avatar. A game hour is a real minute for now (`E_WORLD_MINUTE`);
+  missiles (no weapon drawn, no arrow flying), combat, the thief's pickpocketing. A game hour is a real minute for now (`E_WORLD_MINUTE`);
   `-DSTART_MINUTES=` sets the time to start at (535: five minutes before the 9:00 change, to see
   them go). On the PC `--trace n` logs NPC n's kinds and states as they change, and `--appear f`
   keeps the avatar far off till frame f (so those whose period starts then are put at their

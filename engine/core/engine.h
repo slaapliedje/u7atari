@@ -218,6 +218,7 @@ struct ENpc {
 	int16_t x, y;               /* world cell */
 	uint8_t z;
 	uint8_t activity;           /* what it is doing (a schedule's type: 11 loiter, 14 sleep, ..) */
+	uint8_t intelligence;
 	uint16_t number;            /* in NPC.DAT; the avatar is 0 */
 };
 int e_npcs(struct ENpc *out, int max);
@@ -243,6 +244,9 @@ int e_world_minutes(void);
  * it are not drawn (roofs over it lifted). The view is drawn again when it changes. Call when it
  * has moved; returns the ceiling (15: none). */
 int e_follow(int i);
+/* Whether one at x0, y0, z0 can see one at x1, y1, z1: nothing solid at chest height (2 levels
+ * up) on the cells between (a stand-in for the original's test missile). */
+int e_clear_line(int16_t x0, int16_t y0, uint8_t z0, int16_t x1, int16_t y1, uint8_t z1);
 /* Whether a shape (type-frame word) standing at x, y, z would be in a solid static or a door. */
 int e_blocked(uint16_t tf, int16_t x, int16_t y, uint8_t z);
 /* A walker's step of dx, dy (a cell) from x, y, z, as the original's: at its level, or failing

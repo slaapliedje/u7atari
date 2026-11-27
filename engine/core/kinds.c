@@ -1711,6 +1711,33 @@ static int into_bed(int i)
 	return 1;
 }
 
+/* Woken (WakeUpNpc): the cover back, a step off the bed (south-west, else south, off a bed of
+ * 1011; north-east, else east, off a 696), standing. */
+static void wake_up(int i)
+{
+	struct Doing *d = &doing[i];
+	struct ENpc *p = &npc[i];
+	struct EThing t;
+
+	if (d->cover.tf != 0) {
+		e_thing_set(&d->cover, (uint16_t) (d->cover.tf - (1u << 10)));
+		d->cover.tf = 0;
+	}
+	int w0 = -1, w1 = -1;
+	if (e_things(T_BED, p->x, p->y, p->x, p->y, &t, 1)) {
+		w0 = 5;
+		w1 = 4;
+	} else if (e_things(T_BED_2, p->x, p->y, p->x, p->y, &t, 1)) {
+		w0 = 1;
+		w1 = 2;
+	}
+	d->pose = F_STAND;
+	if (w0 >= 0 && !step(i, w0))
+		step(i, w1);
+	d->pose = F_STAND;
+	show(i);
+}
+
 static int sleep_kind(int i)
 {
 	struct Doing *d = &doing[i];
@@ -1759,8 +1786,21 @@ static int sleep_kind(int i)
 		l->state++;
 		return 1;
 	case 7:
-		/* asleep (waking to chase the avatar: not yet) */
-		d->wait = 600 * TICK_BLANKS;
+		/* asleep: now and then, the brighter the more often, woken by the avatar near (not
+		 * Penumbra, 150): it barks, follows the avatar a while, then goes back to bed */
+		if (rnd(750) < npc[i].intelligence && npc[i].number != 150
+			&& far_of(npc[i].x, npc[i].y, me_x, me_y) <= 15
+			&& e_clear_line(npc[i].x, npc[i].y, npc[i].z, me_x, me_y, npc[avatar].z)) {
+			int number = npc[i].number;
+			wake_up(i);
+			set_kind(i, K_SLEEP);
+			if (number < 256)
+				cur(d)->state = 255;    /* after the hound, from the start: back to bed */
+			push(i, K_HOUND, -1, -1);
+			cur(d)->state = 1;
+			bark(i, 149, 6);
+			return 1;
+		}
 		return 0;
 	case 10:
 		d->spot_x = npc[i].x;

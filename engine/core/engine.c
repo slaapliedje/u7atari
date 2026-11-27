@@ -1300,6 +1300,33 @@ static uint16_t body_of(uint16_t tf, uint8_t z, int *fx, int *fy)
 	return (uint16_t) (((1u << (in->height ? in->height : 1)) - 1) << z);
 }
 
+int e_clear_line(int16_t x0, int16_t y0, uint8_t z0, int16_t x1, int16_t y1, uint8_t z1)
+{
+	int dx = x1 > x0 ? x1 - x0 : x0 - x1, dy = y1 > y0 ? y1 - y0 : y0 - y1;
+	int sx = x1 > x0 ? 1 : -1, sy = y1 > y0 ? 1 : -1, n = dx > dy ? dx : dy, err = dx - dy;
+	int x = x0, y = y0;
+	uint16_t doors;
+
+	for (int k = 1; k < n; k++) {
+		int e2 = 2 * err;
+		if (e2 > -dy) {
+			err -= dy;
+			x += sx;
+		}
+		if (e2 < dx) {
+			err += dx;
+			y += sy;
+		}
+		/* at chest height, two levels over the ground between them */
+		int z = z0 + (z1 - z0) * k / n + 2;
+		if (z > 15)
+			z = 15;
+		if (levels_taken(x, y, x, y, &doors) >> z & 1)
+			return 0;
+	}
+	return 1;
+}
+
 int e_blocked(uint16_t tf, int16_t x, int16_t y, uint8_t z)
 {
 	int fx, fy;
@@ -2226,6 +2253,7 @@ int e_npcs(struct ENpc *out, int max)
 		out[n].y = (int16_t) (region / 12 * 256 + rec[1]);
 		out[n].z = rec[9] >> 4;
 		out[n].activity = rec[22];      /* its work type: what it is doing */
+		out[n].intelligence = rec[20];
 		out[n].number = (uint16_t) i;
 		n++;
 	}
