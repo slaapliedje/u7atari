@@ -286,8 +286,11 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   strength); Option again, the next party member's, after the last all shut. A on the backpack
   opens it over the paperdoll; C takes what is picked off (into what is worn on the back), and C
   in a container over a paperdoll wears the item (refused, the red X, when its slot is taken).
-  Combat now takes the weapon from the weapon hand and the armour from what is worn. Not yet:
-  the female avatar's gump, two-handed marks, swapping an item for the one in its slot, the
+  Combat now takes the weapon from the weapon hand and the armour from what is worn. The
+  avatar's paperdoll is the man's (57) or the woman's (58) by the NPC's flag (the original's
+  typeFlagsHigh bit 2, NPC.DAT byte 52), as are the usecode's AvatarSex and NPC property 10
+  (`--female` on the PC, `-DENGINE_FEMALE` on the Jaguar: the avatar a woman, her shape 989, as
+  the original's character made would have it). Not yet: two-handed marks, swapping an item for the one in its slot, the
   stats gump and the paperdoll's buttons.
 - **The pad** on the Jaguar is read in the blank interrupt (its VBL hook), its presses gathered
   till the game takes them: a short press during a slow frame (a gump read in) is not lost.

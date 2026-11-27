@@ -1,6 +1,6 @@
 /* Saved games (engine.h, e_save_game, e_load_game): the engine's own, in U7/ENGINE/SAVEn.DAT.
  *
- * "U7E2", then each part's sections in turn: a tag, the size of its records and how many, then
+ * "U7E3", then each part's sections in turn: a tag, the size of its records and how many, then
  * the records as they are in memory (this machine's byte order: a save is the machine's own).
  * The parts: the world (the clock, the NPCs), the usecode (its flags, the party), the held items,
  * the kept world items. A load first goes through the whole file, each section's tag, record
@@ -13,7 +13,7 @@
 
 #include "engine.h"
 
-#define MAGIC "U7E2"           /* (2: the held items keep their slots) */
+#define MAGIC "U7E3"           /* (2: the held items keep their slots; 3: the NPCs a man or not) */
 #define SECTIONS 8
 
 typedef int (*Sections)(int k, struct ESection *s);

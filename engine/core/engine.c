@@ -3016,6 +3016,7 @@ int e_npcs(struct ENpc *out, int max)
 		out[n].magic = rec[27];
 		out[n].mana = rec[28];
 		out[n].face = rec[29];
+		out[n].male = (rec[52] & 2) != 0;
 		memcpy(out[n].name, rec + 101, 16);
 		out[n].name[15] = 0;
 		out[n].number = (uint16_t) i;

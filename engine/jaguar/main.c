@@ -956,6 +956,11 @@ static int walk_init(void)
 			me = i;
 	if (me < 0)
 		return 0;
+#ifdef ENGINE_FEMALE
+	/* (a test: the avatar a woman, as the original's character made: her shape, the flag off) */
+	npcs[me].male = 0;
+	npcs[me].tf = (uint16_t) ((npcs[me].tf & ~0x3ffu) | 989);
+#endif
 	ax = npcs[me].x;
 	ay = npcs[me].y;
 	az = npcs[me].z;

@@ -351,7 +351,8 @@ static int party_numbers[8], nparty_numbers;
 static int spawn_type = -1, spawn_n;    /* --spawn type,n: monsters put 6 cells south, fighting */
 static int combat_on;
 static int save_slot, load_slot;
-static int show_equipment;      /* --equipment: what the avatar and NPCs 1-4 wear */
+static int show_equipment;
+static int female;              /* --female: the avatar a woman (as the original's character made) */      /* --equipment: what the avatar and NPCs 1-4 wear */
 static int save_at = -1, load_at = -1;  /* --save-at f, --load-at f: slot 9 saved, loaded, mid-walk */        /* --save n: saved at the end; --load n: loaded at the start */           /* --combat: the party in combat mode */   /* --party a,b,..: NPCs joining at the start */
 static int uc_function = -1;
 static int after_ticks;         /* --ticks n: the scripts run n ticks after (the functions they ask for) */    /* --uc-function n: run on the item ahead instead of its own */
@@ -382,6 +383,11 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 		npcs[me].y = (int16_t) from_y;
 		if (from_z >= 0)
 			npcs[me].z = (uint8_t) from_z;
+	}
+	if (female) {
+		/* as the original's character made a woman: her shape (989), the flag off */
+		npcs[me].male = 0;
+		npcs[me].tf = (uint16_t) ((npcs[me].tf & ~0x3ffu) | 989);
 	}
 	int16_t ax = npcs[me].x, ay = npcs[me].y;
 	uint8_t az = npcs[me].z;
@@ -924,6 +930,8 @@ int main(int argc, char **argv)
 			sscanf(argv[++i], "%d,%d", &spawn_type, &spawn_n);
 		else if (!strcmp(argv[i], "--save") && i + 1 < argc)
 			save_slot = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--female"))
+			female = 1;
 		else if (!strcmp(argv[i], "--equipment"))
 			show_equipment = 1;
 		else if (!strcmp(argv[i], "--save-at") && i + 1 < argc)

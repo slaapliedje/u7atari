@@ -223,6 +223,7 @@ struct ENpc {
 	uint8_t intelligence;
 	uint16_t status;            /* the original's status bits (dead, asleep, in the party, ...) */
 	uint8_t strength, dexterity, combat, hit_points, magic, mana, face;
+	uint8_t male;               /* the original's typeFlagsHigh bit 2: a man (the avatar's chosen) */
 	char name[16];
 	uint16_t number;            /* in NPC.DAT; the avatar is 0 */
 };
@@ -315,6 +316,7 @@ int e_uc_resume_number(int value);
 int e_uc_strength(int number);          /* NPC number's strength (0: none) */
 int e_uc_join(int number);              /* NPC number into the party (as JoinParty): 1 */
 int e_uc_party_number(int j);           /* party member j's NPC number (0: the avatar), or -1 */
+int e_uc_avatar_male(void);             /* the avatar is a man (as chosen) */
 /* The items' scripts (Post) a tick on (the original's: about 8 a second); a function they or the
  * schedules asked to be run, taken: 1 and it (run it through e_talk_start_ref); whether the
  * usecode has faded the screen out (FadePalette). */

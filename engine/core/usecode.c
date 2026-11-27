@@ -695,6 +695,13 @@ static void party_add(int k)
 	}
 }
 
+int e_uc_avatar_male(void)
+{
+	int k = avatar_index();
+
+	return k < 0 || npc[k].male;
+}
+
 int e_uc_party_number(int j)
 {
 	return j >= 0 && j < nparty ? npc[party[j]].number : -1;
@@ -867,6 +874,7 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 		if (k >= 0) {
 			static const uint8_t no = 0;
 			const uint8_t *p = &no;
+			uint8_t female = !npc[k].male;
 			switch (arg_int(args, 2)) {
 			case 0: p = &npc[k].strength; break;
 			case 1: p = &npc[k].dexterity; break;
@@ -875,6 +883,7 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 			case 4: p = &npc[k].combat; break;
 			case 5: p = &npc[k].mana; break;
 			case 6: p = &npc[k].magic; break;
+			case 10: p = &female; break;
 			}
 			*ret = val_int(*p);
 		}
@@ -910,7 +919,7 @@ static int intrinsic(int num, struct Val *args, int argc, struct Val *ret)
 		return 0;
 	case 0x5a:                  /* AvatarSex: 1 for a woman */
 		k = avatar_index();
-		*ret = val_int(k >= 0 && (npc[k].tf & 0x3ff) != 721);
+		*ret = val_int(k >= 0 && !npc[k].male);
 		return 0;
 	case 0x5e:                  /* GetArraySize */
 		*ret = val_int(args[-1].len);

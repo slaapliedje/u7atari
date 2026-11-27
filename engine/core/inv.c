@@ -203,9 +203,9 @@ int e_inv_open_paperdoll(int number)
 	o->in = E_HELD_ON(number);
 	o->npc = (int16_t) number;
 	o->kind = 2;
-	/* the original's: the avatar's (male; the female's 58 not told apart yet), the companions'
-	 * own (1-10), anyone else's the avatar's */
-	o->gump = (int16_t) (number >= 1 && number <= 10 ? 58 + number : 57);
+	/* the original's: the companions' own (1-10); the avatar's, a man's or a woman's (anyone
+	 * else's the same, by the avatar) */
+	o->gump = (int16_t) (number >= 1 && number <= 10 ? 58 + number : e_uc_avatar_male() ? 57 : 58);
 	o->x = (int16_t) (16 + nopen * 24);
 	o->y = (int16_t) (8 + nopen * 16);
 	nopen++;
