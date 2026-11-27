@@ -53,6 +53,10 @@
 #define K_GOTO_PLACE 49
 #define K_GOTO_REM_L 50
 #define K_CHECK_AREA 52
+#define K_GRAB_ITEM 33
+#define K_DROP_ITEM 34
+#define K_FILL_BUCKET 36
+#define K_FILL_TROUGH 39
 
 /* a level of what an NPC does: a kind pushed over another runs, then the other goes on (as the
  * original's schedule stack): its state, its two arguments, a counter */
@@ -70,7 +74,8 @@ struct Level {
 struct Doing {
 	struct Level level[LEVELS];
 	uint8_t depth;              /* levels in use; level[depth - 1] runs */
-	int8_t result;              /* how the last walk or level pushed ended: -1 blocked */
+	int16_t result;             /* how the last walk or level pushed ended: < 0 blocked (a walk
+	                             * to an item: its type) */
 	uint8_t dir;                /* facing 0-3 (north, east, south, west) */
 	uint8_t pose;               /* the frame shown (0-15: 0 standing, 10 sitting, ...) */
 	uint8_t face8;              /* the way (0-7) to face at the end of a walk */
@@ -87,11 +92,12 @@ struct Doing {
 	uint8_t nearest;            /* the nearest it has been to that door */
 	int8_t route;               /* the route it walks, or -1 */
 	uint8_t no_route, retry, replans;
+	uint16_t held[4];           /* the items it carries (type-frame words; 0: none) */
 	struct EThing use;          /* the bed it sleeps in */
 	struct EThing cover;        /* the bed's cover it turned over it (tf 0: none) */
 	int16_t spot_x, spot_y;     /* where it got into bed */
 	uint8_t spot_z;
-	uint8_t pc, script_len, loops;
+	uint8_t pc, script_len, loops, mark;
 	uint8_t script[30];         /* a script of poses and waits (kinds.c's S_ ops) */
 };
 
@@ -121,5 +127,6 @@ void kind_walked(int i, int ok);        /* a walk has ended */
 void kind_lost(int i);          /* no way to its place: it wanders */
 void kind_period(int i, int kind);      /* its next entry has come round */
 void kind_init(int i);          /* as the game was left */
+void kind_things(int blanks);   /* the items' scripts (a bellows, a loom), blanks on */
 
 #endif

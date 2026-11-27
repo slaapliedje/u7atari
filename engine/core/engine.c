@@ -1432,6 +1432,7 @@ static struct Door {
 	uint16_t tf;
 	uint8_t z;
 	uint8_t gone;               /* taken out of the world */
+	uint8_t added;              /* put into the world (not in its region's file) */
 	int16_t lcx, lcy;           /* the chunk whose list holds it */
 } doors[MOST_DOORS];
 static int ndoors;
@@ -1465,6 +1466,19 @@ static void move_item(struct Region *r, int i, int a, int b)
 		r->start[c]++;
 }
 
+/* Item it put at the end of chunk list c of region r: 0 when the region is full. */
+static int insert_item(struct Region *r, int c, const struct Item *it)
+{
+	if (r->start[256] >= REGION_ITEMS)
+		return 0;
+	int at = r->start[c + 1];
+	memmove(&r->items[at + 1], &r->items[at], (size_t) (r->start[256] - at) * sizeof *it);
+	r->items[at] = *it;
+	for (int k = c + 1; k <= 256; k++)
+		r->start[k]++;
+	return 1;
+}
+
 /* Item i of region r, in chunk list c, taken out. */
 static void remove_item(struct Region *r, int i, int c)
 {
@@ -1481,6 +1495,14 @@ static void doors_into(struct Region *r)
 {
 	for (int d = 0; d < ndoors; d++) {
 		const struct Door *o = &doors[d];
+		if (o->added) {
+			/* one put there: put back, where it is now */
+			if (!o->gone && region_of(o->x, o->y) == r->id) {
+				struct Item it = { o->tf, (uint8_t) o->x, (uint8_t) o->y, o->z, 0 };
+				insert_item(r, list_of(o->x, o->y), &it);
+			}
+			continue;
+		}
 		if (region_of(o->x0, o->y0) != r->id
 			|| (o->x == o->x0 && o->y == o->y0 && o->tf == o->tf0 && !o->gone))
 			continue;
@@ -1499,6 +1521,19 @@ static void doors_into(struct Region *r)
 	}
 }
 
+/* A free entry of the table: a new one, or (full) one as it began given up (looked at, not
+ * changed); -1 when none is. */
+static int new_kept(void)
+{
+	if (ndoors < MOST_DOORS)
+		return ndoors++;
+	for (int d = 0; d < ndoors; d++)
+		if (doors[d].x == doors[d].x0 && doors[d].y == doors[d].y0 && doors[d].tf == doors[d].tf0
+			&& !doors[d].gone && !doors[d].added)
+			return d;
+	return -1;
+}
+
 /* The handle of the door that is static s of chunk cx, cy: kept, or made; -1 if none is left. */
 static int door_of(const struct Static *s, int cx, int cy)
 {
@@ -1506,23 +1541,16 @@ static int door_of(const struct Static *s, int cx, int cy)
 		if (doors[d].x == s->x && doors[d].y == s->y && doors[d].tf == s->tf
 			&& doors[d].z == s->z && !doors[d].gone)
 			return d;
-	int d = ndoors;
-	if (d == MOST_DOORS) {
-		/* full: one as it began given up (looked at, not changed) */
-		for (d = 0; d < ndoors; d++)
-			if (doors[d].x == doors[d].x0 && doors[d].y == doors[d].y0
-				&& doors[d].tf == doors[d].tf0 && !doors[d].gone)
-				break;
-		if (d == ndoors)
-			return -1;
-	} else
-		ndoors++;
+	int d = new_kept();
+	if (d < 0)
+		return -1;
 	struct Door *o = &doors[d];
 	o->x0 = o->x = s->x;
 	o->y0 = o->y = s->y;
 	o->tf0 = o->tf = s->tf;
 	o->z = s->z;
 	o->gone = 0;
+	o->added = 0;
 	o->lcx = (int16_t) cx;
 	o->lcy = (int16_t) cy;
 	return d;
@@ -1812,6 +1840,44 @@ int e_thing_set(struct EThing *t, uint16_t tf)
 		return 0;
 	t->tf = tf;
 	return 1;
+}
+
+int e_thing_add(uint16_t tf, int16_t x, int16_t y, uint8_t z, struct EThing *out)
+{
+	if (x < 0 || y < 0 || x >= E_WORLD_CELLS || y >= E_WORLD_CELLS || (tf & 0x3ff) < TILE_TYPES)
+		return 0;
+	struct Region *r = region(region_of(x, y));
+	struct Item it = { tf, (uint8_t) x, (uint8_t) y, z, 0 };
+	int d = new_kept();
+	if (d < 0 || !insert_item(r, list_of(x, y), &it)) {
+		if (d == ndoors - 1)
+			ndoors--;
+		return 0;
+	}
+	struct Door *o = &doors[d];
+	o->x0 = o->x = x;
+	o->y0 = o->y = y;
+	o->tf0 = o->tf = tf;
+	o->z = z;
+	o->gone = 0;
+	o->added = 1;
+	o->lcx = (int16_t) (x >> 4);
+	o->lcy = (int16_t) (y >> 4);
+	static_changed(tf, x, y, z, o->lcx, o->lcy);
+	if (out != NULL) {
+		out->tf = tf;
+		out->x = x;
+		out->y = y;
+		out->z = z;
+	}
+	return 1;
+}
+
+int e_shape_frames(uint16_t type)
+{
+	const uint32_t *s = (const uint32_t *) shape(type);
+
+	return s == NULL || type < TILE_TYPES ? 0 : (int) (s[1] / 4 - 1);
 }
 
 int e_thing_quality(const struct EThing *t)

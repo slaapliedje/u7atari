@@ -601,6 +601,7 @@ void e_world_step(uint32_t blanks, int16_t x, int16_t y)
 	}
 	planned = 0;
 	searched = 0;
+	kind_things(dt);
 	for (int s = 1; s < E_MOVERS; s++) {
 		int i = slot_npc[s];
 		if (i < 0)

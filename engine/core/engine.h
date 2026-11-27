@@ -323,6 +323,11 @@ int e_things(uint16_t type, int16_t x0, int16_t y0, int16_t x1, int16_t y1, stru
 /* A movable item made tf where it is (t too), kept so when its region is read again: 1; 0 when
  * it is not there (or not a movable item). */
 int e_thing_set(struct EThing *t, uint16_t tf);
+/* A movable item tf put into the world at x, y, z (kept so when its region is read again):
+ * 1, with it in out (unless NULL); 0 when it cannot be. */
+int e_thing_add(uint16_t tf, int16_t x, int16_t y, uint8_t z, struct EThing *out);
+/* How many frames an object shape has (0: none, or a flat). */
+int e_shape_frames(uint16_t type);
 /* A movable item's quality (a path marker's what to do), or -1 when it is not one there. */
 int e_thing_quality(const struct EThing *t);
 /* A movable item taken out of the world, as eaten: 1; 0 when it is not there. */

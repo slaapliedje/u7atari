@@ -63,14 +63,28 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   - *preach*: at the podium, visiting one of the congregation, praying at the Fellowship's
     icon. *Duel*: fencing at a dummy (the sword's sounds) or archery at a target (the arrows
     pulled out, fourteen steps back, shots that show on the target). *Dance*, *kid games* (tag).
+  - the kinds that carry and make things, as the original's: *waiter* (plates and then food
+    served to diners at the inn, tableware set out, the cauldron stirred, plates and food
+    cleared), *farmer* (the crops cut), *miner* (the ore cracked, now and then a nugget or a
+    gem), *blacksmith* (the blade heated in the firepit as the bellows work, hammered on the
+    anvil, quenched in the trough, filled from the well if it is empty), *baker* (dough made,
+    kneaded and baked in the hearth, the bread taken to a table), *seamstress* (wool spun,
+    woven at the loom, cut into clothes), *alchemist* (reading, a potion stirred at the
+    cauldron and set on a table), *thief* (following the avatar about), *grazing*.
 
-  Not yet: barks (no text), usecode and conversation, held items and missiles (no weapon drawn,
-  no arrow flying), items carried, made or put down (food on a plate, a desk's items, a plant
-  on a grave), looking round the area, combat, waking to chase the avatar; and the kinds that
-  carry and make things (waiter, farmer, miner, smith, baker, seamstress, alchemist, thief,
-  grazing), which loiter for now. A game hour is a real minute for now (`E_WORLD_MINUTE`);
+  Items are walked to from the spots the original lists for using each type (its table of 67),
+  taken up (made, where the original makes one), carried (not drawn) and put down beside the
+  NPC or on another item; items made or put down are kept so the region reads back with them.
+  The items' own scripts (a bellows working, a firepit glowing and cooling, a blade reddening,
+  a spinning wheel or loom turning, a trough filling, with their sounds) run as the original's.
+
+  Not yet: barks (no text), usecode and conversation, held weapons and missiles (no weapon
+  drawn, no arrow flying), looking round the area, combat, the thief's pickpocketing, waking to
+  chase the avatar. A game hour is a real minute for now (`E_WORLD_MINUTE`);
   `-DSTART_MINUTES=` sets the time to start at (535: five minutes before the 9:00 change, to see
-  them go). On the PC `--trace n` logs NPC n's kinds and states as they change.
+  them go). On the PC `--trace n` logs NPC n's kinds and states as they change, and `--appear f`
+  keeps the avatar far off till frame f (so those whose period starts then are put at their
+  places, as off the screen).
 - **Roofs.** As the original works it out (`UpdateCeiling`): of the levels the solid statics (not
   doors) take over the avatar's row of cells, those above it; the lowest of them less one is the
   ceiling (so an upper floor goes with the roof), and statics and movers above it are not drawn
@@ -269,8 +283,7 @@ call chains (`tools/jag-profile.py --frames`).
 - **Animation.** Animated statics and terrain (water, fire, clocks) belong with the movers, not in
   the ring.
 - **Translucency**; **NPCs** from a save (it holds them as the game's memory, `U7NBUF.DAT` and
-  `U7IBUF.DAT`, not as `NPC.DAT`); the schedules' kinds not yet done at the place (the
-  waiter, the smith, baker, farmer, miner, thieves, ...), barks, and usecode;
+  `U7IBUF.DAT`, not as `NPC.DAT`); barks, usecode, held weapons;
   the other sounds (the effects are all in the dataset, only doors play them), looped sounds
   and music; the party.
 - **Order.** `order_of()` is a simple rule. It still needs checking against the original's frames

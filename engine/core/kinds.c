@@ -59,7 +59,8 @@
 #define S_FACE 2                /* face way n, 0-7 (a tick) */
 #define S_WAIT 3                /* n ticks */
 #define S_SOUND 4               /* sound n, at once */
-#define S_LOOP 5                /* from the start again, n times */
+#define S_LOOP 5                /* back to the mark (or the start) again, n times */
+#define S_MARK 6                /* where a loop goes back to */
 #define P(n) S_POSE, (n)
 #define FACE(n) S_FACE, (n)
 #define WAIT(n) S_WAIT, (n)
@@ -100,7 +101,7 @@ static void pop(int i, int result)
 {
 	struct Doing *d = &doing[i];
 
-	d->result = (int8_t) (result < 0 ? -1 : 0);
+	d->result = (int16_t) result;
 	if (d->depth > 1) {
 		d->depth--;
 		cur(d)->state++;
@@ -144,6 +145,7 @@ static void post(int i, const uint8_t *steps, int n)
 	d->script_len = (uint8_t) n;
 	d->pc = 0;
 	d->loops = 0;
+	d->mark = 0;
 	cur(d)->state++;
 	d->wait = 1;
 }
@@ -174,8 +176,11 @@ static int run_script(int i)
 		case S_LOOP:
 			if (d->loops < arg) {
 				d->loops++;
-				d->pc = 0;
+				d->pc = d->mark;
 			}
+			break;
+		case S_MARK:
+			d->mark = d->pc;
 			break;
 		}
 	}
@@ -219,53 +224,78 @@ static int nearest(uint16_t type, int x, int y, int r, int z0, int z1, int frame
 	return 1;
 }
 
-/* Where the original stands to use a type (Operate::findUseSpot's table, for the types the
- * schedules here use): from the item's hot spot, and the way (0-7) to face. */
-static const struct UseSpot {
-	uint16_t type;
-	int8_t n, spot[4][3];
-} use_spots[] = {
-	{ T_BED, 3, { { -1, 1, 0 }, { 1, -1, 6 }, { -3, -1, 2 } } },
-	{ T_BED_2, 3, { { 1, -1, 6 }, { -1, -3, 4 }, { -1, 1, 0 } } },
-	{ T_FUTON, 3, { { -1, 3, 0 }, { 3, -1, 6 }, { -3, 0, 2 } } },
-	{ T_FUTON_2, 3, { { 3, 0, 6 }, { 0, 3, 4 }, { 0, -3, 0 } } },
-	{ T_DUMMY, 1, { { -2, 3, 0 } } },
-	{ T_TARGET, 1, { { 3, -1, 6 } } },
-	{ T_ICON, 2, { { 4, 0, 6 }, { 3, 0, 6 } } },
-	{ T_TOMBSTONE, 1, { { 0, -3, 0 } } },
-};
+#include "usespots.h"
 
-/* A spot NPC i could stand on to use t from: 1, with it and the way to face. */
-static int use_spot(int i, const struct EThing *t, int *x, int *y, int *z, int *way)
+/* A type-frame argument (as the original's TypeFrame): the frame counts when bit 15 is set. */
+#define TF(type, frame) ((int16_t) ((type) | (frame) << 10 | 0x8000))
+#define SPEC_TYPE(spec) ((uint16_t) ((spec) & 0x3ff))
+#define SPEC_FRAME(spec) ((spec) & 0x8000 ? (spec) >> 10 & 31 : -1)
+
+/* How many levels an item stands. */
+static int height_of(uint16_t tf)
+{
+	struct EBody b;
+	int h = 0;
+
+	e_body(tf, &b);
+	for (uint16_t l = b.levels; l; l >>= 1)
+		h += l & 1;
+	return h;
+}
+
+/* A spot NPC i could stand on to use t from (Operate::findUseSpot): 1, with it and the way to
+ * face. With top (a type, else 0), one of it must fit on t's top ahead of the spot too. */
+static int use_spot(int i, const struct EThing *t, int *x, int *y, int *z, int *way, uint16_t top)
 {
 	uint16_t type = t->tf & 0x3ff, tf = e_walk_frame(npc[i].tf & 0x3ff, 2, 0);
-	int frame = t->tf >> 10 & 31;
+	int frame = t->tf >> 10 & 31, k, first, last;
+	int8_t spot[4];
 
-	if (type == T_CHAIR) {
-		*way = (frame & 3) * 2;
-		*x = t->x + way_x[*way];
-		*y = t->y + way_y[*way];
-		*z = t->z;
-		return in_near_window(*x, *y) && e_can_stand(tf, (int16_t) *x, (int16_t) *y, t->z);
-	}
-	if (type == T_PODIUM) {
-		if (frame != 0 && frame != 2)
+	if (type == T_CHAIR || type == T_PODIUM) {
+		first = 0;
+		last = 1;
+	} else {
+		for (k = 0; k < USE_TYPES && use_types[k] != type; k++)
+			;
+		if (k == USE_TYPES)
 			return 0;
-		*x = t->x - 1;
-		*y = t->y - (frame == 2);
-		*z = t->z;
-		*way = frame ? 4 : 2;
-		return in_near_window(*x, *y) && e_can_stand(tf, (int16_t) *x, (int16_t) *y, t->z);
+		first = use_starts[k];
+		last = use_starts[k + 1];
 	}
-	for (unsigned k = 0; k < sizeof use_spots / sizeof use_spots[0]; k++) {
-		if (use_spots[k].type != type)
+	for (int j = first; j < last; j++) {
+		if (type == T_CHAIR) {
+			spot[3] = (int8_t) ((frame & 3) * 2);
+			spot[0] = way_x[spot[3]];
+			spot[1] = way_y[spot[3]];
+			spot[2] = 0;
+		} else if (type == T_PODIUM) {
+			if (frame != 0 && frame != 2)
+				return 0;
+			spot[0] = -1;
+			spot[1] = (int8_t) -(frame == 2);
+			spot[2] = 2;            /* this level alone */
+			spot[3] = (int8_t) (frame ? 4 : 2);
+		} else
+			memcpy(spot, use_spots[j], 4);
+		int zlo = t->z, zhi = t->z;
+		if (spot[2] == -1)
+			zlo = t->z - 2;
+		else if (spot[2] == 1)
+			zhi = t->z + 2;
+		if (type == T_CHAIR)
+			zlo = zhi = t->z;
+		zlo = zlo < 0 ? 0 : zlo;
+		zhi = zhi > 15 ? 15 : zhi;
+		*x = t->x + spot[0];
+		*y = t->y + spot[1];
+		*way = spot[3];
+		if (!in_near_window(*x, *y))
 			continue;
-		for (int j = 0; j < use_spots[k].n; j++) {
-			*x = t->x + use_spots[k].spot[j][0];
-			*y = t->y + use_spots[k].spot[j][1];
-			*z = t->z;
-			*way = use_spots[k].spot[j][2];
-			if (in_near_window(*x, *y) && e_can_stand(tf, (int16_t) *x, (int16_t) *y, t->z))
+		for (*z = zlo; *z <= zhi; (*z)++) {
+			if (!e_can_stand(tf, (int16_t) *x, (int16_t) *y, (uint8_t) *z))
+				continue;
+			if (top == 0 || e_can_stand(top, (int16_t) (*x + way_x[*way]), (int16_t) (*y + way_y[*way]),
+				(uint8_t) (t->z + height_of(t->tf))))
 				return 1;
 		}
 	}
@@ -376,37 +406,50 @@ static int goto_place(int i)
 	return 0;
 }
 
-/* Walk to the use spot of the nearest item of type x (near one of type y, unless -1) within 25
- * cells, and face it (WalkToItemSchedule). */
+/* Walk to the use spot of the nearest item x (a type-frame) within 25 cells (near one of y,
+ * unless -1), and face it; pops its type (WalkToItemSchedule). The state's 0x80 (a put down's
+ * second try): the nearest x itself, the item y carries fitting on top of it. */
 static int goto_item(int i)
 {
 	struct Doing *d = &doing[i];
 	struct Level *l = cur(d);
 	struct EThing t, a;
-	int x, y, z, way, r;
+	int x, y, z, way, r, retry = 0;
 
+	if (l->state & 0x80) {
+		retry = 1;
+		l->state &= 0x7f;
+	}
 	switch (l->state) {
 	case 0:
 		if (planned || searched) {
+			if (retry)
+				l->state |= 0x80;
 			d->wait = 1;
 			return 0;
 		}
 		searched = 1;
-		if (l->y < 0 ? !nearest((uint16_t) l->x, npc[i].x, npc[i].y, 25, 0, 15, -1, &t)
-			: !nearest((uint16_t) l->y, npc[i].x, npc[i].y, 25, 0, 15, -1, &a)
-				|| !nearest((uint16_t) l->x, a.x, a.y, 25, 0, 15, -1, &t)) {
+		if (l->y == -1 || retry ? !nearest(SPEC_TYPE(l->x), npc[i].x, npc[i].y, 25, 0, 15, SPEC_FRAME(l->x), &t)
+			: !nearest(SPEC_TYPE(l->y), npc[i].x, npc[i].y, 25, 0, 15, SPEC_FRAME(l->y), &a)
+				|| !nearest(SPEC_TYPE(l->x), a.x, a.y, 25, 0, 15, SPEC_FRAME(l->x), &t)) {
 			pop(i, -1);
 			return 0;
 		}
-		if (!use_spot(i, &t, &x, &y, &z, &way) || (r = start_path(i, x, y, z, 100)) == 2) {
+		if (!use_spot(i, &t, &x, &y, &z, &way, retry ? SPEC_TYPE(l->y) : 0)
+			|| (r = start_path(i, x, y, z, 100)) == 2) {
 			pop(i, -1);
 			return 0;
 		}
 		if (r == 1) {
+			if (retry)
+				l->state |= 0x80;
 			d->wait = 1;
 			return 0;
 		}
 		d->face8 = (uint8_t) way;
+		l->state++;
+		return 0;
+	case 1:
 		l->state++;
 		return 0;
 	case 2:
@@ -419,7 +462,7 @@ static int goto_item(int i)
 		d->wait = TICK_BLANKS;
 		return show(i);
 	case 3:
-		pop(i, 0);
+		pop(i, SPEC_TYPE(l->x));
 		return 0;
 	}
 	return 0;
@@ -462,7 +505,7 @@ static int sit(int i)
 			for (int k = n > 0 ? -1 : 0; k < n; k++) {
 				/* first the one picked at random, then each in turn */
 				t = found[k < 0 ? (l->state == 0 ? 0 : rnd(n)) : k];
-				if (!use_spot(i, &t, &x, &y, &z, &way))
+				if (!use_spot(i, &t, &x, &y, &z, &way, 0))
 					continue;
 				r = start_path(i, x, y, t.z, 100);
 				if (r == 1) {
@@ -557,8 +600,8 @@ static int read_kind(int i)
 	return 0;
 }
 
-/* Pay respects (DoWorkPayRespects): walk to an item of type x, kneel a while, get up. (What the
- * original puts down there, a plant on a grave, is not.) */
+/* Pay respects (DoWorkPayRespects): (with y, an item to leave, taken up first) walk to an item of
+ * type x, (leave it there,) kneel a while, get up. */
 static int pay_respects(int i)
 {
 	struct Doing *d = &doing[i];
@@ -566,13 +609,19 @@ static int pay_respects(int i)
 
 	switch (l->state) {
 	case 0:
-		l->state = 1;
+		if (l->y == -1)
+			l->state++;
+		else
+			push(i, K_GRAB_ITEM, l->y, 1);
 		return 0;
 	case 1:
 		push(i, K_GOTO_ITEM, l->x, -1);
 		return 0;
 	case 2:
-		l->state = 3;
+		if (l->y == -1)
+			l->state++;
+		else
+			push(i, K_DROP_ITEM, l->y, -1);
 		return 0;
 	case 3:
 		if (d->result < 0) {
@@ -785,6 +834,414 @@ static int archery(int i)
 		POST(i, P(F_READY), WAIT(1), P(F_RAISE1), WAIT(1), P(F_EXTEND1), WAIT(1), P(F_READY),
 			WAIT(2));
 		l->state = 10;
+		return 0;
+	}
+	return 0;
+}
+
+/* ---- carrying ---- */
+
+/* The item NPC i carries that is spec (a type-frame), or -1. */
+static int held_find(int i, int spec)
+{
+	for (int k = 0; k < 4; k++) {
+		uint16_t tf = doing[i].held[k];
+		if (tf != 0 && (tf & 0x3ff) == SPEC_TYPE(spec)
+			&& (SPEC_FRAME(spec) < 0 || (tf >> 10 & 31) == SPEC_FRAME(spec)))
+			return k;
+	}
+	return -1;
+}
+
+static int held_free(int i)
+{
+	for (int k = 0; k < 4; k++)
+		if (doing[i].held[k] == 0)
+			return 1;
+	return 0;
+}
+
+/* A frame within type's (the original's ClampShapeFrame). */
+static int clamp_frame(uint16_t type, int frame)
+{
+	int n = e_shape_frames(type);
+
+	return frame >= n ? (n > 0 ? n - 1 : 0) : frame;
+}
+
+/* NPC i carries a new item (the original's CreateCarriedItem): its slot, or -1. */
+static int held_add(int i, uint16_t tf)
+{
+	for (int k = 0; k < 4; k++)
+		if (doing[i].held[k] == 0) {
+			doing[i].held[k] = tf;
+			return k;
+		}
+	return -1;
+}
+
+static uint16_t spec_tf(int spec)
+{
+	return (uint16_t) (SPEC_TYPE(spec) | (SPEC_FRAME(spec) < 0 ? 0 : SPEC_FRAME(spec)) << 10);
+}
+
+/* Where NPC i could put an item of type down beside it, the way it faces first (FindDropSpot):
+ * 1, with the way and the level. */
+static int drop_spot(int i, uint16_t type, int *way, int *z)
+{
+	for (int pass = 0; pass < 2; pass++)
+		for (int h = 0; h < 3; h++)
+			for (int k = 0; k < 4; k++) {
+				int w = pass ? 1 + 2 * k : (doing[i].dir * 2 + 2 * k) & 7;
+				if (e_can_stand(type, (int16_t) (npc[i].x + way_x[w]), (int16_t) (npc[i].y + way_y[w]),
+					(uint8_t) (npc[i].z + h))) {
+					*way = w;
+					*z = npc[i].z + h;
+					return 1;
+				}
+			}
+	return 0;
+}
+
+/* Pick up an item x (a type-frame): walked to and taken; with y 1, one made when none is found
+ * (PickUpItemSchedule). */
+static int grab_item(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	struct EThing t;
+
+	switch (l->state) {
+	case 0:
+		if (held_find(i, l->x) >= 0)
+			pop(i, 0);
+		else
+			push(i, K_GOTO_ITEM, l->x, -1);
+		return 0;
+	case 1:
+		if (d->result < 0) {
+			pop(i, l->y == 1 && held_add(i, spec_tf(l->x)) >= 0 ? 0 : -1);
+			return 0;
+		}
+		if (nearest(SPEC_TYPE(l->x), npc[i].x, npc[i].y, 8, 0, 15, SPEC_FRAME(l->x), &t)
+			&& t.z >= npc[i].z + 2) {
+			l->counter = 1;
+			POST(i, P(F_STAND), WAIT(1), P(F_READY), WAIT(2));
+		} else {
+			l->counter = 0;
+			POST(i, P(F_STAND), WAIT(2), P(F_BEND), WAIT(2));
+		}
+		return 0;
+	case 2:
+		if (held_free(i)
+			&& nearest(SPEC_TYPE(l->x), npc[i].x, npc[i].y, 8, 0, 15, SPEC_FRAME(l->x), &t)
+			&& e_thing_remove(&t)) {
+			held_add(i, t.tf);
+			l->state++;
+		} else
+			pop(i, -1);
+		return 0;
+	case 3:
+		if (l->counter)
+			POST(i, P(F_READY), WAIT(1), P(F_STAND), WAIT(2));
+		else
+			POST(i, P(F_BEND), WAIT(2), P(F_STAND), WAIT(2));
+		return 0;
+	case 4:
+		pop(i, 0);
+		return 0;
+	}
+	return 0;
+}
+
+/* Put down the item x it carries: beside it (y -1), else on the item y, walked to
+ * (PutDownItemSchedule; its sound, 18). */
+static int drop_item(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	struct EThing t;
+	int way, z, k;
+
+	switch (l->state) {
+	case 0:
+		l->counter = l->y != -1;
+		if (l->y != -1) {
+			l->state = 4;
+			return 0;
+		}
+		k = held_find(i, l->x);
+		if (k < 0 || !drop_spot(i, d->held[k], &way, &z)) {
+			pop(i, -1);
+			return 0;
+		}
+		face(i, way & 6);
+		l->y = (int16_t) z;
+		d->value = (int16_t) way;
+		if (npc[i].z + 2 <= z)
+			POST(i, P(F_STAND), WAIT(1), P(F_READY), WAIT(2));
+		else
+			POST(i, P(F_STAND), WAIT(2), P(F_BEND), WAIT(2));
+		return show(i);
+	case 1: {
+		int x = npc[i].x + way_x[d->value & 7], y = npc[i].y + way_y[d->value & 7];
+		k = held_find(i, l->x);
+		if (k >= 0 && e_can_stand(d->held[k], (int16_t) x, (int16_t) y, (uint8_t) l->y)
+			&& e_thing_add(d->held[k], (int16_t) x, (int16_t) y, (uint8_t) l->y, NULL)) {
+			d->held[k] = 0;
+			e_sound(18, (int16_t) x, (int16_t) y);
+			l->state++;
+		} else
+			pop(i, -1);
+		return 0;
+	}
+	case 2:
+		if (l->counter && l->y >= npc[i].z + 2)
+			POST(i, P(F_READY), WAIT(1), P(F_STAND), WAIT(2));
+		else
+			POST(i, P(F_BEND), WAIT(2), P(F_STAND), WAIT(2));
+		return 0;
+	case 3:
+		pop(i, 0);
+		return 0;
+	case 4:
+		push(i, K_GOTO_ITEM, l->y, l->x);
+		cur(d)->state = 0x80;   /* its second try: the item carried fitting on top */
+		return 0;
+	case 5:
+		if (d->result < 0 || !nearest(SPEC_TYPE(l->y), npc[i].x, npc[i].y, 8, 0, 15, SPEC_FRAME(l->y), &t)) {
+			pop(i, -1);
+			return 0;
+		}
+		l->y = (int16_t) (t.z + height_of(t.tf));
+		d->value = (int16_t) (d->dir * 2);
+		if (l->y >= npc[i].z + 2)
+			POST(i, P(F_STAND), WAIT(2), P(F_READY), WAIT(1));
+		else
+			POST(i, P(F_STAND), WAIT(2), P(F_BEND), WAIT(2));
+		l->state = 1;
+		return 0;
+	}
+	return 0;
+}
+
+/* Carry an item x to an item y: taken up (made if none is found), put on it (CarryItemSchedule). */
+static int move_item(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+
+	switch (l->state) {
+	case 0:
+		l->state = held_find(i, l->x) >= 0 ? 1 : 5;
+		return 0;
+	case 1:
+		push(i, K_DROP_ITEM, l->x, l->y);
+		return 0;
+	case 2:
+		pop(i, d->result < 0 ? -1 : 0);
+		return 0;
+	case 5:
+		push(i, K_GRAB_ITEM, l->x, 1);
+		return 0;
+	case 6:
+		if (held_find(i, l->x) >= 0)
+			l->state = 1;
+		else
+			pop(i, -1);
+		return 0;
+	}
+	return 0;
+}
+
+/* ---- the items' scripts (the original's PostScriptToItem): frames, waits, sounds, a tick each
+ * but the sounds ---- */
+
+#define I_FRAME 1
+#define I_WAIT 2
+#define I_SOUND 3
+#define I_NEXT 4                /* the next frame, round to the first */
+#define I_NEXT_MAX 5            /* the next frame, but not past the last */
+#define I_PREV_MIN 6            /* the frame before, but not before the first */
+#define I_MARK 7
+#define I_LOOP 8                /* back to the mark (or the start), n times */
+#define THING_SCRIPTS 16
+
+static struct ThingScript {
+	struct EThing t;
+	uint8_t on, pc, len, mark, loops;
+	int16_t wait;
+	uint8_t s[48];
+} thing_scripts[THING_SCRIPTS];
+
+/* A script for item t (one it had given way); nothing for none. */
+static void post_thing(const struct EThing *t, const uint8_t *steps, int n, int found)
+{
+	struct ThingScript *o = NULL;
+
+	if (!found)
+		return;
+	for (int k = 0; k < THING_SCRIPTS && o == NULL; k++)
+		if (thing_scripts[k].on && thing_scripts[k].t.x == t->x && thing_scripts[k].t.y == t->y
+			&& thing_scripts[k].t.z == t->z && (thing_scripts[k].t.tf & 0x3ff) == (t->tf & 0x3ff))
+			o = &thing_scripts[k];
+	for (int k = 0; k < THING_SCRIPTS && o == NULL; k++)
+		if (!thing_scripts[k].on)
+			o = &thing_scripts[k];
+	if (o == NULL)
+		return;
+	o->t = *t;
+	o->on = 1;
+	o->pc = o->mark = o->loops = 0;
+	o->wait = 0;
+	o->len = (uint8_t) (n > (int) sizeof o->s ? (int) sizeof o->s : n);
+	memcpy(o->s, steps, o->len);
+}
+#define THING(t, found, ...) do { static const uint8_t s_[] = { __VA_ARGS__ }; \
+	post_thing(t, s_, sizeof s_, found); } while (0)
+
+void kind_things(int blanks)
+{
+	for (int k = 0; k < THING_SCRIPTS; k++) {
+		struct ThingScript *o = &thing_scripts[k];
+		if (!o->on)
+			continue;
+		o->wait = (int16_t) (o->wait - blanks);
+		while (o->on && o->wait <= 0) {
+			if (o->pc >= o->len) {
+				o->on = 0;
+				break;
+			}
+			uint8_t op = o->s[o->pc], arg = o->s[o->pc + 1];
+			int frame = o->t.tf >> 10 & 31, n = e_shape_frames(o->t.tf & 0x3ff), to = -1;
+			o->pc += 2;
+			switch (op) {
+			case I_FRAME: to = arg; break;
+			case I_NEXT: to = n > 0 ? (frame + 1) % n : 0; break;
+			case I_NEXT_MAX: to = frame + 1 < n ? frame + 1 : frame; break;
+			case I_PREV_MIN: to = frame > 0 ? frame - 1 : 0; break;
+			case I_WAIT: o->wait = (int16_t) (o->wait + arg * TICK_BLANKS); break;
+			case I_SOUND: e_sound(arg, o->t.x, o->t.y); break;
+			case I_MARK: o->mark = o->pc; break;
+			case I_LOOP:
+				if (o->loops < arg) {
+					o->loops++;
+					o->pc = o->mark;
+				}
+				break;
+			}
+			if (to >= 0) {
+				if (to != frame && !e_thing_set(&o->t, (uint16_t) ((o->t.tf & ~(31u << 10)) | (uint16_t) to << 10)))
+					o->on = 0;      /* gone */
+				o->wait = (int16_t) (o->wait + TICK_BLANKS);
+			}
+		}
+	}
+}
+
+/* Fill a bucket (DoWorkFillBucket): the bucket taken (made if none), at the trough (x), or the
+ * well (x), or (x -1) the trough unless it is empty; the bucket full (frame 1). */
+static int fill_bucket(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	struct EThing t;
+	int k, found;
+
+	switch (l->state) {
+	case 0:
+		if (held_find(i, 810) >= 0)
+			l->state++;
+		else
+			push(i, K_GRAB_ITEM, 810, 1);
+		return 0;
+	case 1: {
+		int type = l->x == 719 || l->x == 470 ? l->x : 719;
+		if (l->x != 719 && l->x != 470 && (!nearest(719, npc[i].x, npc[i].y, 25, 0, 15, -1, &t)
+			|| (t.tf >> 10 & 31) == 0))
+			type = 470;
+		if (d->result < 0)
+			pop(i, -1);
+		else
+			push(i, K_GOTO_ITEM, type, -1);
+		return 0;
+	}
+	case 2:
+		if (d->result < 0) {
+			k = held_find(i, 810);
+			if (k >= 0)
+				d->held[k] = 810 | 1 << 10;
+			pop(i, 0);
+		} else if (d->result == 719) {
+			POST(i, P(F_STAND), WAIT(2), P(F_BEND), WAIT(2), P(F_BEND), WAIT(2), P(F_STAND), WAIT(2));
+			found = nearest(719, npc[i].x, npc[i].y, 25, 0, 15, -1, &t);
+			THING(&t, found, I_WAIT, 5, I_PREV_MIN, 0);
+		} else {
+			POST(i, P(F_READY), P(F_READY), P(F_THRUST1), P(F_THRUST1), P(F_RAISE1), P(F_RAISE1),
+				P(F_EXTEND1), P(F_EXTEND1), P(F_RAISE1), P(F_RAISE1), P(F_THRUST1), P(F_THRUST1),
+				P(F_READY), P(F_READY));
+			found = nearest(740, npc[i].x, npc[i].y, 25, 0, 15, -1, &t);
+			THING(&t, found, I_FRAME, 1, I_FRAME, 1, I_FRAME, 2, I_FRAME, 2, I_FRAME, 3, I_WAIT, 5,
+				I_FRAME, 4, I_FRAME, 4, I_FRAME, 5, I_FRAME, 5, I_FRAME, 0);
+		}
+		return 0;
+	case 3:
+		k = held_find(i, 810);
+		if (k >= 0)
+			d->held[k] = 810 | 1 << 10;
+		pop(i, 0);
+		return 0;
+	}
+	return 0;
+}
+
+/* Fill the water trough (DoWorkFillWaterTrough): buckets from the well poured in till it is
+ * full (frame 3). */
+static int fill_trough(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	struct EThing t;
+	int k, found;
+
+	switch (l->state) {
+	case 0:
+		if (nearest(719, npc[i].x, npc[i].y, 25, 0, 15, -1, &t) && (t.tf >> 10 & 31) == 3)
+			pop(i, 0);
+		else
+			l->state++;
+		return 0;
+	case 1:
+		push(i, K_FILL_BUCKET, 470, -1);
+		return 0;
+	case 2:
+		if (d->result < 0)
+			pop(i, -1);
+		else
+			push(i, K_GOTO_ITEM, 719, -1);
+		return 0;
+	case 3:
+		if (d->result < 0) {
+			pop(i, -1);
+			return 0;
+		}
+		POST(i, P(F_STAND), WAIT(2), P(F_BEND), WAIT(2));
+		found = nearest(719, npc[i].x, npc[i].y, 5, 0, 15, -1, &t);
+		THING(&t, found, I_WAIT, 4, I_SOUND, 46, I_NEXT_MAX, 0);
+		return 0;
+	case 4:
+		k = held_find(i, 810);
+		if (k >= 0)
+			d->held[k] = 810;
+		POST(i, P(F_BEND), WAIT(2), P(F_STAND), WAIT(2));
+		if (nearest(719, npc[i].x, npc[i].y, 5, 0, 15, -1, &t) && (t.tf >> 10 & 31) < 3)
+			l->state = 1;
+		return 0;
+	case 5:
+		push(i, K_DROP_ITEM, 810, -1);
+		return 0;
+	case 6:
+		pop(i, 0);
 		return 0;
 	}
 	return 0;
@@ -1007,7 +1464,7 @@ static int find_bed(int i)
 		return 0;
 	if (!have_a || (have_c && far_of(p->x, p->y, c.x, c.y) < far_of(p->x, p->y, a.x, a.y)))
 		a = c;
-	if (!use_spot(i, &a, &x, &y, &z, &way))
+	if (!use_spot(i, &a, &x, &y, &z, &way, 0))
 		return -1;
 	if ((r = start_path(i, x, y, z, 100)) == 1)
 		return 2;
@@ -1265,9 +1722,28 @@ static int desk(int i)
 	case 31:
 		l->state = 1;
 		return 0;
-	case 20:
-		push(i, K_MOVE_ITEM, 675, T_DESK);
+	case 20: {
+		/* a new desk item, taken to one of the desks and tables in reach */
+		static const uint16_t places[4] = { 407, 633, 1000, 283 };
+		static const uint8_t frames[13] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 15 };
+		int found[4], any = 0, pick;
+		if (planned || searched) {
+			d->wait = 1;
+			return 0;
+		}
+		searched = 1;
+		for (int k = 0; k < 4; k++)
+			any |= found[k] = nearest(places[k], npc[i].x, npc[i].y, 25, 0, 15, -1, &a);
+		if (!any) {
+			l->state = 1;
+			return 0;
+		}
+		do
+			pick = rnd(4);
+		while (!found[pick]);
+		push(i, K_MOVE_ITEM, TF(675, frames[rnd(13)]), places[pick]);
 		return 0;
+	}
 	case 30:
 		push(i, K_CHECK_AREA, 1, -1);
 		return 0;
@@ -1709,7 +2185,10 @@ static int patrol(int i)
 			break;
 		case 4:
 			l->state = 2;
-			push(i, K_PAY_RESPECTS, T_TOMBSTONE, -1);
+			{
+				static const uint8_t flowers[5] = { 1, 2, 3, 6, 7 };
+				push(i, K_PAY_RESPECTS, T_TOMBSTONE, TF(999, flowers[rnd(5)]));
+			}
 			break;
 		case 5:
 			POST(i, P(F_STAND), WAIT(2), P(F_BEND), WAIT(2), P(F_KNEEL), WAIT(20), P(F_BEND), WAIT(2),
@@ -1817,6 +2296,877 @@ static int patrol(int i)
 	return 0;
 }
 
+/* ---- the kinds that carry and make things ---- */
+
+/* A diner (eating at the inn, sitting) within 25 cells of waiter i with no serving spec ahead,
+ * room ahead for one, and a free cell to one side to serve from (FindUnservedDiner): -1 for none. */
+static int unserved_diner(int i, int spec)
+{
+	uint16_t type = SPEC_TYPE(spec), wtf = e_walk_frame(npc[i].tf & 0x3ff, 2, 0);
+	struct EThing t;
+
+	for (int k = 0; k < nnpc; k++) {
+		struct Doing *e = &doing[k];
+		if (k == i || k == avatar || e->depth == 0 || e->level[0].kind != K_EAT_INN || e->pose != F_SIT
+			|| far_of(npc[i].x, npc[i].y, npc[k].x, npc[k].y) > 25)
+			continue;
+		int w = e->dir * 2, ax = npc[k].x + way_x[w], ay = npc[k].y + way_y[w];
+		if (e_things(type, (int16_t) ax, (int16_t) ay, (int16_t) ax, (int16_t) ay, &t, 1)
+			&& (SPEC_FRAME(spec) < 0 || (t.tf >> 10 & 31) == SPEC_FRAME(spec)))
+			continue;
+		if (!e_can_stand(type, (int16_t) ax, (int16_t) ay, (uint8_t) (npc[k].z + (type == T_PLATE ? 2 : 3))))
+			continue;
+		for (int side = 6; side <= 10; side += 4) {
+			int sw = (w + side) & 7;
+			if (e_can_stand(wtf, (int16_t) (npc[k].x + way_x[sw]), (int16_t) (npc[k].y + way_y[sw]), npc[i].z))
+				return k;
+		}
+	}
+	return -1;
+}
+
+/* A walk to the cell beside x, y to the left or right of one facing way w (8: any side), as the
+ * original's WalkBesideItem: what start_path gives, 0 also when beside it already (with the state
+ * moved past the walk), 2 when no cell is free. */
+static int walk_beside(int i, int x, int y, int w)
+{
+	struct Doing *d = &doing[i];
+	uint16_t tf = e_walk_frame(npc[i].tf & 0x3ff, 2, 0);
+	int tx, ty, r;
+
+	if (far_of(npc[i].x, npc[i].y, x, y) == 1 && (npc[i].x == x || npc[i].y == y)) {
+		cur(d)->state++;        /* no walk: as if it had ended */
+		d->result = 0;
+		return 0;
+	}
+	if (w == 8) {
+		int k;
+		for (k = 2; k < 10; k += 2)
+			if (e_can_stand(tf, (int16_t) (x + way_x[k & 7]), (int16_t) (y + way_y[k & 7]), npc[i].z))
+				break;
+		if (k == 10)
+			return 2;
+		tx = x + way_x[k & 7];
+		ty = y + way_y[k & 7];
+		w = (k + 4) & 7;
+	} else if (e_can_stand(tf, (int16_t) (x + way_x[(w + 6) & 7]), (int16_t) (y + way_y[(w + 6) & 7]), npc[i].z)) {
+		d->value = 0;
+		tx = x + way_x[(w + 6) & 7];
+		ty = y + way_y[(w + 6) & 7];
+	} else if (e_can_stand(tf, (int16_t) (x + way_x[(w + 2) & 7]), (int16_t) (y + way_y[(w + 2) & 7]), npc[i].z)) {
+		d->value = 1;
+		tx = x + way_x[(w + 2) & 7];
+		ty = y + way_y[(w + 2) & 7];
+	} else
+		return 2;
+	r = start_path(i, tx, ty, 0, 100);
+	if (r == 0)
+		d->face8 = (uint8_t) w;
+	return r;
+}
+
+/* A serving set on the table ahead of the diner beside the waiter (SetDownServing): a plate on the
+ * table top, food on the plate. */
+static void set_down_serving(int i, int spec)
+{
+	static const uint8_t plates[2] = { 4, 5 };
+	static const uint8_t foods[17] = { 0, 2, 3, 6, 9, 11, 12, 15, 16, 17, 19, 24, 25, 27, 29, 30, 31 };
+	uint16_t type = SPEC_TYPE(spec);
+	int frame = type == T_PLATE ? plates[rnd(2)] : type == T_FOOD ? foods[rnd(17)] : SPEC_FRAME(spec);
+	int w = (doing[i].dir * 2 + (doing[i].value ? 7 : 1)) & 7;
+	int x = npc[i].x + way_x[w], y = npc[i].y + way_y[w], z = npc[i].z + (type == T_PLATE ? 0 : 1) + 2;
+	struct EThing t;
+
+	if (e_things(type, (int16_t) x, (int16_t) y, (int16_t) x, (int16_t) y, &t, 1))
+		return;
+	if (e_can_stand(type, (int16_t) x, (int16_t) y, (uint8_t) z))
+		e_thing_add((uint16_t) (type | clamp_frame(type, frame < 0 ? 0 : frame) << 10), (int16_t) x,
+			(int16_t) y, (uint8_t) z, NULL);
+}
+
+/* An item spec within 25 cells with no one beside it but the waiter and a side free to reach
+ * (FindItemToClear): 1, into t. */
+static int item_to_clear(int i, int spec, struct EThing *t)
+{
+	static struct EThing found[48];
+	uint16_t tf = e_walk_frame(npc[i].tf & 0x3ff, 2, 0);
+	int n = e_things(SPEC_TYPE(spec), (int16_t) (npc[i].x - 25), (int16_t) (npc[i].y - 25),
+		(int16_t) (npc[i].x + 25), (int16_t) (npc[i].y + 25), found, 48);
+
+	for (int k = 0; k < n; k++) {
+		int busy = 0, w;
+		if (SPEC_FRAME(spec) >= 0 && (found[k].tf >> 10 & 31) != SPEC_FRAME(spec))
+			continue;
+		for (w = 0; w < 8 && !busy; w += 2) {
+			int x = found[k].x + way_x[w], y = found[k].y + way_y[w];
+			busy = me_x == x && me_y == y;
+			for (int s = 1; s < E_MOVERS && !busy; s++)
+				busy = slot_npc[s] >= 0 && slot_npc[s] != i && npc[slot_npc[s]].x == x && npc[slot_npc[s]].y == y;
+		}
+		if (busy)
+			continue;
+		for (w = 0; w < 8; w += 2)
+			if (e_can_stand(tf, (int16_t) (found[k].x + way_x[w]), (int16_t) (found[k].y + way_y[w]), npc[i].z)) {
+				*t = found[k];
+				return 1;
+			}
+	}
+	return 0;
+}
+
+/* The item spec in the cell NPC i faces taken away (RemoveItemAhead). */
+static void remove_ahead(int i, int spec)
+{
+	struct EThing t[4];
+	int w = doing[i].dir * 2, x = npc[i].x + way_x[w], y = npc[i].y + way_y[w];
+	int n = e_things(SPEC_TYPE(spec), (int16_t) x, (int16_t) y, (int16_t) x, (int16_t) y, t, 4);
+
+	for (int k = 0; k < n; k++)
+		if (SPEC_FRAME(spec) < 0 || (t[k].tf >> 10 & 31) == SPEC_FRAME(spec)) {
+			e_thing_remove(&t[k]);
+			return;
+		}
+}
+
+/* Waiter (RunWaiterSchedule): plates and then food served to diners at the inn, tableware set
+ * out, the cauldron stirred, plates and food cleared away. */
+static int waiter(int i)
+{
+	static const uint16_t types[5] = { 944, 388, 616, 681, 628 };   /* pot, utensils, bottle, jar, cup */
+	static const uint16_t tables[2] = { 1003, 1018 };
+	static const uint16_t places[3] = { 1003, 1018, 872 };          /* two tables and a stove */
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	struct EThing t;
+	int k, r;
+
+	switch (l->state) {
+	case 0:
+		push(i, K_GOTO_PLACE, -1, -1);
+		return 0;
+	case 1:
+		if (chance(3)) {
+			l->state = 0;
+			push(i, K_CHECK_AREA, 1, -1);
+		} else {
+			l->state = chance(2) ? 10 : (uint8_t) ((rnd(3) + 2) * 10);
+			l->x = 0;
+		}
+		return 0;
+	case 10:
+		if (planned || searched) {
+			d->wait = 1;
+			return 0;
+		}
+		searched = 1;
+		if (l->x == 0)
+			l->x = T_PLATE;
+		k = unserved_diner(i, l->x);
+		if (k >= 0) {
+			r = walk_beside(i, npc[k].x, npc[k].y, doing[k].dir * 2);
+			if (r == 0 && l->state == 10)
+				l->state++;
+			else if (r == 1)
+				d->wait = 1;
+		} else if (l->x == T_PLATE)
+			l->x = T_FOOD;
+		else
+			l->state = 1;
+		return 0;
+	case 11:
+		l->state++;
+		return 0;
+	case 12:
+		if (d->result < 0)
+			l->state = 1;
+		else {
+			face(i, d->face8);
+			POST(i, WAIT(0));
+			return show(i);
+		}
+		return 0;
+	case 13:
+		if (chance(3))
+			POST(i, WAIT(15), P(F_READY), WAIT(2));
+		else
+			POST(i, P(F_READY), WAIT(2));
+		return 0;
+	case 14:
+		set_down_serving(i, l->x);
+		POST(i, P(F_READY), WAIT(2), P(F_STAND), WAIT(2));
+		l->state = 10;
+		return 0;
+	case 20:
+		l->y = (int16_t) types[rnd(5)];
+		push(i, K_MOVE_ITEM, l->y, l->y == 944 ? places[rnd(3)] : tables[rnd(2)]);
+		return 0;
+	case 21:
+	case 32:
+		l->state = 1;
+		return 0;
+	case 30:
+		push(i, K_GOTO_ITEM, 995, -1);
+		return 0;
+	case 31:
+		if (d->result < 0)
+			l->state = 1;
+		else {
+			uint8_t s[4] = { S_FACE, d->face8, S_WAIT, (uint8_t) range(10, 20) };
+			post(i, s, 4);
+		}
+		return 0;
+	case 40:
+		if (planned || searched) {
+			d->wait = 1;
+			return 0;
+		}
+		searched = 1;
+		if (l->x == 0)
+			l->x = T_FOOD;
+		if (item_to_clear(i, l->x, &t) && (r = walk_beside(i, t.x, t.y, 8)) != 2) {
+			if (r == 1) {
+				d->wait = 1;
+				return 0;
+			}
+			l->counter = t.z;
+			if (l->state == 40)
+				l->state++;
+		} else if (l->x == T_FOOD)
+			l->x = T_PLATE;
+		else
+			l->state = 1;
+		return 0;
+	case 41:
+		l->state++;
+		return 0;
+	case 42:
+		face(i, d->face8);
+		if (l->counter >= 2)
+			POST(i, P(F_STAND), WAIT(1), P(F_READY), WAIT(2));
+		else
+			POST(i, P(F_STAND), WAIT(2), P(F_BEND), WAIT(2));
+		return show(i);
+	case 43:
+		/* a plate goes with the food on it */
+		if (l->x == T_PLATE)
+			remove_ahead(i, T_FOOD);
+		remove_ahead(i, l->x);
+		if (l->counter >= 2)
+			POST(i, P(F_READY), WAIT(1), P(F_STAND), WAIT(2));
+		else
+			POST(i, P(F_BEND), WAIT(2), P(F_STAND), WAIT(2));
+		return 0;
+	case 44:
+		l->state = 40;
+		return 0;
+	}
+	return 0;
+}
+
+/* Farm (RunFarmSchedule): working the crops (a knife or scythe), each now and then cut. */
+static int farm(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	struct EThing t;
+
+	switch (l->state) {
+	case 0:
+		push(i, K_GOTO_PLACE, -1, -1);
+		return 0;
+	case 1:
+		push(i, K_READY_HAND, chance(2) ? 615 : 618, 1);
+		return 0;
+	case 2:
+		d->value = 0;
+		l->state++;
+		return 0;
+	case 3:
+		push(i, K_GOTO_ITEM, TF(423, rnd(8) * 4 + rnd(3)), -1);
+		return 0;
+	case 4:
+		if (d->result < 0)
+			l->state = 3;
+		else if (chance(2))
+			POST(i, P(F_READY), WAIT(1), P(F_RAISE1), WAIT(1), P(F_EXTEND1), WAIT(1), P(F_THRUST1), WAIT(2),
+				P(F_READY));
+		else
+			POST(i, P(F_READY), WAIT(1), P(F_RAISE2), WAIT(1), P(F_EXTEND2), WAIT(1), P(F_THRUST2), WAIT(2),
+				P(F_READY));
+		return 0;
+	case 5:
+		if (chance(4)) {
+			/* crops come in fours of frames: these to the last of theirs */
+			int w = d->dir * 2, x = npc[i].x + way_x[w], y = npc[i].y + way_y[w];
+			if (e_things(423, (int16_t) x, (int16_t) y, (int16_t) x, (int16_t) y, &t, 1))
+				e_thing_set(&t, (uint16_t) (t.tf | 3u << 10));
+			l->state = 2;
+		} else {
+			d->value = d->value >= 5 ? 0 : d->value + 1;
+			l->state = 4;
+		}
+		return 0;
+	}
+	return 0;
+}
+
+/* Mine (RunMinerSchedule): a pick at lead or iron ore; the rock now and then cracks a frame
+ * further, or an uncracked one gives way to a gold nugget or a gem. */
+static int miner(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	struct EThing t;
+
+	switch (l->state) {
+	case 0:
+		push(i, K_GOTO_PLACE, -1, -1);
+		return 0;
+	case 1:
+		push(i, K_READY_HAND, 624, 1);
+		return 0;
+	case 2:
+		l->x = 0;
+		l->state++;
+		return 0;
+	case 3:
+		l->y = chance(2) ? 915 : 916;
+		push(i, K_GOTO_ITEM, TF(l->y, 0), -1);
+		return 0;
+	case 4:
+		if (d->result < 0) {
+			if (chance(5)) {
+				set_kind(i, K_LOITER);
+				cur(d)->state = 1;
+			} else
+				l->state = 3;
+		} else if (chance(2))
+			POST(i, P(F_READY), WAIT(1), P(F_RAISE1), WAIT(1), P(F_EXTEND1), WAIT(1), P(F_THRUST1), SOUND(4),
+				WAIT(1), P(F_READY));
+		else
+			POST(i, P(F_READY), WAIT(1), P(F_RAISE2), WAIT(1), P(F_EXTEND2), WAIT(1), P(F_THRUST2), SOUND(4),
+				WAIT(1), P(F_READY));
+		return 0;
+	case 5:
+		l->state = 4;
+		if (chance(4)) {
+			int w = d->dir * 2, x = npc[i].x + way_x[w] * 3, y = npc[i].y + way_y[w] * 3;
+			if (!e_things((uint16_t) l->y, (int16_t) x, (int16_t) y, (int16_t) x, (int16_t) y, &t, 1)) {
+				l->state = 2;
+				return 0;
+			}
+			int frame = t.tf >> 10 & 31;
+			if (frame == 0 && chance(10)) {
+				uint16_t found = chance(2) ? 645 : 760;
+				if (e_thing_remove(&t))
+					e_thing_add(found, t.x, t.y, t.z, NULL);
+				l->state = 2;
+				return 0;
+			}
+			frame = clamp_frame((uint16_t) l->y, frame + 1);
+			e_thing_set(&t, (uint16_t) ((t.tf & ~(31u << 10)) | (uint16_t) frame << 10));
+			if (frame == 3) {
+				l->state = 2;
+				return 0;
+			}
+			l->x = 0;
+		} else
+			l->x = l->x >= 5 ? 0 : l->x + 1;
+		return 0;
+	}
+	return 0;
+}
+
+/* Blacksmith (RunBlacksmithSchedule): a sword blank heated in the firepit (the bellows worked),
+ * hammered on the anvil, quenched in the trough, the tools put back. */
+static int smith(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	struct EThing t, pit;
+	int found, k;
+
+	switch (l->state) {
+	case 0:
+		push(i, K_GOTO_PLACE, -1, -1);
+		return 0;
+	case 1:
+		if (chance(3)) {
+			l->state = 0;
+			push(i, K_CHECK_AREA, 1, -1);
+		} else
+			push(i, K_MOVE_ITEM, TF(668, 0), 739);
+		return 0;
+	case 2:
+		push(i, K_GOTO_ITEM, 431, -1);
+		return 0;
+	case 3:
+		if (d->result < 0) {
+			l->state = 1;
+			return 0;
+		}
+		/* the bellows worked while the firepit and the blank heat up */
+		POST(i, P(F_STAND), WAIT(2), P(F_UP), WAIT(2), P(F_BEND), WAIT(2), P(F_UP), WAIT(2), P(F_STAND),
+			WAIT(2), S_LOOP, 7);
+		found = nearest(431, npc[i].x, npc[i].y, 5, 0, 15, -1, &t);
+		THING(&t, found, I_FRAME, 0, I_WAIT, 2, I_FRAME, 1, I_WAIT, 2, I_SOUND, 47, I_FRAME, 2, I_WAIT, 2,
+			I_FRAME, 1, I_WAIT, 2, I_FRAME, 0, I_WAIT, 2, I_LOOP, 7);
+		found = nearest(739, npc[i].x, npc[i].y, 10, 0, 15, -1, &pit);
+		THING(&pit, found, I_WAIT, 34, I_NEXT_MAX, 0, I_WAIT, 29, I_NEXT_MAX, 0, I_WAIT, 29, I_NEXT_MAX, 0,
+			I_WAIT, 45, I_PREV_MIN, 0, I_WAIT, 60, I_PREV_MIN, 0, I_WAIT, 105, I_PREV_MIN, 0);
+		found = found ? nearest(668, pit.x, pit.y, 10, 0, 15, -1, &t)
+			: nearest(668, npc[i].x, npc[i].y, 10, 0, 15, -1, &t);
+		THING(&t, found, I_WAIT, 34, I_NEXT_MAX, 0, I_MARK, 0, I_WAIT, 14, I_NEXT_MAX, 0, I_LOOP, 3);
+		return show(i);
+	case 4:
+		push(i, K_READY_HAND, 994, 1);
+		return 0;
+	case 5:
+		push(i, K_MOVE_ITEM, 668, 991);
+		return 0;
+	case 6:
+		if (d->result < 0)
+			l->state = 1;
+		else
+			push(i, K_READY_HAND, 623, 1);
+		return 0;
+	case 7:
+		push(i, K_GOTO_ITEM, 991, -1);
+		return 0;
+	case 8:
+		POST(i, P(F_READY), WAIT(2), P(F_RAISE1), WAIT(2), P(F_OUT), SOUND(45), WAIT(2), P(F_READY), WAIT(2),
+			S_LOOP, 2);
+		found = nearest(668, npc[i].x, npc[i].y, 10, 0, 15, -1, &t);
+		THING(&t, found, I_WAIT, 8, I_PREV_MIN, 0, I_LOOP, 2);
+		return 0;
+	case 9:
+		if (nearest(719, npc[i].x, npc[i].y, 25, 0, 15, -1, &t) && (t.tf >> 10 & 31) == 0)
+			push(i, K_FILL_TROUGH, -1, -1);
+		else
+			l->state++;
+		return 0;
+	case 10:
+		push(i, K_GRAB_ITEM, 668, -1);
+		return 0;
+	case 11:
+		if (d->result < 0)
+			l->state = 1;
+		else
+			push(i, K_GOTO_ITEM, 719, -1);
+		return 0;
+	case 12:
+		if (d->result < 0) {
+			l->state = 1;
+			return 0;
+		}
+		POST(i, P(F_STAND), WAIT(2), P(F_UP), WAIT(2), P(F_BEND), WAIT(2), P(F_UP), WAIT(2), P(F_STAND),
+			WAIT(2), S_LOOP, 2);
+		found = nearest(719, npc[i].x, npc[i].y, 5, 0, 15, -1, &t);
+		THING(&t, found, I_WAIT, 7, I_SOUND, 46, I_WAIT, 15, I_SOUND, 46, I_WAIT, 15, I_SOUND, 46,
+			I_PREV_MIN, 0);
+		return 0;
+	case 13:
+		k = held_find(i, 668);
+		if (k >= 0)
+			d->held[k] = 668;   /* cooled: frame 0 */
+		l->state++;
+		return 0;
+	case 14:
+		push(i, K_MOVE_ITEM, 623, 1003);
+		return 0;
+	case 15:
+		push(i, K_MOVE_ITEM, 994, 1003);
+		return 0;
+	case 16:
+		l->state = 1;
+		return 0;
+	}
+	return 0;
+}
+
+/* Bake (RunBakeSchedule): kitchen things set out, a wait at the hearth, the bread there taken to a
+ * table, dough made from flour and kneaded and put in the hearth, the dough in it baked. */
+static int bake(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	struct EThing t, hearth;
+	int k;
+
+	switch (l->state) {
+	case 0:
+		push(i, K_GOTO_PLACE, -1, -1);
+		return 0;
+	case 1:
+		if (!chance(4))
+			l->state = (uint8_t) ((rnd(6) + 1) * 10);
+		return 0;
+	case 10:
+		push(i, K_MOVE_ITEM, TF(863, rnd(e_shape_frames(863) > 0 ? e_shape_frames(863) : 1)),
+			chance(2) ? 1003 : 1018);
+		return 0;
+	case 11:
+	case 22:
+	case 61:
+		l->state = 1;
+		return 0;
+	case 20:
+	case 31:
+		push(i, K_GOTO_ITEM, 831, -1);
+		return 0;
+	case 21: {
+		uint8_t s[2] = { S_WAIT, (uint8_t) range(12, 20) };
+		post(i, s, 2);
+		return 0;
+	}
+	case 30:
+	case 50:
+		if (!nearest(831, npc[i].x, npc[i].y, 25, 0, 15, -1, &hearth)) {
+			set_kind(i, K_LOITER);
+			cur(d)->state = 1;
+			return 0;
+		}
+		k = e_things(l->state == 30 ? T_FOOD : 658, (int16_t) (hearth.x - 1), hearth.y, (int16_t) (hearth.x - 1),
+			hearth.y, &t, 1);
+		if (l->state == 30) {
+			l->state = k ? 31 : 1;
+			return 0;
+		}
+		if (k && e_thing_remove(&t)) {
+			static const uint8_t baked[6] = { 0, 2, 3, 4, 5, 6 };
+			e_thing_add((uint16_t) (T_FOOD | baked[rnd(6)] << 10), t.x, t.y, t.z, NULL);
+		}
+		l->state = 1;
+		return 0;
+	case 32:
+		if (d->result < 0)
+			l->state = 1;
+		else
+			push(i, K_MOVE_ITEM, T_FOOD, 633);
+		return 0;
+	case 33:
+		if (d->result < 0)
+			while ((k = held_find(i, T_FOOD)) >= 0)
+				d->held[k] = 0;
+		l->state = 1;
+		return 0;
+	case 40:
+		push(i, K_GOTO_ITEM, TF(863, 13), -1);
+		return 0;
+	case 41:
+		POST(i, P(F_STAND), WAIT(2), P(F_BEND), WAIT(2));
+		return 0;
+	case 42:
+		POST(i, P(F_BEND), WAIT(2), P(F_STAND), WAIT(2));
+		held_add(i, 863);
+		return 0;
+	case 43:
+		push(i, K_DROP_ITEM, 863, chance(2) ? 1003 : 1018);
+		return 0;
+	case 44:
+		push(i, K_GRAB_ITEM, TF(863, 0), -1);
+		return 0;
+	case 45:
+		if ((k = held_find(i, TF(863, 0))) >= 0)
+			d->held[k] = 0;
+		held_add(i, 658);
+		l->state++;
+		return 0;
+	case 46:
+		push(i, K_DROP_ITEM, TF(658, 0), chance(2) ? 1003 : 1018);
+		return 0;
+	case 47: {
+		int w = d->dir * 2, x = npc[i].x + way_x[w], y = npc[i].y + way_y[w];
+		POST(i, P(F_STAND), WAIT(8), P(F_READY), WAIT(5), P(F_STAND), WAIT(4), P(F_READY), WAIT(5),
+			P(F_STAND), WAIT(3));
+		k = e_things(658, (int16_t) x, (int16_t) y, (int16_t) x, (int16_t) y, &t, 1);
+		THING(&t, k, I_WAIT, 10, I_NEXT, 0, I_WAIT, 10, I_NEXT, 0);
+		return 0;
+	}
+	case 48:
+		push(i, K_MOVE_ITEM, TF(658, 2), 831);
+		return 0;
+	case 49:
+		if (d->result < 0 && (k = held_find(i, 658)) >= 0)
+			d->held[k] = 0;
+		l->state = 1;
+		return 0;
+	case 60:
+		push(i, K_CHECK_AREA, 1, -1);
+		return 0;
+	}
+	return 0;
+}
+
+/* Sew (RunSewSchedule): wool spun into thread at the wheel, the thread woven into cloth at the
+ * loom, the cloth cut into clothes with shears. */
+static int sew(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	struct EThing t;
+	int k, found;
+
+	switch (l->state) {
+	case 0:
+		push(i, K_GOTO_PLACE, -1, -1);
+		return 0;
+	case 1:
+		if (chance(3)) {
+			l->state = 0;
+			push(i, K_CHECK_AREA, 1, -1);
+		} else
+			push(i, K_GRAB_ITEM, 653, -1);
+		return 0;
+	case 2:
+		push(i, K_DROP_ITEM, 653, -1);
+		return 0;
+	case 3:
+		push(i, K_SIT, 651, -1);
+		return 0;
+	case 4:
+	case 10:
+	case 14:
+	case 16:
+		if (d->result < 0) {
+			set_kind(i, K_LOITER);
+			cur(d)->state = 1;
+			return 0;
+		}
+		if (l->state == 4)
+			l->state++;
+		else if (l->state == 10) {
+			found = nearest(261, npc[i].x, npc[i].y, 5, 0, 15, -1, &t);
+			THING(&t, found, I_SOUND, 102, I_NEXT, 0, I_NEXT, 0, I_NEXT, 0, I_NEXT, 0, I_NEXT, 0, I_NEXT, 0,
+				I_NEXT, 0, I_NEXT, 0, I_LOOP, 6);
+			POST(i, WAIT(52));
+		} else if (l->state == 14)
+			push(i, K_READY_HAND, 698, 1);
+		else
+			POST(i, P(F_RAISE1), P(F_RAISE1), P(F_EXTEND1), P(F_EXTEND1), P(F_THRUST1), P(F_THRUST1),
+				P(F_RAISE1), P(F_RAISE1), P(F_EXTEND1), P(F_EXTEND1), P(F_THRUST1), P(F_THRUST1));
+		return 0;
+	case 5:
+		POST(i, WAIT(40));
+		found = nearest(651, npc[i].x, npc[i].y, 5, 0, 15, -1, &t);
+		THING(&t, found, I_SOUND, 97, I_NEXT, 0, I_LOOP, 39);
+		return 0;
+	case 6:
+		held_add(i, 654);
+		l->state++;
+		return 0;
+	case 7:
+		push(i, K_DROP_ITEM, 654, -1);
+		return 0;
+	case 8:
+		if (d->result < 0)
+			l->state++;
+		else
+			push(i, K_GRAB_ITEM, 654, -1);
+		return 0;
+	case 9:
+		push(i, K_GOTO_ITEM, 261, -1);
+		return 0;
+	case 11:
+		held_add(i, (uint16_t) (851 | rnd(5) << 10));
+		if ((k = held_find(i, 654)) >= 0)
+			d->held[k] = 0;
+		l->state++;
+		return 0;
+	case 12:
+		push(i, K_DROP_ITEM, 851, -1);
+		return 0;
+	case 13:
+		push(i, K_MOVE_ITEM, 851, 971);
+		return 0;
+	case 15:
+		push(i, K_GOTO_ITEM, 851, -1);
+		return 0;
+	case 17: {
+		int w = d->dir * 2, x = npc[i].x + way_x[w], y = npc[i].y + way_y[w];
+		if (e_things(851, (int16_t) x, (int16_t) y, (int16_t) x, (int16_t) y, &t, 1) && e_thing_remove(&t)) {
+			e_thing_add(738, t.x, t.y, t.z, NULL);
+			held_add(i, (uint16_t) (851 | (rnd(5) + 5) << 10));
+			l->state++;
+		} else {
+			set_kind(i, K_LOITER);
+			cur(d)->state = 1;
+		}
+		return 0;
+	}
+	case 18:
+		push(i, K_DROP_ITEM, 851, -1);
+		return 0;
+	case 19:
+		push(i, K_GRAB_ITEM, 738, -1);
+		return 0;
+	case 20:
+		push(i, K_MOVE_ITEM, 738, chance(2) ? 971 : 890);
+		return 0;
+	case 21:
+		if (d->result < 0)
+			while ((k = held_find(i, 738)) >= 0)
+				d->held[k] = 0;
+		push(i, K_GRAB_ITEM, 851, -1);
+		return 0;
+	case 22:
+		if ((k = held_find(i, 851)) >= 0)
+			d->held[k] = 0;
+		l->state++;
+		return 0;
+	case 23:
+		push(i, K_DROP_ITEM, 698, 890);
+		return 0;
+	case 24:
+		l->state = 1;
+		return 0;
+	}
+	return 0;
+}
+
+/* Lab work (RunLabSchedule): reading, then a potion taken to the cauldron, stirred, and put on a
+ * table. */
+static int lab(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	struct EThing t;
+	int found;
+
+	switch (l->state) {
+	case 0:
+		push(i, K_GOTO_PLACE, -1, -1);
+		return 0;
+	case 1:
+		push(i, K_READ, -1, -1);
+		return 0;
+	case 2:
+		if (chance(3))
+			push(i, K_CHECK_AREA, 1, -1);
+		else
+			l->state++;
+		return 0;
+	case 3:
+		push(i, K_GRAB_ITEM, TF(340, rnd(8)), 1);
+		return 0;
+	case 4:
+		if (d->result < 0)
+			l->state = 1;
+		else
+			push(i, K_GOTO_ITEM, 995, -1);
+		return 0;
+	case 5:
+		if (d->result < 0) {
+			l->state = 1;
+			return 0;
+		}
+		POST(i, P(F_STAND), WAIT(2), P(F_BEND), WAIT(2));
+		if (chance(2)) {
+			found = nearest(995, npc[i].x, npc[i].y, 1, 0, 15, -1, &t);
+			uint8_t s[] = { I_WAIT, 6, I_FRAME, (uint8_t) range(1, 4), I_WAIT, (uint8_t) range(40, 130),
+				I_FRAME, 0 };
+			post_thing(&t, s, sizeof s, found);
+		}
+		return 0;
+	case 6:
+		POST(i, P(F_BEND), WAIT(2), P(F_STAND), WAIT(2));
+		return 0;
+	case 7:
+		push(i, K_DROP_ITEM, 340, rnd(2) ? 1018 : 1003);
+		return 0;
+	case 8:
+		l->state = chance(4) ? 1 : 2;
+		return 0;
+	}
+	return 0;
+}
+
+/* Thief (RunThiefSchedule): follows the avatar about, and now and then sidles up to it. (Picking
+ * its pack, and the greeting, are not done.) */
+static int thief(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+
+	switch (l->state) {
+	case 0:
+		push(i, K_GOTO_PLACE, -1, -1);
+		return 0;
+	case 1:
+		if (far_of(npc[i].x, npc[i].y, me_x, me_y) > 8) {
+			if (!path_next_to(i, avatar, 100))
+				l->state = 3;
+		} else
+			l->state = chance(5) ? 2 : 3;
+		return 0;
+	case 2:
+		if (!path_next_to(i, avatar, 100))
+			l->state = 1;
+		else if (far_of(npc[i].x, npc[i].y, me_x, me_y) <= 2)
+			POST(i, WAIT(15));  /* (the greeting, and the pack: not yet) */
+		return 0;
+	case 3:
+		d->value = 0;
+		l->state++;
+		return 0;
+	case 4: {
+		int r = start_path(i, me_x + range(-8, 8), me_y + range(-8, 8), npc[i].z, 100);
+		if (r == 0)
+			l->state++;
+		else if (r == 2 && d->value++ > 3)
+			l->state = 1;
+		return 0;
+	}
+	case 6: {
+		uint8_t s[2] = { S_WAIT, (uint8_t) range(5, 10) };
+		post(i, s, 2);
+		l->state = 1;
+		return 0;
+	}
+	}
+	return 0;
+}
+
+/* Graze (RunGrazeSchedule): wanders within 7 cells of where it began, standing, raising and
+ * lowering its head between. */
+static int graze(int i)
+{
+	struct Doing *d = &doing[i];
+	struct Level *l = cur(d);
+	int r;
+
+	switch (l->state) {
+	case 0:
+		push(i, K_GOTO_PLACE, -1, -1);
+		return 0;
+	case 1:
+		d->mark_x = npc[i].x;
+		d->mark_y = npc[i].y;
+		d->value = 0;
+		l->state++;
+		return 0;
+	case 2:
+		if (d->value > 2)
+			l->state = 4;
+		else if ((r = start_path(i, d->mark_x + range(-7, 7), d->mark_y + range(-7, 7), npc[i].z, 25)) == 0)
+			l->state++;
+		else if (r == 2)
+			d->value++;
+		return 0;
+	case 4: {
+		d->value = 0;
+		uint8_t s[] = { S_POSE, F_STAND, S_WAIT, (uint8_t) range(2, 5), S_MARK, 0, S_POSE, F_UP, S_WAIT,
+			(uint8_t) range(2, 5), S_POSE, F_OUT, S_WAIT, (uint8_t) range(2, 5), S_LOOP, (uint8_t) range(2, 5) };
+		post(i, s, sizeof s);
+		return 0;
+	}
+	case 5:
+		l->state = 2;
+		return 0;
+	}
+	return 0;
+}
+
 /* ---- running them ---- */
 
 int e_world_trace = -1;
@@ -1864,10 +3214,14 @@ int kind_tick(int i)
 	case K_TAG: return tag(i);
 	case K_FENCING: return fencing(i);
 	case K_ARCHERY: return archery(i);
-	/* not yet: these say they are done (READY_HAND: no held items; MOVE_ITEM: no items made;
-	 * GOTO_REM_L: where it was is where it is; CHECK_AREA: nothing found) */
+	case K_GRAB_ITEM: return grab_item(i);
+	case K_DROP_ITEM: return drop_item(i);
+	case K_MOVE_ITEM: return move_item(i);
+	case K_FILL_BUCKET: return fill_bucket(i);
+	case K_FILL_TROUGH: return fill_trough(i);
+	/* not yet: these say they are done (READY_HAND: no weapon in hand, drawn; GOTO_REM_L: where
+	 * it was is where it is; CHECK_AREA: nothing found) */
 	case K_READY_HAND:
-	case K_MOVE_ITEM:
 	case K_GOTO_REM_L:
 		pop(i, 0);
 		return 0;
@@ -1893,6 +3247,15 @@ int kind_tick(int i)
 	case K_KIDS: return kids(i);
 	case K_DUEL: return duel(i);
 	case K_PATROL: return patrol(i);
+	case K_WAITER: return waiter(i);
+	case K_FARM: return farm(i);
+	case K_MINER: return miner(i);
+	case K_SMITH: return smith(i);
+	case K_BAKE: return bake(i);
+	case K_SEW: return sew(i);
+	case K_LAB: return lab(i);
+	case K_THIEF: return thief(i);
+	case K_GRAZE: return graze(i);
 	default:
 		/* the kinds not done yet loiter */
 		set_kind(i, K_LOITER);
@@ -1905,7 +3268,7 @@ void kind_walked(int i, int ok)
 {
 	struct Doing *d = &doing[i];
 
-	d->result = (int8_t) (ok ? 0 : -1);
+	d->result = (int16_t) (ok ? 0 : -1);
 	trace(i, ok ? "walked" : "walk failed");
 	if (cur(d)->kind == K_GOTO_PLACE)
 		pop(i, d->result);

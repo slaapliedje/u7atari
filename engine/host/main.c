@@ -339,6 +339,7 @@ static int route_step(uint16_t tf, int16_t *ax, int16_t *ay, uint8_t *az, int *d
 }
 
 static int list_npcs;           /* --npcs: those in view listed with each picture */
+static int appear_frame;        /* --appear f: the avatar far off till frame f */
 
 static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 {
@@ -361,6 +362,11 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 	}
 	int16_t ax = npcs[me].x, ay = npcs[me].y;
 	uint8_t az = npcs[me].z;
+	int16_t appear_x = ax, appear_y = ay;
+	if (appear_frame > 0) {
+		/* far off (as if elsewhere in the world) till then */
+		ax = (int16_t) (ax > 1536 ? ax - 400 : ax + 400);
+	}
 	uint16_t type = npcs[me].tf & 0x3ff;
 	int dir = dy < 0 ? 0 : dx > 0 ? 1 : dy > 0 ? 2 : 3;
 	for (int m = 0; m < E_MOVERS; m++)
@@ -410,6 +416,10 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 			e_mover_self(-1);
 		}
 		sound_frame = f;
+		if (appear_frame > 0 && f == appear_frame) {
+			ax = appear_x;
+			ay = appear_y;
+		}
 		mix(4);
 		e_mover_set(0, dx || dy ? e_walk_frame(type, dir, f / 2) : npcs[me].tf, ax, ay, az);
 		/* a frame here is 4 blanks (the avatar a cell every 2 frames, the Jaguar's 8 blanks) */
@@ -496,7 +506,9 @@ int main(int argc, char **argv)
 				return 1;
 			}
 			wav_header();
-		} else if (!strcmp(argv[i], "--trace") && i + 1 < argc)
+		} else if (!strcmp(argv[i], "--appear") && i + 1 < argc)
+			appear_frame = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--trace") && i + 1 < argc)
 			e_world_trace = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--npcs"))
 			list_npcs = 1;
