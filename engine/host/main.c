@@ -8,8 +8,10 @@
  *                      them (the picture put together from both for saving)
  *     --avatar         the NPCs of NPC.DAT (the nearest 31 to the avatar) and the avatar, who
  *                      walks (--walk moves it, not the view; x y are ignored), the view on it,
- *                      roofs over it lifted, walls in its way
+ *                      roofs over it lifted, walls in its way, up and down stairs, shut doors
+ *                      it walks into opened
  *     --path "dx,dy,n;..." with --avatar: legs of a walk, n cells each
+ *     --from x,y       with --avatar: start the avatar there
  *     --time m         with --avatar: the time to start at, minutes from midnight (default 360)
  */
 #include <stdint.h>
@@ -207,6 +209,7 @@ static int start_minutes = 6 * 60;
 static void save(const char *name);
 
 static const char *path;
+static int from_x = -1, from_y = -1;
 
 static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 {
@@ -220,6 +223,10 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 	if (me < 0) {
 		fprintf(stderr, "no avatar in NPC.DAT\n");
 		return;
+	}
+	if (from_x >= 0) {
+		npcs[me].x = (int16_t) from_x;
+		npcs[me].y = (int16_t) from_y;
 	}
 	int16_t ax = npcs[me].x, ay = npcs[me].y;
 	uint8_t az = npcs[me].z;
@@ -242,7 +249,8 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 			}
 			if (leg_n == 0) {
 				if (path) {
-					printf("end: avatar %d,%d,%d\n", ax, ay, az);
+					printf("end: avatar %d,%d,%d; doors opened or shut %u\n", ax, ay, az,
+						e_stats.doors_turned);
 					break;
 				}
 				leg_dx = leg_dy = 0;
@@ -252,25 +260,19 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 			dy = leg_dy;
 			if (dx || dy)
 				dir = dy < 0 ? 0 : dx > 0 ? 1 : dy > 0 ? 2 : 3;
-			/* a wall in the way: along it, if one way is free */
-			int16_t nx = (int16_t) (ax + dx), ny = (int16_t) (ay + dy);
-			uint16_t tf = e_walk_frame(type, dir, 0);
-			if (e_blocked(tf, nx, ny, az)) {
-				if (dx && !e_blocked(tf, nx, ay, az))
-					ny = ay;
-				else if (dy && !e_blocked(tf, ax, ny, az))
-					nx = ax;
-				else {
-					nx = ax;
-					ny = ay;
-				}
-			}
-			ax = nx;
-			ay = ny;
+			/* a step, veering round what is in the way, up or down stairs; a door opened */
+			if ((dx || dy) && e_walk(e_walk_frame(type, dir, 0), &ax, &ay, &az, dx, dy, 1)
+				== E_STEP_DOOR)
+				printf("frame %d: a door opened at %d,%d\n", f, ax + dx, ay + dy);
 		}
 		e_mover_set(0, dx || dy ? e_walk_frame(type, dir, f / 2) : npcs[me].tf, ax, ay, az);
 		/* a frame here is 4 blanks (the avatar a cell every 2 frames, the Jaguar's 8 blanks) */
 		e_world_step((uint32_t) f * 4, ax, ay);
+		static uint32_t doors_seen;
+		if (e_stats.doors_turned != doors_seen) {
+			doors_seen = e_stats.doors_turned;
+			printf("frame %d: doors opened or shut %u\n", f, doors_seen);
+		}
 		int ceiling = e_follow(0);
 		e_set_view((int16_t) (ax - E_VIEW_CELLS_X / 2), (int16_t) (ay - E_VIEW_CELLS_Y / 2));
 		static uint8_t layer_buf[3][E_VIEW_H * E_VIEW_W];
@@ -325,6 +327,8 @@ int main(int argc, char **argv)
 			avatar = 1;
 		else if (!strcmp(argv[i], "--path") && i + 1 < argc)
 			path = argv[++i];
+		else if (!strcmp(argv[i], "--from") && i + 1 < argc)
+			sscanf(argv[++i], "%d,%d", &from_x, &from_y);
 		else if (!strcmp(argv[i], "--time") && i + 1 < argc)
 			start_minutes = atoi(argv[++i]);
 	}

@@ -160,6 +160,7 @@ struct EStats {
 	uint32_t near_finds;        /* statics near a mover looked for anew */
 	uint32_t front_cands;       /* statics over movers tried for being in front */
 	uint32_t front_compares;    /* compares then */
+	uint32_t doors_turned;      /* doors opened or shut */
 };
 extern struct EStats e_stats;
 
@@ -212,9 +213,34 @@ int e_world_minutes(void);
  * it are not drawn (roofs over it lifted). The view is drawn again when it changes. Call when it
  * has moved; returns the ceiling (15: none). */
 int e_follow(int i);
-/* Whether a shape (type-frame word) standing at x, y, z would be in a solid static (doors not:
- * they cannot be opened here). */
+/* Whether a shape (type-frame word) standing at x, y, z would be in a solid static or a door. */
 int e_blocked(uint16_t tf, int16_t x, int16_t y, uint8_t z);
+/* A walker's step of dx, dy (a cell) from x, y, z, as the original's: at its level, or failing
+ * that one up or one down, where it is clear and stood on (the ground, or a solid static's top):
+ * so up and down stairs. E_STEP_MADE with x, y, z moved; E_STEP_DOOR when a door is in the way
+ * (e_door_at it); else E_STEP_BLOCKED. */
+#define E_STEP_BLOCKED 0
+#define E_STEP_MADE 1
+#define E_STEP_DOOR 2
+int e_step(uint16_t tf, int16_t *x, int16_t *y, uint8_t *z, int dx, int dy);
+/* The avatar's step towards dx, dy (each -1 to 1), as the original's party step: that way, or
+ * failing that an eighth to one side or the other. A shut door in the way opened when open_doors
+ * (as if it were used): E_STEP_DOOR, not moved. */
+int e_walk(uint16_t tf, int16_t *x, int16_t *y, uint8_t *z, int dx, int dy, int open_doors);
+/* The door just ahead of a shape at x, y, z facing dx, dy (or beside that, or one further), to
+ * use; or -1. */
+int e_door_ahead(uint16_t tf, int16_t x, int16_t y, uint8_t z, int dx, int dy);
+
+/* Doors. The door a shape standing at x, y, z would be in, or -1: a handle, kept while the game
+ * runs, as is what has been done to the door. */
+int e_door_at(uint16_t tf, int16_t x, int16_t y, uint8_t z);
+/* Opens a shut door or shuts an open one, as the original (its type swapped for its other, turned
+ * a quarter, some moved 3 cells; the frame's state flipped): 1. 0 when it is locked. */
+int e_door_toggle(int door);
+/* Whether the door is shut: in a wall, something solid past each end of it (as Exult tells). */
+int e_door_shut(int door);
+/* Where the door is now (its hot spot). */
+void e_door_place(int door, int16_t *x, int16_t *y);
 
 /* An NPC shape's type-frame word walking in direction 0-3 (north, east, south, west), step n:
  * frames 0-15 face north, 16-31 south; east and west are those turned (0x8000). */

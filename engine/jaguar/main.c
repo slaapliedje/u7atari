@@ -674,10 +674,14 @@ static void set_palette(const uint8_t *rgb)
 
 /* ---- the pad: directions only (jagwrestle's layout: U D L R at bits 20-23) ---- */
 
+/* The pad's directions (bits 20-23: up, down, left, right) and A (bit 29), as the port's
+ * platform/jaguar/input.c has them. */
+#define PAD_A (1UL << 29)
 static uint32_t pad(void)
 {
 	JOY_WRITE = 0x81FE;
-	return ~(JOY_READ >> 4) & 0x00F00000UL;
+	uint32_t v = JOY_READ;
+	return (~(v >> 4) & 0x00F00000UL) | (v & 2 ? 0 : PAD_A);
 }
 
 
@@ -769,7 +773,7 @@ static const struct { int8_t dx, dy, n; } demo[] = {
 	{ 0, -1, 6 }, { -1, 0, 9 }, { 0, -1, 9 }, { 1, 0, 5 }, { -1, 0, 5 }, { 0, 1, 9 }, { 1, 0, 9 },
 	{ 0, 1, 6 },
 };
-static uint8_t demo_leg, demo_left, touched;
+static uint8_t demo_leg, demo_left, touched, a_held;
 
 /* The world's clock: blanks; under ENGINE_FRAME_SUMS, 4 a frame, so the frames hang on the
  * frame count alone. */
@@ -806,8 +810,9 @@ static int walk_init(void)
 	return 1;
 }
 
-/* A cell for each WALK_BLANKS blanks gone: the pad's way, or the demo's; along a wall when one way
- * is free. The NPCs near it picked again when it has gone 8 cells; the ceiling over it. */
+/* A cell for each WALK_BLANKS blanks gone: the pad's way, or the demo's; veering round what is in
+ * the way, up and down stairs, a shut door in the way opened. A: the door ahead opened or shut.
+ * The NPCs near it picked again when it has gone 8 cells; the ceiling over it. */
 static void walk_update(void)
 {
 	uint16_t type = npcs[me].tf & 0x3ff;
@@ -825,6 +830,14 @@ static void walk_update(void)
 		walk_tick += WALK_BLANKS;
 		if (held)
 			touched = 1;
+		if ((held & PAD_A) && !a_held) {
+			static const int8_t face_x[4] = { 0, 1, 0, -1 }, face_y[4] = { -1, 0, 1, 0 };
+			int door = e_door_ahead(e_walk_frame(type, walk_dir, 0), ax, ay, az,
+				face_x[walk_dir], face_y[walk_dir]);
+			if (door >= 0)
+				e_door_toggle(door);
+		}
+		a_held = (held & PAD_A) != 0;
 		if (touched) {
 			dx = (held & (1UL << 23) ? 1 : 0) - (held & (1UL << 22) ? 1 : 0);
 			dy = (held & (1UL << 21) ? 1 : 0) - (held & (1UL << 20) ? 1 : 0);
@@ -840,18 +853,8 @@ static void walk_update(void)
 			continue;
 		walking = 1;
 		walk_dir = (uint8_t) (dy < 0 ? 0 : dx > 0 ? 1 : dy > 0 ? 2 : 3);
-		uint16_t tf = e_walk_frame(type, walk_dir, 0);
-		int16_t nx = (int16_t) (ax + dx), ny = (int16_t) (ay + dy);
-		if (e_blocked(tf, nx, ny, az)) {
-			if (dx && !e_blocked(tf, nx, ay, az))
-				ny = ay;
-			else if (dy && !e_blocked(tf, ax, ny, az))
-				nx = ax;
-			else
-				continue;
-		}
-		ax = nx;
-		ay = ny;
+		if (e_walk(e_walk_frame(type, walk_dir, 0), &ax, &ay, &az, dx, dy, 1) != E_STEP_MADE)
+			continue;
 		walk_steps++;
 		moved = 1;
 	}

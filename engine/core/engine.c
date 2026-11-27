@@ -283,6 +283,8 @@ static void add_ifix(struct Region *r, uint16_t *n, const uint8_t *e, int count,
 	}
 }
 
+static void doors_into(struct Region *r);
+
 static struct Region *region(int id)
 {
 	struct Region *r = NULL, *old = &regions[0];
@@ -318,7 +320,7 @@ static struct Region *region(int id)
 	}
 	struct Item *items = r->items;
 	uint16_t ireg = 0;
-	static struct Item movable[REGION_ITEMS];
+	static struct Item movable[REGION_ITEMS], merged[REGION_ITEMS];
 	snprintf(name, sizeof name, "U7IREG%02X", id);
 	uint16_t movableStart[257];
 	memset(movableStart, 0, sizeof movableStart);
@@ -339,37 +341,50 @@ static struct Region *region(int id)
 	if ((f = open_file("ENGINE", name)) >= 0 || (f = open_file("GAMEDAT", name)) >= 0) {
 		len = plat_file_length(f);
 		if (len > 0 && len <= SCRATCH && read_at(f, 0, scratch, (uint32_t) len)) {
+			/* one run of records for the whole region, each in the chunk its cell is in; a
+			 * container's contents follow it, ended by a 0 or 1 */
+			static uint8_t in_chunk[REGION_ITEMS];
 			int32_t i = 0;
-			for (int c = 0; c < 256; c++) {
-				int depth = 0;
-				movableStart[c] = ireg;
-				while (i < len) {
-					uint8_t l = scratch[i++];
-					if (l == 0 || l == 1) {
-						if (depth == 0)
-							break;
+			int depth = 0;
+			while (i < len) {
+				uint8_t l = scratch[i++];
+				if (l == 0 || l == 1) {
+					if (depth > 0)
 						depth--;
-						continue;
-					}
-					const uint8_t *d = scratch + i;
-					i += l;
-					if (depth == 0 && ireg < REGION_ITEMS) {
-						struct Item *it = &movable[ireg++];
-						it->x = d[0];
-						it->y = d[1];
-						it->tf = rd16(d + 2);
-						it->z = (l == 6 ? d[4] : d[9]) >> 4;
-					}
-					if (l >= 12 && rd16(d + 4) != 0)
-						depth++;
+					continue;
 				}
+				const uint8_t *d = scratch + i;
+				i += l;
+				if (i > len)
+					break;
+				if (depth == 0 && ireg < REGION_ITEMS) {
+					struct Item *it = &movable[ireg];
+					it->x = d[0];
+					it->y = d[1];
+					it->tf = rd16(d + 2);
+					it->z = (l == 6 ? d[4] : d[9]) >> 4;
+					in_chunk[ireg++] = (uint8_t) ((d[1] >> 4) * 16 + (d[0] >> 4));
+				}
+				if (l >= 12 && rd16(d + 4) != 0)
+					depth++;
 			}
+			/* by chunk, as they came within each (merged, below, lent for it) */
+			struct Item *sorted = merged;
+			for (uint16_t k = 0; k < ireg; k++)
+				movableStart[in_chunk[k] + 1]++;
+			for (int c = 0; c < 256; c++)
+				movableStart[c + 1] = (uint16_t) (movableStart[c + 1] + movableStart[c]);
+			for (uint16_t k = 0; k < ireg; k++)
+				sorted[movableStart[in_chunk[k]]++] = movable[k];
+			for (int c = 256; c > 0; c--)
+				movableStart[c] = movableStart[c - 1];
+			movableStart[0] = 0;
+			memcpy(movable, sorted, ireg * sizeof *movable);
 		}
 		plat_file_close(f);
 	}
 	movableStart[256] = ireg;
 	/* items: per chunk, its fixed ones then its movable ones */
-	static struct Item merged[REGION_ITEMS];
 	uint16_t m = 0;
 	for (int c = 0; c < 256; c++) {
 		r->start[c] = m;
@@ -380,6 +395,7 @@ static struct Region *region(int id)
 	}
 	r->start[256] = m;
 	memcpy(items, merged, m * sizeof *items);
+	doors_into(r);
 	e_stats.region_time += eb_clock() - t_region;
 	return r;
 }
@@ -1023,15 +1039,15 @@ static struct Mover {
 } movers[E_MOVERS] __attribute__((aligned(8)));
 static uint8_t nmovers;
 
-/* ---- the ceiling over a mover, as the original's (UpdateCeiling): the levels the solid statics
- * (not doors) over its row of cells take, its own left out; the highest less one, or 15 ---- */
+/* ---- the ceiling over a mover, as the original's (UpdateCeiling): of the levels the solid
+ * statics (not doors) take over its row of cells, those above it; the lowest less one, or 15 ---- */
 
 int e_follow(int i)
 {
 	const struct Mover *v = &movers[i];
 	const struct Info *in = &info[v->tf & 0x3ff];
 	int w = v->tf & 0x8000 ? in->fy : in->fx;
-	uint16_t taken = 0, own = (uint16_t) (((1u << in->height) - 1) << v->z);
+	uint16_t taken = 0, own = (uint16_t) (((1u << (in->height ? in->height : 1)) - 1) << v->z);
 	int top = 15;
 
 	/* a static covers the cells up to its footprint west and north of it: up to 7 */
@@ -1048,12 +1064,12 @@ int e_follow(int i)
 				taken |= (uint16_t) (((1u << s->height) - 1) << s->z);
 			}
 		}
-	taken &= (uint16_t) ~own;
+	/* the levels above it alone (the original's mask: its own and those under cleared); the
+	 * lowest of them less one */
+	taken &= (uint16_t) ~(own | (own - 1));
 	if (taken != 0)
-		for (top = 15; !(taken & 0x8000); taken = (uint16_t) (taken << 1))
-			top--;
-	if (taken != 0)
-		top--;
+		for (top = -1; !(taken & 1); taken = (uint16_t) (taken >> 1))
+			top++;
 	if (top != ceiling) {
 		/* the areas with statics between the two drawn again (e_draw: one a frame, nearest the
 		 * middle of the view first, so there is no pause), and the fronts found again */
@@ -1068,10 +1084,11 @@ int e_follow(int i)
 	return ceiling;
 }
 
-/* Levels (a bit each) the solid statics take over the cells x0..x1, y0..y1; doors too or not. */
-static uint16_t levels_taken(int x0, int y0, int x1, int y1, int doors)
+/* Levels (a bit each) the solid statics take over the cells x0..x1, y0..y1, and apart (as the
+ * original's collision grid keeps them) those the doors take. */
+static uint16_t levels_taken(int x0, int y0, int x1, int y1, uint16_t *doors)
 {
-	uint16_t taken = 0;
+	uint16_t taken = 0, door = 0;
 
 	for (int cy = y0 >> 4; cy <= (y1 + 7) >> 4; cy++)
 		for (int cx = x0 >> 4; cx <= (x1 + 7) >> 4; cx++) {
@@ -1081,23 +1098,312 @@ static uint16_t levels_taken(int x0, int y0, int x1, int y1, int doors)
 			for (uint16_t j = 0; j < k->nstatic; j++) {
 				const struct Static *s = &k->statics[j];
 				const struct Info *in = &info[s->tf & 0x3ff];
-				if (!(in->flags & INFO_SOLID) || (!doors && (in->flags & INFO_DOOR))
-					|| s->height == 0 || y0 > s->y || y1 < s->y - s->fy || x0 > s->x
-					|| x1 < s->x - s->fx)
+				if (!(in->flags & INFO_SOLID) || s->height == 0 || y0 > s->y
+					|| y1 < s->y - s->fy || x0 > s->x || x1 < s->x - s->fx)
 					continue;
-				taken |= (uint16_t) (((1u << s->height) - 1) << s->z);
+				uint16_t levels = (uint16_t) (((1u << s->height) - 1) << s->z);
+				if (in->flags & INFO_DOOR)
+					door |= levels;
+				else
+					taken |= levels;
 			}
 		}
+	if (doors != NULL)
+		*doors = door;
 	return taken;
+}
+
+/* A shape's footprint (cells west and north of its hot spot) and the levels it takes at z. */
+static uint16_t body_of(uint16_t tf, uint8_t z, int *fx, int *fy)
+{
+	const struct Info *in = &info[tf & 0x3ff];
+
+	*fx = tf & 0x8000 ? in->fy : in->fx;
+	*fy = tf & 0x8000 ? in->fx : in->fy;
+	return (uint16_t) (((1u << (in->height ? in->height : 1)) - 1) << z);
 }
 
 int e_blocked(uint16_t tf, int16_t x, int16_t y, uint8_t z)
 {
-	const struct Info *in = &info[tf & 0x3ff];
-	int fx = tf & 0x8000 ? in->fy : in->fx, fy = tf & 0x8000 ? in->fx : in->fy;
-	uint16_t body = (uint16_t) (((1u << (in->height ? in->height : 1)) - 1) << z);
+	int fx, fy;
+	uint16_t body = body_of(tf, z, &fx, &fy), door;
 
-	return (levels_taken(x - fx, y - fy, x, y, 0) & body) != 0;
+	return ((levels_taken(x - fx, y - fy, x, y, &door) | door) & body) != 0;
+}
+
+/* As the original's CanWalkAt: nothing solid where it would stand at z, and something under it
+ * (the ground at 0, else a solid static's top over any of its cells). With a door there, *door. */
+static int can_walk(uint16_t tf, int x, int y, int z, int *door)
+{
+	int fx, fy;
+	uint16_t body = body_of(tf, (uint8_t) z, &fx, &fy), doors;
+	uint16_t taken = levels_taken(x - fx, y - fy, x, y, &doors);
+
+	*door = (doors & body) != 0;
+	return !(taken & body) && (z == 0 || (taken >> (z - 1) & 1));
+}
+
+int e_step(uint16_t tf, int16_t *x, int16_t *y, uint8_t *z, int dx, int dy)
+{
+	int nx = *x + dx, ny = *y + dy, nz = *z, door;
+
+	/* as CheckMove for a walker: its level, else one up, else one down */
+	if (!can_walk(tf, nx, ny, nz, &door)) {
+		if (nz < 15 && can_walk(tf, nx, ny, nz + 1, &door))
+			nz++;
+		else if (nz > 0 && can_walk(tf, nx, ny, nz - 1, &door))
+			nz--;
+		else
+			return E_STEP_BLOCKED;
+	}
+	/* a door there: the avatar's step (and a route's) stops at it */
+	if (door)
+		return E_STEP_DOOR;
+	*x = (int16_t) nx;
+	*y = (int16_t) ny;
+	*z = (uint8_t) nz;
+	return E_STEP_MADE;
+}
+
+int e_walk(uint16_t tf, int16_t *x, int16_t *y, uint8_t *z, int dx, int dy, int open_doors)
+{
+	/* the eight ways, from north clockwise */
+	static const int8_t way_x[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
+	static const int8_t way_y[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
+	int way = 0, first;
+
+	if (dx == 0 && dy == 0)
+		return E_STEP_BLOCKED;
+	while (way_x[way] != dx || way_y[way] != dy)
+		way++;
+	/* as the original's party step: that way, else an eighth one way, else the other */
+	if ((first = e_step(tf, x, y, z, dx, dy)) == E_STEP_MADE)
+		return E_STEP_MADE;
+	for (int turn = 1; turn <= 7; turn += 6) {
+		int w = (way + turn) & 7;
+		if (e_step(tf, x, y, z, way_x[w], way_y[w]) == E_STEP_MADE)
+			return E_STEP_MADE;
+	}
+	if (first == E_STEP_DOOR && open_doors) {
+		int d = e_door_at(tf, (int16_t) (*x + dx), (int16_t) (*y + dy), *z);
+		if (d >= 0 && e_door_shut(d) && e_door_toggle(d))
+			return E_STEP_DOOR;
+	}
+	return E_STEP_BLOCKED;
+}
+
+int e_door_ahead(uint16_t tf, int16_t x, int16_t y, uint8_t z, int dx, int dy)
+{
+	/* the cell ahead, those either side of it, the one past it */
+	const int8_t try_x[4] = { (int8_t) dx, (int8_t) (dx - dy), (int8_t) (dx + dy), (int8_t) (2 * dx) };
+	const int8_t try_y[4] = { (int8_t) dy, (int8_t) (dy + dx), (int8_t) (dy - dx), (int8_t) (2 * dy) };
+
+	for (int i = 0; i < 4; i++) {
+		int d = e_door_at(tf, (int16_t) (x + try_x[i]), (int16_t) (y + try_y[i]), z);
+		if (d >= 0)
+			return d;
+	}
+	return -1;
+}
+
+/* ---- doors: movable items whose type and place the game changes. Each one touched is kept
+ * here (where it began, where and what it is now, the chunk whose list has it), and put back so
+ * when its region is read again ---- */
+
+#define MOST_DOORS 96
+
+static struct Door {
+	int16_t x0, y0;             /* where it began, as its region's file has it */
+	uint16_t tf0;
+	int16_t x, y;               /* now */
+	uint16_t tf;
+	uint8_t z;
+	int16_t lcx, lcy;           /* the chunk whose list holds it */
+} doors[MOST_DOORS];
+static int ndoors;
+
+/* In region r, the item of chunk list c (within the region) that is tf at x, y (the region's
+ * cells), z; or -1. */
+static int find_item(const struct Region *r, int c, uint16_t tf, int x, int y, uint8_t z)
+{
+	for (int i = r->start[c]; i < r->start[c + 1]; i++) {
+		const struct Item *it = &r->items[i];
+		if (it->tf == tf && it->x == (uint8_t) x && it->y == (uint8_t) y && it->z == z)
+			return i;
+	}
+	return -1;
+}
+
+/* Item i of region r from chunk list a to the end of chunk list b. */
+static void move_item(struct Region *r, int i, int a, int b)
+{
+	struct Item it = r->items[i];
+
+	if (a == b)
+		return;
+	memmove(&r->items[i], &r->items[i + 1], (size_t) (r->start[256] - i - 1) * sizeof it);
+	for (int c = a + 1; c <= 256; c++)
+		r->start[c]--;
+	int at = r->start[b + 1];
+	memmove(&r->items[at + 1], &r->items[at], (size_t) (r->start[256] - at) * sizeof it);
+	r->items[at] = it;
+	for (int c = b + 1; c <= 256; c++)
+		r->start[c]++;
+}
+
+static int region_of(int x, int y) { return (y >> 8) * 12 + (x >> 8); }
+static int list_of(int x, int y) { return (y >> 4 & 15) * 16 + (x >> 4 & 15); }
+
+/* A region just read: its doors as the game has left them. */
+static void doors_into(struct Region *r)
+{
+	for (int d = 0; d < ndoors; d++) {
+		const struct Door *o = &doors[d];
+		if (region_of(o->x0, o->y0) != r->id
+			|| (o->x == o->x0 && o->y == o->y0 && o->tf == o->tf0))
+			continue;
+		int c = list_of(o->x0, o->y0), i = find_item(r, c, o->tf0, o->x0, o->y0, o->z);
+		if (i < 0)
+			continue;
+		r->items[i].tf = o->tf;
+		r->items[i].x = (uint8_t) o->x;
+		r->items[i].y = (uint8_t) o->y;
+		if (region_of(o->lcx * 16, o->lcy * 16) == r->id)
+			move_item(r, i, c, (o->lcy & 15) * 16 + (o->lcx & 15));
+	}
+}
+
+int e_door_at(uint16_t tf, int16_t x, int16_t y, uint8_t z)
+{
+	int fx, fy;
+	uint16_t body = body_of(tf, z, &fx, &fy);
+	int x0 = x - fx, y0 = y - fy;
+
+	for (int cy = y0 >> 4; cy <= (y + 7) >> 4; cy++)
+		for (int cx = x0 >> 4; cx <= (x + 7) >> 4; cx++) {
+			if (cx < 0 || cy < 0 || cx >= 192 || cy >= 192)
+				continue;
+			const struct Chunk *k = chunk_statics(cx, cy);
+			for (uint16_t j = 0; j < k->nstatic; j++) {
+				const struct Static *s = &k->statics[j];
+				if (!(info[s->tf & 0x3ff].flags & INFO_DOOR) || y0 > s->y || y < s->y - s->fy
+					|| x0 > s->x || x < s->x - s->fx
+					|| !((((1u << (s->height ? s->height : 1)) - 1) << s->z) & body))
+					continue;
+				for (int d = 0; d < ndoors; d++)
+					if (doors[d].x == s->x && doors[d].y == s->y && doors[d].tf == s->tf
+						&& doors[d].z == s->z)
+						return d;
+				if (ndoors == MOST_DOORS)
+					return -1;
+				struct Door *o = &doors[ndoors];
+				o->x0 = o->x = s->x;
+				o->y0 = o->y = s->y;
+				o->tf0 = o->tf = s->tf;
+				o->z = s->z;
+				o->lcx = (int16_t) cx;
+				o->lcy = (int16_t) cy;
+				return ndoors++;
+			}
+		}
+	return -1;
+}
+
+int e_door_shut(int door)
+{
+	const struct Door *o = &doors[door];
+	const struct Info *in = &info[o->tf & 0x3ff];
+	int fx = o->tf & 0x8000 ? in->fy : in->fx, fy = o->tf & 0x8000 ? in->fx : in->fy;
+	uint16_t levels = (uint16_t) (((1u << (in->height ? in->height : 1)) - 1) << o->z);
+
+	/* shut when in a wall: something solid past each end of it, along its length */
+	if (fx >= fy)
+		return (levels_taken(o->x - fx - 1, o->y, o->x - fx - 1, o->y, NULL) & levels)
+			&& (levels_taken(o->x + 1, o->y, o->x + 1, o->y, NULL) & levels);
+	return (levels_taken(o->x, o->y - fy - 1, o->x, o->y - fy - 1, NULL) & levels)
+		&& (levels_taken(o->x, o->y + 1, o->x, o->y + 1, NULL) & levels);
+}
+
+void e_door_place(int door, int16_t *x, int16_t *y)
+{
+	*x = doors[door].x;
+	*y = doors[door].y;
+}
+
+/* The ring's areas under a picture, to be drawn again; and the chunk's statics made again. */
+static void static_changed(uint16_t tf, int x, int y, int z, int cx, int cy)
+{
+	int16_t r[4];
+	uint8_t slot = chunk_slot[cy * 192 + cx];
+
+	if (slot != 0) {
+		chunks[slot - 1].built = 0;
+		chunk_gen[slot - 1]++;
+	}
+	if (picture_rect(tf, x, y, z, r))
+		for (int ay = r[1] >> 7; ay <= r[3] >> 7; ay++)
+			for (int ax = r[0] >> 7; ax <= r[2] >> 7; ax++)
+				if (ax >= 0 && ay >= 0 && ax < 192 && ay < 192 && in_ring(ax, ay))
+					ring_stale[(ay % RING_AY) * RING_AX + ax % RING_AX] = 1;
+	for (uint8_t m = 0; m < nmovers; m++)
+		movers[m].cached = 0;
+}
+
+int e_door_toggle(int door)
+{
+	struct Door *o = &doors[door];
+	int state = o->tf >> 10 & 3, mx = 0, my = 0;
+	uint16_t type = o->tf & 0x3ff, to;
+
+	/* as the original's toggleDoor (and the doors' usecode): 2 and 3 are locked */
+	if (state > 1)
+		return 0;
+	switch (type) {
+	case 270: to = 376; break;
+	case 376: to = 270; break;
+	case 225: to = 392; break;
+	case 392: to = 225; break;
+	case 432: case 246:
+		to = type == 432 ? 433 : 250;
+		if (state == 1)
+			my = 3;
+		else
+			mx = -3;
+		break;
+	case 433: case 250:
+		to = type == 433 ? 432 : 246;
+		if (state == 1)
+			mx = 3;
+		else
+			my = -3;
+		break;
+	default:
+		return 0;
+	}
+	struct Region *r = region(region_of(o->x, o->y));
+	int c = list_of(o->lcx * 16, o->lcy * 16), i = -1;
+	if (region_of(o->lcx * 16, o->lcy * 16) == r->id)
+		i = find_item(r, c, o->tf, o->x, o->y, o->z);
+	if (i < 0)
+		return 0;
+	uint16_t tf = (uint16_t) ((o->tf & ~(3u << 10)) | (uint16_t) (state ^ 1) << 10);
+	tf = (uint16_t) ((tf & ~0x3ffu) | to);
+	int x = o->x + mx, y = o->y + my;
+	if (region_of(x, y) != r->id)
+		return 0;               /* past its region's edge: left as it is */
+	static_changed(o->tf, o->x, o->y, o->z, o->lcx, o->lcy);
+	r->items[i].tf = tf;
+	r->items[i].x = (uint8_t) x;
+	r->items[i].y = (uint8_t) y;
+	move_item(r, i, c, list_of(x, y));
+	o->tf = tf;
+	o->x = (int16_t) x;
+	o->y = (int16_t) y;
+	o->lcx = (int16_t) (x >> 4);
+	o->lcy = (int16_t) (y >> 4);
+	static_changed(tf, x, y, o->z, o->lcx, o->lcy);
+	e_stats.doors_turned++;
+	return 1;
 }
 
 int32_t e_read_file(const char *dir, const char *name, uint8_t *to, uint32_t most)

@@ -5,9 +5,11 @@
  * original, an NPC goes on with what it is doing until the next of its entries comes round, then
  * takes up that one's. Here that is only where it goes and how it moves there: those near the
  * avatar (in the mover slots) walk to the place, a cell at a time, along walls when one way is
- * free; those far off are put there. At the place, the roaming kinds (loiter, wander, pace,
- * patrol, graze, ...) walk to places nearby in turn, and the rest stand. What the kinds do there
- * (sleep in a bed, work a forge, sell, eat) is the game's, still to come.
+ * free, up and down stairs; those far off are put there. A shut door in an NPC's way it opens,
+ * and shuts again once 2 cells further from it than it came (as the original's routes). At the
+ * place, the roaming kinds (loiter, wander, pace, patrol, graze, ...) walk to places nearby in
+ * turn, and the rest stand. What the kinds do there (sleep in a bed, work a forge, sell, eat) is
+ * the game's, still to come.
  */
 #include <string.h>
 
@@ -34,6 +36,8 @@ static struct Doing {
 	int16_t place_x, place_y;   /* its schedule's place (roaming round it) */
 	int16_t goal_x, goal_y;     /* where it is walking now */
 	int16_t wait;
+	int8_t door;                /* a door it opened and is to shut behind it, or -1 */
+	uint8_t nearest;            /* the nearest it has been to that door */
 } doing[MOST_NPCS];
 
 static int16_t slot_npc[E_MOVERS];   /* the NPC in each mover slot (1 on), or -1 */
@@ -117,12 +121,41 @@ void e_world_init(struct ENpc *npcs, int n, int start, uint32_t blanks)
 		d->place_x = d->goal_x = npc[i].x;
 		d->place_y = d->goal_y = npc[i].y;
 		d->wait = (int16_t) rnd(120);
+		d->door = -1;
 	}
 }
 
 int e_world_minutes(void)
 {
 	return minutes % (24 * 60);
+}
+
+/* Shuts the door an NPC opened, if it is still open. */
+static void shut_behind(struct Doing *d)
+{
+	if (d->door >= 0 && !e_door_shut(d->door))
+		e_door_toggle(d->door);
+	d->door = -1;
+}
+
+/* As the original's routes: a door it opened shut once it is 2 cells further than the nearest it
+ * has come. */
+static void mind_door(int i)
+{
+	struct Doing *d = &doing[i];
+	int16_t x, y;
+
+	if (d->door < 0)
+		return;
+	e_door_place(d->door, &x, &y);
+	int dx = npc[i].x - x, dy = npc[i].y - y;
+	int far = dx < 0 ? -dx : dx, fy = dy < 0 ? -dy : dy;
+	if (fy > far)
+		far = fy;
+	if (far < d->nearest)
+		d->nearest = (uint8_t) (far > 255 ? 255 : far);
+	else if (far > d->nearest + 2)
+		shut_behind(d);
 }
 
 /* The NPCs nearest x, y (not the avatar) in the mover slots, from those within 48 by 40 cells. */
@@ -147,6 +180,14 @@ static void pick(int16_t x, int16_t y)
 		}
 		far[at] = dist;
 		near[at] = (int16_t) i;
+	}
+	/* those leaving the slots shut the doors they opened, as a route given up */
+	for (int s = 1; s < E_MOVERS; s++) {
+		int was = slot_npc[s], kept = 0;
+		for (int k = 0; k < nnear && was >= 0; k++)
+			kept |= near[k] == was;
+		if (was >= 0 && !kept)
+			shut_behind(&doing[was]);
 	}
 	for (int s = 1; s < E_MOVERS; s++) {
 		slot_npc[s] = s - 1 < nnear ? near[s - 1] : -1;
@@ -206,26 +247,35 @@ static int act(int i)
 		p->tf = standing;
 		return 1;
 	}
-	/* the longer way first, as one walks; along a wall when one way is free; else give up */
+	/* the longer way first, as one walks, up or down stairs; a shut door in the way opened (it
+	 * steps through next time); along a wall when the other way is free; else give up */
 	int ax = dx != 0 && (dy == 0 || (d->goal_x - p->x) * dx > (d->goal_y - p->y) * dy);
 	int sx = ax ? dx : 0, sy = ax ? 0 : dy;
 	uint8_t dir = (uint8_t) (sy < 0 ? 0 : sx > 0 ? 1 : sy > 0 ? 2 : 3);
 	uint16_t tf = e_walk_frame(type, dir, 0);
-	if (e_blocked(tf, (int16_t) (p->x + sx), (int16_t) (p->y + sy), p->z)) {
+	int step = e_step(tf, &p->x, &p->y, &p->z, sx, sy);
+	if (step == E_STEP_DOOR && d->door < 0) {
+		int door = e_door_at(tf, (int16_t) (p->x + sx), (int16_t) (p->y + sy), p->z);
+		if (door >= 0 && e_door_shut(door) && e_door_toggle(door)) {
+			d->door = (int8_t) door;
+			d->nearest = 255;
+			d->dir = dir;
+			d->wait = STEP_BLANKS;
+			return 0;
+		}
+	}
+	if (step != E_STEP_MADE) {
 		sx = ax ? 0 : dx;
 		sy = ax ? dy : 0;
-		if ((sx || sy)
-			&& !e_blocked(tf, (int16_t) (p->x + sx), (int16_t) (p->y + sy), p->z))
-			dir = (uint8_t) (sy < 0 ? 0 : sx > 0 ? 1 : sy > 0 ? 2 : 3);
-		else {
+		dir = (uint8_t) (sy < 0 ? 0 : sx > 0 ? 1 : sy > 0 ? 2 : 3);
+		if (!(sx || sy) || e_step(e_walk_frame(type, dir, 0), &p->x, &p->y, &p->z, sx, sy)
+			!= E_STEP_MADE) {
 			d->goal_x = p->x;          /* stuck: it stays */
 			d->goal_y = p->y;
 			d->wait = STEP_BLANKS;
 			return 0;
 		}
 	}
-	p->x = (int16_t) (p->x + sx);
-	p->y = (int16_t) (p->y + sy);
 	d->dir = dir;
 	d->steps++;
 	p->tf = e_walk_frame(type, dir, d->steps);
@@ -257,7 +307,9 @@ void e_world_step(uint32_t blanks, int16_t x, int16_t y)
 		doing[i].wait = (int16_t) (doing[i].wait - dt);
 		if (doing[i].wait > 0)
 			continue;
-		if (act(i))
+		int changed = act(i);
+		mind_door(i);
+		if (changed)
 			e_mover_set(s, npc[i].tf, npc[i].x, npc[i].y, npc[i].z);
 	}
 }

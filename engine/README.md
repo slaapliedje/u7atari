@@ -38,13 +38,28 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   walk to places within 4 cells in turn; the others stand. A game hour is a real minute for now
   (`E_WORLD_MINUTE`); `-DSTART_MINUTES=` sets the time to start at (535: five minutes before the
   9:00 change, to see them go).
-- **Roofs.** As the original works it out (`UpdateCeiling`): the levels the solid statics (not
-  doors) over the avatar's row of cells take, its own left out; the highest of them less one is
-  the ceiling, and statics and movers above it are not drawn (`e_follow`). When it changes, the
+- **Roofs.** As the original works it out (`UpdateCeiling`): of the levels the solid statics (not
+  doors) take over the avatar's row of cells, those above it; the lowest of them less one is the
+  ceiling (so an upper floor goes with the roof), and statics and movers above it are not drawn
+  (`e_follow`). When it changes, the
   areas holding statics between the two ceilings are drawn again, one a frame, the one nearest
   the middle of the view first (those out of view are given up): the roof comes away over the
   avatar first and the rest follows in a few frames. Drawn all at once, it was a pause of 13-19
   blanks going in or out of a building; now the worst frame is 4-6.
+- **Walking** (`e_step`, `e_walk`), as the original's `CheckMove`: a step is made at the walker's
+  level, or failing that one up or one down, where nothing solid is in the way and something is
+  under it (the ground, or a solid static's top): so up and down stairs, a level a step. Doors
+  are kept apart from the solid statics, as the original's collision grid has them: they stop the
+  avatar, which otherwise veers an eighth either way round what is in its way.
+- **Doors** (`e_door_at`, `e_door_toggle`) are movable items. Opening or shutting one does what
+  the doors' usecode and the original's `toggleDoor` do: its type swapped for its other (270 and
+  376, 432 and 433, the abbey's 225 and 392, 246 and 250), the frame's state flipped, the 432/433
+  and 246/250 kinds moved 3 cells; states 2 and 3 are locked. A door changed is kept in a table
+  and put back when its region is read again; its chunks are made again and the ring's areas
+  under it drawn again. A door is shut when something solid lies past each end of it, as Exult
+  tells. NPCs open a shut door in their way and shut it once 2 cells further from it than they
+  came, as the original's routes do. (Double doors' second leaf, which the usecode turns too, and
+  the sounds are not done.)
 - **Depth.** An object stands at the bottom right of its footprint and is lifted 4 pixels up and
   left a level. What lies south, east or above is in front: `order_of()` in `core/engine.c`.
 - **Shapes** are read on demand into a ring that gives the oldest way; the movers' are kept apart.
@@ -81,8 +96,9 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   It uses the same card as the game (`U7/STATIC`, `U7/GAMEDAT`) and `U7/ENGINE`. It starts a new
   game's world at Trinsic at 6:00: the avatar and the NPCs of `ENGINE/NPC.DAT` (the 31 nearest
   it), and the new game's movable items (`ENGINE/U7IREGxx`, before `GAMEDAT/`'s). The pad walks the
-  avatar, 7.5 cells a second, the view on it; walls stop it (doors do not, there being no way to
-  open one); a roof over it is lifted (below). Untouched, it walks into the stables and out.
+  avatar, 7.5 cells a second, the view on it; a roof over it is lifted (below). It walks as the
+  original's avatar does (below, walking); walking into a shut door opens it, and A opens or
+  shuts the door ahead. Untouched, it walks into the stables and out.
   Built with `-DENGINE_TOUR`, it tours Britain with 12 walkers instead (a cell every
   `SCROLL_FRAMES` frames, default 1): the measurements below.
   Every 64 frames the frame rate and timings go to `GD_DebugString` (in blanks, timed by the
@@ -92,8 +108,9 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
 
 ## Measured (2026-11-26, timing core, `-DENGINE_TOUR`: Britain, 12 walkers)
 
-The walk at Trinsic (into the stables and out, about 10 NPCs in view) runs at 41-59 frames a
-second, the worst frame 4-6 blanks.
+The walk at Trinsic (into the stables and out, about 10 NPCs in view) runs at 30-59 frames a
+second, the worst frame 2-10 blanks. (It was 41-59 and 4-6 before the movable items were read
+right: many were lost, and the areas hold more now.)
 
 Frames a second, averaged over 64 frames; the view scrolls a cell every frame (60 cells a second,
 many times walking pace) or every fourth frame (15 cells a second):
@@ -110,6 +127,7 @@ many times walking pace) or every fourth frame (15 cells a second):
 | Chunks' fixed objects from the PC, area order without calls | 28-46 | 33-43 with the walkers in view, 44-56 without |
 | Statics near a mover kept, footprints in the records | 29-49 | 40-50 with the walkers in view, 45-57 without |
 | The movers' pictures, order and list on the GPU | 29-49 | 47-53 with the walkers in view, 45-57 without |
+| All the movable items read (many were lost before) | 27-47 | 40-59 |
 
 There is no stall at the crossings any more. The converted shapes draw faster (a walker's frame,
 200 times: 6 blanks against 9 the original's way, flipped 9 against 11). Converted as read, they
@@ -170,7 +188,7 @@ call chains (`tools/jag-profile.py --frames`).
 - **Translucency**; **NPCs** from a save (it holds them as the game's memory, `U7NBUF.DAT` and
   `U7IBUF.DAT`, not as `NPC.DAT`); what their schedules' kinds do at the place (sleep, eat,
   work, sell), finding a way round more than a wall, and keeping out of each other's way;
-  **doors** opened; steps and stairs (the avatar keeps its level).
+  double doors opened together, door sounds; the party.
 - **Order.** `order_of()` is a simple rule. It still needs checking against the original's frames
   at the same places (the PC reference can draw them). The ring version already draws doors and
   benches that the first version lost.
