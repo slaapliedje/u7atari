@@ -10,8 +10,9 @@
  * (40h, 0.75 dB), key scaling (40h's top bits, by octave and F-number) and tremolo. The
  * envelope: attack (exponential), decay to the sustain level, sustain (held, or for a
  * percussive one decaying on at the release rate), release; each rate 4R plus the key's offset
- * (with key scale rate, all of it; else a quarter), stepped every 16 samples. Key-on restarts
- * the phase and the attack. Connection 1 adds the modulator to the output. Tremolo (1 dB at 3.7
+ * (with key scale rate, all of it; else a quarter), stepped every 16 samples, the gain
+ * gliding there across the block (a step at once clicks). Key-on restarts the phase and the
+ * attack. Connection 1 adds the modulator to the output. Tremolo (1 dB at 3.7
  * Hz) and vibrato (7 cents at 6.1 Hz) where 20h asks. Not here: rhythm mode, the deeper tremolo
  * and vibrato, note select (the original's music uses none of them).
  */
@@ -37,6 +38,7 @@ static struct Op {
 	int32_t env;                /* attenuation, 0-511 << 16 */
 	uint32_t phase;
 	int16_t out[2];             /* its last two outputs (feedback) */
+	int32_t g, dg;              /* its gain << 4 now, and a sample on across the block */
 } ops[18];
 
 static struct Channel {
@@ -177,6 +179,8 @@ void e_opl_write(int reg, int value)
 		chans[reg - 0xc0].rc0 = (uint8_t) value;
 }
 
+static int gain_of(const struct Op *op, const struct Channel *ch);
+
 /* The envelopes a block on. */
 static void envelopes(void)
 {
@@ -225,6 +229,13 @@ static void envelopes(void)
 				break;
 			}
 		}
+	}
+	/* the gains each operator glides to by the block's end */
+	for (int k = 0; k < 18; k++) {
+		struct Op *op = &ops[k];
+		int32_t to = op->state == OFF ? 0 : gain_of(op, &chans[k >> 1]) << 4;
+		op->dg = (to - op->g) / ENV_BLOCK;
+		op->g = to - op->dg * ENV_BLOCK;
 	}
 	/* the LFOs: tremolo 3.7 Hz, vibrato 6.1 Hz, as 16-bit phases a block on */
 	lfo_am += (uint32_t) (65536ULL * 37 * ENV_BLOCK / 10 / RATE);
@@ -293,21 +304,22 @@ void e_opl_render(int16_t *out, int n)
 				continue;
 			int fb = ch->rc0 >> 1 & 7;
 			int32_t fbm = fb ? (m->out[0] + m->out[1]) >> (9 - fb) : 0;
+			m->g += m->dg;
+			car->g += car->dg;
 			m->phase += step_of(m, ch);
 			car->phase += step_of(car, ch);
-			int mo = wave(wse ? m->re0 & 3 : 0, (m->phase >> 22) + (uint32_t) fbm) * gain_of(m, ch) >> 16;
+			int mo = wave(wse ? m->re0 & 3 : 0, (m->phase >> 22) + (uint32_t) fbm) * (m->g >> 4) >> 16;
 			m->out[1] = m->out[0];
 			m->out[0] = (int16_t) mo;
 			int co;
 			if (ch->rc0 & 1) {
-				co = wave(wse ? car->re0 & 3 : 0, car->phase >> 22) * gain_of(car, ch) >> 16;
+				co = wave(wse ? car->re0 & 3 : 0, car->phase >> 22) * (car->g >> 4) >> 16;
 				mix += mo + co;
 			} else {
-				co = wave(wse ? car->re0 & 3 : 0, (car->phase >> 22) + (uint32_t) (mo >> 1)) * gain_of(car, ch) >> 16;
+				co = wave(wse ? car->re0 & 3 : 0, (car->phase >> 22) + (uint32_t) (mo >> 1)) * (car->g >> 4) >> 16;
 				mix += co;
 			}
 		}
-		mix *= 2;
 		out[i] = (int16_t) (mix > 32767 ? 32767 : mix < -32768 ? -32768 : mix);
 	}
 }
