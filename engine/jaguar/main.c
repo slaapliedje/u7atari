@@ -744,6 +744,31 @@ static uint32_t pad(void)
 	return (~(v >> 4) & 0x00F00000UL) | (v & 2 ? 0 : PAD_A) | (w & 2 ? 0 : PAD_B);
 }
 
+/* The keypad, port 1's other three rows (bits 24-27 of each: * 7 4 1, 0 8 5 2, # 9 6 3): bit d
+ * for digit d, KEY_STAR, KEY_HASH. */
+#define KEY_STAR (1u << 10)
+#define KEY_HASH (1u << 11)
+static uint32_t keypad(void)
+{
+	static const uint16_t rows[3] = { 0x81FD, 0x81FB, 0x81F7 };
+	static const uint16_t keys[3][4] = {
+		{ KEY_STAR, 1u << 7, 1u << 4, 1u << 1 },
+		{ 1u << 0, 1u << 8, 1u << 5, 1u << 2 },
+		{ KEY_HASH, 1u << 9, 1u << 6, 1u << 3 },
+	};
+	uint32_t got = 0;
+
+	for (int r = 0; r < 3; r++) {
+		JOY_WRITE = rows[r];
+		uint32_t v = JOY_READ;
+		for (int b = 0; b < 4; b++)
+			if (!(v & 1UL << (24 + b)))
+				got |= keys[r][b];
+	}
+	JOY_WRITE = 0x81FE;
+	return got;
+}
+
 
 #ifdef ENGINE_BENCH_SHAPES
 /* Timings logged at the start: the walker's shape (721) converted, and a frame of it drawn 200
@@ -934,7 +959,18 @@ static void walk_update(void)
 				e_talk_key(E_KEY_LEFT);
 			if (pressed & (1UL << 23))
 				e_talk_key(E_KEY_RIGHT);
-			if (pressed)
+			/* the keypad: digits type a number asked for, * clears it, # takes it (as A) */
+			static uint32_t keys_was;
+			uint32_t keys = keypad(), typed = keys & ~keys_was;
+			keys_was = keys;
+			for (int d = 0; d < 10; d++)
+				if (typed & 1u << d)
+					e_talk_key(E_KEY_DIGIT + d);
+			if (typed & KEY_STAR)
+				e_talk_key(E_KEY_CLEAR);
+			if (typed & KEY_HASH)
+				e_talk_key(E_KEY_NEXT);
+			if (pressed || typed)
 				touched = 1;
 			if (e_talk_active() || pressed & PAD_A)
 				a_held = 1;     /* (the A that ended it is not a door's) */

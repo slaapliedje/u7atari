@@ -46,6 +46,7 @@ static const char *answers[MOST_ANSWERS];
 static int nanswers, picked;
 static struct { int16_t x, line; } spot[MOST_ANSWERS];
 static int low, high, step, value;      /* a number asked for (the original's slider) */
+static int typed = -1;          /* the number typed on a keypad so far, or -1 */
 
 /* Lays out the next page of said from page_at: its lines into the place's, page_next set. */
 static void make_page(void)
@@ -186,6 +187,7 @@ static void took(int r)
 		e_uc_number(&low, &high, &step, &value);
 		if (value < low)
 			value = low;
+		typed = -1;
 	}
 }
 
@@ -236,10 +238,24 @@ void e_talk_key(int key)
 		/* the slider: left (down) and right (up) a step, within its range; A takes it */
 		if (key == E_KEY_NEXT)
 			took(e_uc_resume_number(value));
+		else if (key >= E_KEY_DIGIT && key <= E_KEY_DIGIT + 9) {
+			/* typed (the Jaguar's keypad, not the original's): the digits make a number, set as
+			 * the slider sets one dragged (down to its step, within its range); a digit past
+			 * the range starts the number again */
+			int d = key - E_KEY_DIGIT, n = typed < 0 ? d : typed * 10 + d;
+			if (n > high && typed > 0)
+				n = d;
+			typed = n;
+			n = n > high ? high : n / step * step;
+			value = n < low ? low : n;
+			return;
+		} else if (key == E_KEY_CLEAR)
+			value = low;
 		else if ((key == E_KEY_LEFT || key == E_KEY_DOWN) && value - step >= low)
 			value -= step;
 		else if ((key == E_KEY_RIGHT || key == E_KEY_UP) && value + step <= high)
 			value += step;
+		typed = -1;
 		return;
 	}
 	if (status != E_UC_ASK || nanswers == 0)

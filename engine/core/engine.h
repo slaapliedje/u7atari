@@ -307,6 +307,8 @@ void e_uc_memory(void *code_room, void *heap_room);
 #define E_KEY_RIGHT 3           /* ... after */
 #define E_KEY_UP 4              /* ... on the line above */
 #define E_KEY_DOWN 5            /* ... below */
+#define E_KEY_CLEAR 6           /* a number typed cleared (the Jaguar's * key) */
+#define E_KEY_DIGIT 10          /* E_KEY_DIGIT + d: digit d typed (the Jaguar's keypad) */
 /* NPC number's conversation begun (its usecode as spoken to): 1 when there is one. */
 int e_talk_start(int number);
 int e_talk_active(void);

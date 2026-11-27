@@ -217,7 +217,9 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   and count, lists a container's, and knows when the avatar wears the Fellowship's medallion.
   So a shop sells: Camille's carrots cost one gold for three. `InputNumericValue` shows the
   original's slider (`GUMPS.VGA`'s back, thumb and buttons, the number in font 2): left and
-  right step it, A takes it. Not the original's: an item given goes in its NPC's first
+  right step it, A takes it. On the Jaguar the keypad types it too (not the original's): the
+  digits make a number, set as a dragged one is (down to the step, within the range; a digit
+  past the range starts it again), `*` clears it, `#` takes it. Not the original's: an item given goes in its NPC's first
   container with room, else on it (the original fills hands and slots first; nothing shows
   where yet). Not yet: the paperdolls and bags shown, double-clicking items, saving.
 
