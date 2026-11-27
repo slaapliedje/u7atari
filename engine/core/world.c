@@ -711,3 +711,46 @@ void world_gone(int i)
 	if (npc[i].status & 0x0800)
 		uc_party_leave(i);
 }
+
+static int32_t saved_minutes;
+
+int e_world_section(int k, struct ESection *s)
+{
+	switch (k) {
+	case 0:
+		memcpy(s->tag, "CLOK", 4);
+		saved_minutes = minutes;
+		s->size = sizeof saved_minutes;
+		s->count = s->most = 1;
+		s->data = &saved_minutes;
+		return 1;
+	case 1:
+		memcpy(s->tag, "NPCS", 4);
+		s->size = sizeof npc[0];
+		s->count = (uint32_t) nnpc;
+		s->most = MOST_NPCS;
+		s->data = npc;
+		return 1;
+	}
+	return 0;
+}
+
+void e_world_loaded(uint32_t blanks)
+{
+	/* (the count read; the NPCs begun again where they are, each taking up its schedule's
+	 * entry for the time the next step) */
+	e_world_init(npc, (int) e_save_count("NPCS"), saved_minutes, blanks);
+	period = -1;
+	e_combat_mode(0);
+}
+
+void e_world_avatar_where(int16_t *x, int16_t *y, uint8_t *z)
+{
+	int i = avatar_index();
+
+	if (i >= 0) {
+		*x = npc[i].x;
+		*y = npc[i].y;
+		*z = npc[i].z;
+	}
+}

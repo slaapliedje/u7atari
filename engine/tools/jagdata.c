@@ -24,13 +24,22 @@ static FILE *files[16];
 
 int16_t plat_file_open(const char *name, int16_t mode)
 {
-	(void) mode;
+	if (mode == PLAT_WRITE)
+		return -1;
 	if (strstr(name, "GAMEDAT/") != NULL || strstr(name, "ENGINE/") != NULL)
 		return -1;
 	for (int16_t i = 0; i < 16; i++)
 		if (files[i] == NULL)
 			return (files[i] = fopen(name, "rb")) != NULL ? i : -1;
 	return -1;
+}
+
+int32_t plat_file_write(int16_t f, const void *buffer, int32_t count)
+{
+	(void) f;
+	(void) buffer;
+	(void) count;
+	return -1;                  /* (the tool writes nothing through the engine) */
 }
 
 void plat_file_close(int16_t f)

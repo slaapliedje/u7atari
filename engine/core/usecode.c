@@ -2156,3 +2156,40 @@ void uc_world_init(void)
 	if (k >= 0)
 		party[nparty++] = (int16_t) k;
 }
+
+int e_uc_section(int k, struct ESection *s)
+{
+	switch (k) {
+	case 0:
+		memcpy(s->tag, "FLAG", 4);
+		s->size = 1;
+		s->count = s->most = sizeof flags;
+		s->data = flags;
+		return 1;
+	case 1:
+		memcpy(s->tag, "PRTY", 4);
+		s->size = sizeof party[0];
+		s->count = (uint32_t) nparty;
+		s->most = PARTY_MOST;
+		s->data = party;
+		return 1;
+	}
+	return 0;
+}
+
+void e_uc_loaded(void)
+{
+	nparty = (int) e_save_count("PRTY");
+	for (int j = 1; j < nparty; j++) {
+		uint16_t tf = npc[party[j]].tf;
+		kind_join(party[j], 1);
+		npc[party[j]].tf = tf;  /* (as it was saved: walking, or standing) */
+	}
+	/* what was going on is not: no item being moved, no scripts, nothing asked for */
+	dragged = -1;
+	memset(scripts, 0, sizeof scripts);
+	nrequests = 0;
+	faded = 0;
+	avatar_work = -1;
+	pending.set = 0;
+}

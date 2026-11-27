@@ -316,3 +316,22 @@ int e_held_used(void)
 		n += held[i].in != HELD_FREE;
 	return n;
 }
+
+int e_held_section(int k, struct ESection *s)
+{
+	if (k != 0)
+		return 0;
+	memcpy(s->tag, "HELD", 4);
+	s->size = sizeof held[0];
+	s->count = (uint32_t) nheld;
+	s->most = E_HELD_MOST;
+	s->data = held;
+	return 1;
+}
+
+void e_held_loaded(void)
+{
+	nheld = (int) e_save_count("HELD");
+	for (int i = nheld; i < E_HELD_MOST; i++)
+		held[i].in = HELD_FREE;
+}

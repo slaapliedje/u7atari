@@ -132,6 +132,29 @@ void jag_crash(int32_t long_frame, const uint16_t *frame)
 		;
 }
 
+
+#ifdef ENGINE_FAULTS
+/* (-DENGINE_FAULTS) A fault's frame logged: the 68000's bus and address errors push the access
+ * address and the PC; the others the status and the PC. And the GPU not done in two seconds
+ * logged, with its PC. */
+void fault_report(const uint16_t *sp);
+__asm__(".globl fault_handler\nfault_handler:\n\tmove.l %sp,-(%sp)\n\tjsr fault_report\n1:\tbra 1b\n");
+void fault_handler(void);
+void fault_report(const uint16_t *sp)
+{
+	char text[96];
+	snprintf(text, sizeof text, "FAULT words %04x %04x %04x %04x %04x %04x %04x %04x\n", sp[0], sp[1], sp[2],
+		sp[3], sp[4], sp[5], sp[6], sp[7]);
+	GD_DebugString(text);
+	for (;;)
+		;
+}
+static void faults_catch(void)
+{
+	for (int v = 2; v <= 11; v++)
+		((void (**)(void)) 0)[v] = fault_handler;
+}
+#endif
 /* ---- files: the GameDrive's, a handful open ---- */
 
 #define FILES 6
@@ -139,10 +162,10 @@ static struct { uint16_t gd; uint8_t open; int32_t size; } files[FILES];
 
 int16_t plat_file_open(const char *name, int16_t mode)
 {
-	(void) mode;
 	for (int16_t i = 0; i < FILES; i++)
 		if (!files[i].open) {
-			uint16_t gd = GD_FOpen(name, GD_FOPEN_READ);
+			uint16_t gd = GD_FOpen(name, mode == PLAT_WRITE ? GD_FOPEN_WRITE | GD_FOPEN_CREATE_ALWAYS
+				: GD_FOPEN_READ);
 			if ((int16_t) gd < 0)
 				return -1;
 			files[i].gd = gd;
@@ -165,6 +188,14 @@ int32_t plat_file_read(int16_t f, void *buffer, int32_t count)
 {
 	gpu_finish();
 	if ((int16_t) GD_FRead(files[f].gd, buffer, (uint32_t) count, GD_FREAD_CPU) < 0)
+		return -1;
+	return count;
+}
+
+int32_t plat_file_write(int16_t f, const void *buffer, int32_t count)
+{
+	gpu_finish();
+	if ((int16_t) GD_FWrite(files[f].gd, buffer, (uint32_t) count) < 0)
 		return -1;
 	return count;
 }
@@ -331,8 +362,20 @@ static void gpu_load(void)
 static void gpu_wait(void)
 {
 	if (gpu_busy) {
+#ifdef ENGINE_FAULTS
+		uint32_t t0 = jag_ticks;
+		while (G_CTRL & GPUGO)
+			if (jag_ticks - t0 > 120) {
+				char text[64];
+				snprintf(text, sizeof text, "FAULT gpu stuck at pc %08lx\n", (unsigned long) REG32(0xF02110));
+				GD_DebugString(text);
+				for (;;)
+					;
+			}
+#else
 		while (G_CTRL & GPUGO)
 			;
+#endif
 		gpu_busy = 0;
 	}
 }
@@ -736,6 +779,7 @@ static void set_palette(const uint8_t *rgb)
 #define PAD_B (1UL << 25)
 #define PAD_C (1UL << 26)
 #define PAD_OPTION (1UL << 27)
+#define PAD_PAUSE (1UL << 28)
 static uint32_t pad(void)
 {
 	JOY_WRITE = 0x81FE;
@@ -747,7 +791,7 @@ static uint32_t pad(void)
 	JOY_WRITE = 0x81F7;         /* Option (# 9 6 3) */
 	uint32_t o = JOY_READ;
 	JOY_WRITE = 0x81FE;
-	return (~(v >> 4) & 0x00F00000UL) | (v & 2 ? 0 : PAD_A) | (w & 2 ? 0 : PAD_B)
+	return (~(v >> 4) & 0x00F00000UL) | (v & 2 ? 0 : PAD_A) | (w & 2 ? 0 : PAD_B) | (v & 1 ? 0 : PAD_PAUSE)
 		| (c & 2 ? 0 : PAD_C) | (o & 2 ? 0 : PAD_OPTION);
 }
 
@@ -1007,7 +1051,24 @@ static void walk_update(void)
 #endif
 		int16_t aim_x, aim_y;
 		static int aiming;      /* frames the cross-hairs have been out, the pad held */
-		if (e_uc_faded() && !e_talk_active()) {
+		if (e_menu_active()) {
+			/* the save menu: the pad picks, A does it, B (or Pause) goes on; a game loaded, the
+			 * avatar where it was saved */
+			static const uint32_t bit[6] = { 1UL << 20, 1UL << 21, 1UL << 22, 1UL << 23, PAD_A, PAD_B };
+			static const int key[6] = { E_KEY_UP, E_KEY_DOWN, E_KEY_LEFT, E_KEY_RIGHT, E_KEY_NEXT, E_KEY_BACK };
+			for (int k = 0; k < 6; k++)
+				if ((pressed & bit[k]) && e_menu_key(key[k], world_clock())) {
+					e_world_avatar_where(&ax, &ay, &az);
+					nnpcs = (int) e_save_count("NPCS");
+					posed = 0;
+					swing_ticks = 0;
+					e_mover_set(0, e_walk_frame(type, walk_dir, 0), ax, ay, az);
+				}
+			if (pressed & PAD_PAUSE)
+				e_menu_key(E_KEY_BACK, 0);
+			touched = 1;
+			a_held = 1;
+		} else if (e_uc_faded() && !e_talk_active()) {
 			/* asleep: the pad does nothing */
 		} else if (e_talk_targeting(&aim_x, &aim_y)) {
 			/* something to point at: the cross-hairs, first a cell ahead of the avatar, moved
@@ -1088,6 +1149,12 @@ static void walk_update(void)
 			} else if (e_thing_ahead(ax, ay, az, face_x[walk_dir], face_y[walk_dir], e_inv_actionable, &t)
 				&& !e_inv_open_thing(&t))
 				e_talk_use(&t);
+		} else if (pressed & PAD_PAUSE) {
+			/* Pause: the save menu (the avatar where it is, to be saved) */
+			touched = 1;
+			if (!posed)
+				e_world_avatar_place(ax, ay, az, walk_dir);
+			e_menu_open();
 		} else if (pressed & PAD_C) {
 			/* C: combat mode on or off (the original's C key) */
 			touched = 1;
@@ -1118,7 +1185,7 @@ static void walk_update(void)
 		walk_tick += WALK_BLANKS;
 		if (held)
 			touched = 1;
-		if (e_talk_active() || e_inv_active()) {
+		if (e_talk_active() || e_inv_active() || e_menu_active()) {
 			a_held = (held & PAD_A) != 0;
 			continue;
 		}
@@ -1187,7 +1254,7 @@ static void walk_update(void)
 	}
 	if (walking || moved)
 		e_mover_set(0, e_walk_frame(type, walk_dir, walk_steps), ax, ay, az);
-	if (!e_talk_active() && !e_inv_active())
+	if (!e_talk_active() && !e_inv_active() && !e_menu_active())
 	{
 		if (!posed)
 			e_world_avatar_place(ax, ay, az, walk_dir);
@@ -1228,6 +1295,9 @@ void jag_main(void)
 	e_surface_rows(&surfaces[0]);
 	shown_tick = jag_ticks - 1;
 	video_init();
+#ifdef ENGINE_FAULTS
+	faults_catch();
+#endif
 	if ((r = e_init("U7/", store, sizeof store)) != 0) {
 		snprintf(text, sizeof text, "e_init failed: %d\n", r);
 		GD_DebugString(text);
@@ -1337,9 +1407,9 @@ void jag_main(void)
 		/* talking, the world waits: once each frame holds what it shows, nothing is drawn
 		 * till it changes (the letters, a shape each, would halve the frame rate) */
 		static uint32_t talk_seen, talk_drawn;
-		if (e_talk_active() || e_inv_active()) {
-			if (e_talk_changes() + e_inv_changes() != talk_seen) {
-				talk_seen = e_talk_changes() + e_inv_changes();
+		if (e_talk_active() || e_inv_active() || e_menu_active()) {
+			if (e_talk_changes() + e_inv_changes() + e_menu_changes() != talk_seen) {
+				talk_seen = e_talk_changes() + e_inv_changes() + e_menu_changes();
 				talk_drawn = 0;
 			} else if (talk_drawn >= FRAMES) {
 				uint32_t t = jag_ticks;
@@ -1360,6 +1430,10 @@ void jag_main(void)
 			eb_finish();
 		} else if (e_inv_active()) {
 			e_inv_draw(drawing);
+			eb_finish();
+		}
+		if (e_menu_active()) {
+			e_menu_draw(drawing);
 			eb_finish();
 		}
 #ifdef ENGINE_FRAME_SUMS

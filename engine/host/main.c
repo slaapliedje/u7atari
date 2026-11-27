@@ -29,14 +29,18 @@ static FILE *files[16];
 
 int16_t plat_file_open(const char *name, int16_t mode)
 {
-	(void) mode;
 	for (int16_t i = 0; i < 16; i++)
 		if (files[i] == NULL) {
-			if ((files[i] = fopen(name, "rb")) == NULL)
+			if ((files[i] = fopen(name, mode == PLAT_WRITE ? "wb" : "rb")) == NULL)
 				return -1;
 			return i;
 		}
 	return -1;
+}
+
+int32_t plat_file_write(int16_t f, const void *buffer, int32_t count)
+{
+	return (int32_t) fwrite(buffer, 1, (size_t) count, files[f]);
 }
 
 void plat_file_close(int16_t f)
@@ -345,7 +349,9 @@ static int aim_dx, aim_dy, aim_given;  /* --aim dx,dy: pointed at, pixels from t
 static int put_type = -1;
 static int party_numbers[8], nparty_numbers;
 static int spawn_type = -1, spawn_n;    /* --spawn type,n: monsters put 6 cells south, fighting */
-static int combat_on;           /* --combat: the party in combat mode */   /* --party a,b,..: NPCs joining at the start */
+static int combat_on;
+static int save_slot, load_slot;
+static int save_at = -1, load_at = -1;  /* --save-at f, --load-at f: slot 9 saved, loaded, mid-walk */        /* --save n: saved at the end; --load n: loaded at the start */           /* --combat: the party in combat mode */   /* --party a,b,..: NPCs joining at the start */
 static int uc_function = -1;
 static int after_ticks;         /* --ticks n: the scripts run n ticks after (the functions they ask for) */    /* --uc-function n: run on the item ahead instead of its own */
 static const char *inv_keys;    /* --inv k..: keys pressed in the container opened (l r u d a b c) */
@@ -390,6 +396,19 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 	e_mover_set(0, npcs[me].tf, ax, ay, az);
 	e_world_init(npcs, nnpcs, start_minutes, 0);
 	e_world_step(0, ax, ay);
+	if (load_slot > 0) {
+		int ok = e_load_game(load_slot, 0);
+		nnpcs = (int) e_save_count("NPCS");
+		e_world_avatar_where(&ax, &ay, &az);
+		e_mover_set(0, npcs[me].tf, ax, ay, az);
+		printf("load %d: %d, avatar %d,%d,%d, %02d:%02d, held %d\n", load_slot, ok, ax, ay, az,
+			e_world_minutes() / 60 % 24, e_world_minutes() % 60, e_held_used());
+		if (save_slot > 0 && n <= 1) {
+			/* (load then save, nothing between: the files the same) */
+			printf("save %d: %d\n", save_slot, e_save_game(save_slot));
+			return;
+		}
+	}
 	for (int k = 0; k < nparty_numbers; k++)
 		printf("party: NPC %d joins: %d\n", party_numbers[k], e_uc_join(party_numbers[k]));
 	for (int k = 0; k < spawn_n; k++)
@@ -753,6 +772,16 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 			e_world_avatar_place(ax, ay, az, dir);
 			e_world_party_step(ax != was_x || ay != was_y);
 		}
+		if (f == save_at) {
+			e_world_avatar_place(ax, ay, az, dir);
+			printf("frame %d: save 9: %d at %d,%d\n", f, e_save_game(9), ax, ay);
+		}
+		if (f == load_at) {
+			int ok = e_load_game(9, (uint32_t) f * 4);
+			e_world_avatar_where(&ax, &ay, &az);
+			printf("frame %d: load 9: %d at %d,%d\n", f, ok, ax, ay);
+			fflush(stdout);
+		}
 		sound_frame = f;
 		if (appear_frame > 0 && f == appear_frame) {
 			ax = appear_x;
@@ -805,6 +834,11 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 					printf("  npc %d at %d,%d,%d frame %d\n", npcs[i].number, npcs[i].x,
 						npcs[i].y, npcs[i].z, npcs[i].tf >> 10 & 31);
 		}
+	}
+	if (save_slot > 0) {
+		e_world_avatar_place(ax, ay, az, 2);
+		printf("save %d: %d (avatar %d,%d,%d, %02d:%02d, held %d)\n", save_slot, e_save_game(save_slot), ax, ay,
+			az, e_world_minutes() / 60 % 24, e_world_minutes() % 60, e_held_used());
 	}
 }
 
@@ -878,6 +912,14 @@ int main(int argc, char **argv)
 			uc_function = (int) strtol(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "--spawn") && i + 1 < argc)
 			sscanf(argv[++i], "%d,%d", &spawn_type, &spawn_n);
+		else if (!strcmp(argv[i], "--save") && i + 1 < argc)
+			save_slot = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--save-at") && i + 1 < argc)
+			save_at = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--load-at") && i + 1 < argc)
+			load_at = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--load") && i + 1 < argc)
+			load_slot = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--combat"))
 			combat_on = 1;
 		else if (!strcmp(argv[i], "--party") && i + 1 < argc) {

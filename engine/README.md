@@ -301,6 +301,21 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   and the bodies are put down, and the movers. The shapes' pool has 336 KB of 1484 KB left (256 KB
   needed), the statics 4.4 KB below the stack.
 
+- **Saving** (`core/save.c`). Pause on the Jaguar opens a menu: save game, load game (left and
+  right pick slot 1 to 3), continue. A game is the engine's own file, `U7/ENGINE/SAVEn.DAT`
+  (not the original's format; this machine's byte order): the clock, the NPCs (spawned monsters
+  too), the usecode's flags and party, every held item (what NPCs carry, what the world's
+  containers hold), and the world items changed (doors, bodies, items moved, put down, taken).
+  Each part is a section with its record size and count; a load goes through the whole file
+  first and changes nothing unless all of it fits this build, then reads it into place, begins
+  the NPCs again where they were (each takes up its schedule for the hour), sets the party
+  following, and gives up what it had read of the world (regions, chunks, the ring) so that is
+  read again with the changed items. Save, load and save again makes the same file. On the
+  Jaguar a save is about 14 KB and a load takes about a second (the areas in view drawn again).
+  On the PC `--save n` at the end, `--load n` at the start, `--save-at f`/`--load-at f` (slot 9)
+  mid-walk. (`-DENGINE_FAULTS` on the Jaguar logs a 68000 fault's frame, or a GPU not done in
+  two seconds.)
+
 ## Layout
 
 - `core/` — portable C: the data files, the order, the layer, the movers; `shapes.c`, the

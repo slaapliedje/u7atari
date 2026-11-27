@@ -3430,6 +3430,93 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 	return 0;
 }
 
+/* ---- saving: the save file, and the kept items ---- */
+
+static int16_t save_file = -1;
+static int save_writing, save_ok;
+
+int e_save_open(const char *name, int writing)
+{
+	char path[260];
+
+	snprintf(path, sizeof path, "%sENGINE/%s", prefix_path, name);
+	save_file = plat_file_open(path, writing ? PLAT_WRITE : 0);
+	save_writing = writing;
+	save_ok = save_file >= 0;
+	return save_ok;
+}
+
+int e_save_io(void *data, uint32_t n)
+{
+	if (!save_ok || n == 0)
+		return save_ok;
+	int32_t done = save_writing ? plat_file_write(save_file, data, (int32_t) n)
+		: plat_file_read(save_file, data, (int32_t) n);
+	save_ok = done == (int32_t) n;
+	return save_ok;
+}
+
+int e_save_seek(uint32_t at)
+{
+	save_ok = save_ok && plat_file_seek(save_file, (int32_t) at, 0) == (int32_t) at;
+	return save_ok;
+}
+
+int32_t e_save_length(void)
+{
+	return save_file >= 0 ? plat_file_length(save_file) : -1;
+}
+
+int e_save_close(void)
+{
+	if (save_file >= 0)
+		plat_file_close(save_file);
+	save_file = -1;
+	return save_ok;
+}
+
+int e_kept_section(int k, struct ESection *s)
+{
+	if (k != 0)
+		return 0;
+	memcpy(s->tag, "KEPT", 4);
+	s->size = sizeof doors[0];
+	s->count = (uint32_t) ndoors;
+	s->most = MOST_DOORS;
+	s->data = doors;
+	return 1;
+}
+
+void e_kept_loaded(void)
+{
+	ndoors = (int) e_save_count("KEPT");
+}
+
+/* Everything read from the world's files given up (they are read again, the kept items as they
+ * now are): regions, chunks, the ring's areas, the movers' statics. */
+void e_world_flush(void)
+{
+	for (int i = 0; i < REGION_SLOTS; i++)
+		regions[i].id = -1;
+	for (int i = 0; i < CHUNK_SLOTS; i++) {
+		if (chunks[i].cx >= 0 && chunks[i].cy >= 0 && chunks[i].cx < 192 && chunks[i].cy < 192)
+			chunk_slot[chunks[i].cy * 192 + chunks[i].cx] = 0;
+		chunks[i].cx = chunks[i].cy = -1000;
+		chunks[i].built = 0;
+		chunks[i].grid_ok = 0;
+		chunk_gen[i]++;
+	}
+	for (int a = 0; a < RING_AX * RING_AY; a++) {
+		ring_ax[a] = ring_ay[a] = -1;
+		ring_stale[a] = 0;
+	}
+	for (uint8_t m = 0; m < nmovers; m++) {
+		movers[m].cached = 0;
+		movers[m].near_ok = 0;
+	}
+	movers_dirty = 1;
+}
+
 uint32_t e_pool_size(void)
 {
 	return (uint32_t) (pool_end - pool);

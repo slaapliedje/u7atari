@@ -29,7 +29,9 @@ void e_surface_rows(struct ESurface *s);
 
 #define PLAT_FILE_READ 1
 #define PLAT_SEEK_SET 0
+#define PLAT_WRITE 2            /* plat_file_open's mode: made (emptied) to be written (PLAT_FILE_READ is 1) */
 int16_t plat_file_open(const char *name, int16_t mode);
+int32_t plat_file_write(int16_t file, const void *buffer, int32_t count);
 void plat_file_close(int16_t file);
 int32_t plat_file_read(int16_t file, void *buffer, int32_t count);
 int32_t plat_file_seek(int16_t file, int32_t offset, int16_t origin);
@@ -447,6 +449,47 @@ void e_world_avatar_stand(void);
 #define E_COMBAT_ROOM (4608)
 void e_combat_memory(void *room, uint32_t size);
 uint32_t e_pool_size(void);             /* the shapes' pool e_init left (bytes) */
+
+/* ---- saved games (core/save.c): U7/ENGINE/SAVEn.DAT, the engine's own (not the original's
+ * format): the clock, the NPCs, the usecode's flags and party, what is held and carried, the
+ * world's items changed. Each part a section (its tag, the size of its records, how many); a
+ * load checks the whole file first and changes nothing when it does not fit this build. ---- */
+struct ESection {
+	char tag[4];
+	uint32_t size, count, most;     /* a record's size; how many (now); the most there may be */
+	void *data;
+};
+int e_save_game(int slot);              /* 1 when written */
+int e_load_game(int slot, uint32_t blanks);     /* 1 when read (the world at the backend's blanks) */
+int e_save_exists(int slot);
+/* The save menu (the Jaguar's Pause): opened; whether it is; a key (E_KEY_: up, down the line,
+ * left, right the slot, NEXT does it, BACK shuts it): 1 when a game was loaded (the avatar to be
+ * placed again: e_world_avatar_where); drawn; its changes counted (as e_talk_changes). */
+void e_menu_open(void);
+int e_menu_active(void);
+int e_menu_key(int key, uint32_t blanks);
+void e_menu_draw(struct ESurface *frame);
+uint32_t e_menu_changes(void);
+uint32_t e_save_count(const char *tag); /* (while loading) how many records the file had for it */
+/* Each part's sections (k from 0: 0 past the last), and what is done once they are read. */
+int e_kept_section(int k, struct ESection *s);
+void e_kept_loaded(void);
+void e_world_flush(void);               /* the world's files read again (the kept items as now) */
+int e_held_section(int k, struct ESection *s);
+void e_held_loaded(void);
+int e_uc_section(int k, struct ESection *s);
+void e_uc_loaded(void);
+int e_world_section(int k, struct ESection *s);
+void e_world_loaded(uint32_t blanks);
+/* Where the world has the avatar (after a load). */
+void e_world_avatar_where(int16_t *x, int16_t *y, uint8_t *z);
+/* The save file's own: opened in U7/ENGINE (writing: made anew), written or read, shut (1 when
+ * all went well). */
+int e_save_open(const char *name, int writing);
+int e_save_io(void *data, uint32_t n);
+int e_save_seek(uint32_t at);
+int32_t e_save_length(void);
+int e_save_close(void);
 int e_combat_mode(int on);
 int e_world_avatar_fight(int *dx, int *dy, uint16_t *tf);
 int e_world_spawn(int type, int16_t x, int16_t y, uint8_t z);
