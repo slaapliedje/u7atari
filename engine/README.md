@@ -166,6 +166,16 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   channels at each I2S interrupt (`jaguar/sound_dsp.s`), the console's left output being
   `RTXD` ($F1A14C) as the netlist has it. Virtual Jaguar plays it on its right, so in the
   emulator the pan sounds reversed. On the PC, `--wav` writes the same mix.
+- **Music** (in progress). The original's AdLib music is standard MIDI files (`ADLIBMUS.DAT`)
+  played by its own song player and AdLib driver, which write the OPL2's registers at its 60 Hz
+  tick. As with the effects, `u7musdro` (engine/tools/musdro.cpp) runs the port's upstream copy
+  of that player and driver as they are, with the timbres (`U7VOICE.FLX` record 1) and the game's
+  volume for each song, and records the writes; a song that loops (the player's loop
+  controllers) is recorded to its first jump back, where its loop starts the tick the player
+  marks it. `tools/muspack.py` packs them as `ENGINE/MUSIC.FLX` (6.2 MB, 54 songs: register,
+  value pairs tick by tick, the loop's offset in each). `tools/mkmusic.sh <u7musdro> <STATIC>
+  <out>` does both. Next: an OPL2 synthesizer of the engine's own on the Jaguar's DSP playing
+  them as they stream from the card, for the usecode's `PlayMusic` and the music eggs.
 - **Shapes** are read on demand into a ring that gives the oldest way; the movers' are kept apart.
   They are in the engine's own form (`engine.h`, `E_RUN_`): per run one long for where it is, how
   long, and whether it is a fill, then its pixels padded to a long; colour 0 kept as 255, black

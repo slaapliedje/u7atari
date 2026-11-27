@@ -54,6 +54,17 @@ if(U7_HOST)
         "${U7_UPSTREAM_DIR}/game/include" "${U7_UPSTREAM_DIR}/platform" platform/common)
     set_source_files_properties("${U7_UPSTREAM_DIR}/game/sound/drv/adlib.cpp" TARGET_DIRECTORY
         u7sfxdro PROPERTIES COMPILE_OPTIONS "-w")
+    # Its music: the original's AdLib songs played by upstream's song player and music driver,
+    # their register writes recorded (engine/tools/musdro.cpp).
+    add_executable(u7musdro EXCLUDE_FROM_ALL engine/tools/musdro.cpp
+        "${U7_UPSTREAM_DIR}/game/sound/drv/midiplay.cpp" "${U7_UPSTREAM_DIR}/game/sound/drv/adlibdrv.cpp")
+    target_include_directories(u7musdro PRIVATE "${U7_UPSTREAM_DIR}/game/sound/drv"
+        "${U7_UPSTREAM_DIR}/game/sound" "${U7_UPSTREAM_DIR}/game/include" "${U7_UPSTREAM_DIR}/platform"
+        "${U7_UPSTREAM_DIR}/game/common" "${U7_UPSTREAM_DIR}/game/zevent" "${U7_UPSTREAM_DIR}/game/main/mem"
+        "${U7_UPSTREAM_DIR}/game/main" platform/common)
+    set_source_files_properties("${U7_UPSTREAM_DIR}/game/sound/drv/midiplay.cpp"
+        "${U7_UPSTREAM_DIR}/game/sound/drv/adlibdrv.cpp" TARGET_DIRECTORY u7musdro PROPERTIES
+        COMPILE_OPTIONS "-w")
     if(U7_GAME STREQUAL "Serpent Isle")
         target_compile_definitions(u7host PRIVATE U7_SERPENT_ISLE)
     endif()
