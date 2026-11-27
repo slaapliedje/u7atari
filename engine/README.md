@@ -174,8 +174,13 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   controllers) is recorded to its first jump back, where its loop starts the tick the player
   marks it. `tools/muspack.py` packs them as `ENGINE/MUSIC.FLX` (6.2 MB, 54 songs: register,
   value pairs tick by tick, the loop's offset in each). `tools/mkmusic.sh <u7musdro> <STATIC>
-  <out>` does both. Next: an OPL2 synthesizer of the engine's own on the Jaguar's DSP playing
-  them as they stream from the card, for the usecode's `PlayMusic` and the music eggs.
+  <out>` does both. `core/opl.c` is the engine's own OPL2 (nine two-operator channels, the four
+  waveforms, feedback, both connections, envelopes with key scale rate and level, tremolo and
+  vibrato; no rhythm mode, which the music never uses), integers only, the envelopes stepped
+  every 16 samples, as the DSP's is to do it: its reference. On the PC `--music n[,seconds]
+  --wav out` plays song n through it (its loudness over time follows adlconvert's Nuked render
+  of the same writes, correlation 0.89-0.97; spectra 0.78). Next: the same on the Jaguar's DSP,
+  the songs streamed from the card, for the usecode's `PlayMusic` and the music eggs.
 - **Shapes** are read on demand into a ring that gives the oldest way; the movers' are kept apart.
   They are in the engine's own form (`engine.h`, `E_RUN_`): per run one long for where it is, how
   long, and whether it is a fill, then its pixels padded to a long; colour 0 kept as 255, black

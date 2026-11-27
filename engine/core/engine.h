@@ -487,6 +487,13 @@ struct EEgg {
 #define E_EGGS 384
 int e_eggs(struct EEgg **table);        /* the table, and how many are in it */
 
+/* ---- the OPL2 (core/opl.c): the engine's own, for the original's music (its register writes)
+ * at E_OPL_RATE; written, rendered mono ---- */
+#define E_OPL_RATE 15980
+void e_opl_reset(void);
+void e_opl_write(int reg, int value);
+void e_opl_render(int16_t *out, int n);
+
 /* ---- saved games (core/save.c): U7/ENGINE/SAVEn.DAT, the engine's own (not the original's
  * format): the clock, the NPCs, the usecode's flags and party, what is held and carried, the
  * world's items changed. Each part a section (its tag, the size of its records, how many); a

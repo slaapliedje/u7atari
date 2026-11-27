@@ -877,6 +877,80 @@ static int rnd(int n)
 	return (int) ((rng >> 16) % (uint32_t) n);
 }
 
+/* --music n[,seconds] with --wav: song n of ENGINE/MUSIC.FLX played by the engine's OPL2 into
+ * the WAV (seconds, 30 if not given; a song that loops goes round), alone. */
+static int music_song = -1, music_seconds = 30;
+
+static int play_music(const char *dir, FILE *out)
+{
+	char name[1024];
+	snprintf(name, sizeof name, "%sENGINE/MUSIC.FLX", dir);
+	FILE *f = fopen(name, "rb");
+	if (f == NULL) {
+		perror(name);
+		return 1;
+	}
+	uint8_t head[0x80 + 8 * 64];
+	if (fread(head, 1, sizeof head, f) < 0x88)
+		return 1;
+	uint32_t count = head[0x54] | head[0x55] << 8;
+	if ((uint32_t) music_song >= count || (uint32_t) music_song >= 64)
+		return 1;
+	const uint8_t *e = head + 0x80 + 8 * music_song;
+	uint32_t at = e[0] | e[1] << 8 | e[2] << 16 | (uint32_t) e[3] << 24;
+	uint32_t size = e[4] | e[5] << 8 | e[6] << 16 | (uint32_t) e[7] << 24;
+	if (size < 9)
+		return 1;
+	uint8_t *song = malloc(size);
+	fseek(f, (long) at, SEEK_SET);
+	if (fread(song, 1, size, f) != size)
+		return 1;
+	fclose(f);
+	uint32_t loop = (uint32_t) song[0] << 24 | song[1] << 16 | song[2] << 8 | song[3], pos = 8;
+	int wait = 0;
+	long samples = (long) music_seconds * E_OPL_RATE, done = 0, frac = 0;
+	static int16_t buf[E_OPL_RATE / 60 + 2];
+	e_opl_reset();
+	while (done < samples) {
+		/* a tick's writes */
+		if (wait > 0)
+			wait--;
+		else
+			while (pos < size) {
+				uint8_t b = song[pos++];
+				if (b == 0xff)
+					break;
+				if (b == 0xfe) {
+					wait = song[pos++] - 1;
+					break;
+				}
+				if (b == 0xfd) {
+					if (loop == 0xffffffffu) {
+						pos = size;
+						break;
+					}
+					pos = loop;
+					continue;
+				}
+				e_opl_write(b, song[pos++]);
+			}
+		/* and its samples: RATE / 60 */
+		frac += E_OPL_RATE;
+		int n = (int) (frac / 60);
+		frac -= (long) n * 60;
+		e_opl_render(buf, n);
+		for (int k = 0; k < n; k++)
+			for (int side = 0; side < 2; side++) {
+				fputc(buf[k] & 255, out);
+				fputc(buf[k] >> 8 & 255, out);
+			}
+		wav_frames += (uint32_t) n;
+		done += n;
+	}
+	free(song);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	static uint8_t memory[1600 * 1024];
@@ -921,6 +995,8 @@ int main(int argc, char **argv)
 				return 1;
 			}
 			wav_header();
+		} else if (!strcmp(argv[i], "--music") && i + 1 < argc) {
+			sscanf(argv[++i], "%d,%d", &music_song, &music_seconds);
 		} else if (!strcmp(argv[i], "--use-ahead") && i + 1 < argc) {
 			sscanf(argv[++i], "%d,%d", &use_dx, &use_dy);
 			use_ahead = use_near = 1;
@@ -979,6 +1055,17 @@ int main(int argc, char **argv)
 			list_npcs = 1;
 		else if (!strcmp(argv[i], "--time") && i + 1 < argc)
 			start_minutes = atoi(argv[++i]);
+	}
+	if (music_song >= 0) {
+		/* a song alone, into the WAV */
+		if (wav == NULL) {
+			fprintf(stderr, "--music needs --wav\n");
+			return 2;
+		}
+		int bad = play_music(argv[1], wav);
+		wav_header();
+		fclose(wav);
+		return bad;
 	}
 	e_surface_rows(&frame);
 	int r = e_init(argv[1], memory, sizeof memory);
