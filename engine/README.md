@@ -176,6 +176,21 @@ whether the world can be shown fast enough on a Jaguar to be worth building a ga
   output matches byte for byte. Shapes are drawn from a list the GPU works through while the
   68000 goes on; rows of 16 pixels or more go to the blitter.
 
+- **Usecode** (`core/usecode.c`, `e_uc_`): the original's (`STATIC/USECODE`), run as its
+  interpreter runs it: its opcodes, its values (lists of numbers and strings, worked on by the
+  original's rules for mixing them), its game flags, and its intrinsics as they are needed. The
+  file's functions are found by number once and read into a code area (128 KB) as a run calls
+  them; a run's values go in an area of their own (64 KB), let go when it ends. Where the
+  original waits for the player it stops: each line said, each answer asked for (a
+  conversation's `converse`, the intrinsics that ask); the backend shows them and resumes it.
+  The conversations' intrinsics are done (faces, the answers offered, saved and given back,
+  NPCs' names, properties, flags and alignment, the party, the time, distances); every NPC's
+  conversation (the 255, 5,765 answers picked in all) runs to its end without an intrinsic it
+  needs missing, but those for items (finding them, their frames and qualities) and the
+  avatar's belongings (gold counted: none yet). On the PC, `--talk n --answers a,b,...` (or
+  `auto`: the newest answer not yet asked) prints NPC n's conversation. Not yet: showing it
+  (faces, the text, picking an answer) and using items.
+
 ## Layout
 
 - `core/` — portable C: the data files, the order, the layer, the movers; `shapes.c`, the

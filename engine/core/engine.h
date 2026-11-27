@@ -219,9 +219,36 @@ struct ENpc {
 	uint8_t z;
 	uint8_t activity;           /* what it is doing (a schedule's type: 11 loiter, 14 sleep, ..) */
 	uint8_t intelligence;
+	uint16_t status;            /* the original's status bits (dead, asleep, in the party, ...) */
+	uint8_t strength, dexterity, combat, hit_points, magic, mana, face;
+	char name[16];
 	uint16_t number;            /* in NPC.DAT; the avatar is 0 */
 };
 int e_npcs(struct ENpc *out, int max);
+
+/* ---- usecode (core/usecode.c): the original's (STATIC/USECODE), run as its interpreter runs
+ * it, stopping where the player is waited for ---- */
+
+#define E_UC_DONE 0             /* the run has ended */
+#define E_UC_SAY 1              /* text to show (e_uc_text); then e_uc_resume(NULL) */
+#define E_UC_ASK 2              /* an answer to pick (e_uc_answers); then e_uc_resume(it) */
+#define E_UC_CODE (128 * 1024)  /* room for the functions a run calls (the engine's store) */
+#define E_UC_HEAP (64 * 1024)   /* ... the values it makes */
+/* Usecode function (an NPC's conversation is 0x400 + its number) for item (an NPC: -its
+ * number, the avatar -356) on event (1: used, as spoken to): E_UC_. */
+int e_uc_start(int function, int item, int event);
+int e_uc_resume(const char *answer);
+/* What is said (the original's text: '~' a new line, '*' wait for a key, "@" quotes). */
+const char *e_uc_text(void);
+/* The answers offered, up to most into list: how many. */
+int e_uc_answers(const char **list, int most);
+/* Whose face is shown (an NPC's number, 0 the avatar; -1 none), and its frame. */
+int e_uc_speaker(int *frame);
+/* A game flag. */
+int e_uc_flag(int n);
+/* The engine's own: a static file opened, or -1; the usecode's rooms given it. */
+int16_t e_open_static(const char *name);
+void e_uc_memory(void *code_room, void *heap_room);
 
 /* ---- the world (core/world.c): a clock, and the NPCs on their schedules (SCHEDULE.DAT) ---- */
 

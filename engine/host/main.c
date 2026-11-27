@@ -340,6 +340,8 @@ static int route_step(uint16_t tf, int16_t *ax, int16_t *ay, uint8_t *az, int *d
 
 static int list_npcs;           /* --npcs: those in view listed with each picture */
 static int appear_frame;        /* --appear f: the avatar far off till frame f */
+static int talk_npc = -1;       /* --talk n: NPC n's conversation, printed */
+static const char *talk_answers; /* --answers a,b,...: the answers picked */
 
 static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 {
@@ -374,6 +376,58 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 	e_mover_set(0, npcs[me].tf, ax, ay, az);
 	e_world_init(npcs, nnpcs, start_minutes, 0);
 	e_world_step(0, ax, ay);
+	if (talk_npc >= 0) {
+		/* the NPC's conversation (its usecode, as spoken to), the answers picked from the list
+		 * (then "bye", else the first offered) */
+		const char *next = talk_answers;
+		int r = e_uc_start(0x400 + talk_npc, -talk_npc, 1), turns = 0;
+		while (r != E_UC_DONE && turns++ < 400) {
+			if (r == E_UC_SAY) {
+				int frame, face = e_uc_speaker(&frame);
+				printf("[face %d/%d] %s\n", face, frame, e_uc_text());
+				r = e_uc_resume(NULL);
+				continue;
+			}
+			const char *list[40];
+			char pick[64] = "";
+			int n = e_uc_answers(list, 40);
+			printf("  answers:");
+			for (int k = 0; k < n; k++)
+				printf(" [%s]", list[k]);
+			printf("\n");
+			static char tried[64][40];
+			static int ntried;
+			if (next != NULL && !strcmp(next, "auto")) {
+				/* the newest answer not yet tried, forty at most, then bye */
+				for (int k = n - 1; k >= 0 && !pick[0] && ntried < 40; k--) {
+					int seen = !strcmp(list[k], "bye");
+					for (int j = 0; j < ntried && !seen; j++)
+						seen = !strcmp(tried[j], list[k]);
+					if (!seen) {
+						snprintf(pick, sizeof pick, "%s", list[k]);
+						snprintf(tried[ntried++], sizeof tried[0], "%s", list[k]);
+					}
+				}
+				if (!pick[0])
+					snprintf(pick, sizeof pick, "%s", n > 0 ? "bye" : "");
+			} else if (next != NULL && *next) {
+				const char *c = strchr(next, ',');
+				size_t len = c ? (size_t) (c - next) : strlen(next);
+				snprintf(pick, sizeof pick, "%.*s", (int) len, next);
+				next = c ? c + 1 : NULL;
+			} else {
+				for (int k = 0; k < n; k++)
+					if (!strcmp(list[k], "bye"))
+						snprintf(pick, sizeof pick, "bye");
+				if (!pick[0] && n > 0)
+					snprintf(pick, sizeof pick, "%s", list[0]);
+			}
+			printf("> %s\n", pick);
+			r = e_uc_resume(pick);
+		}
+		printf("(conversation over)\n");
+		return;
+	}
 	if (path || route_x >= 0)
 		n = 100000;
 	for (int f = 0; f < n; f++) {
@@ -506,7 +560,11 @@ int main(int argc, char **argv)
 				return 1;
 			}
 			wav_header();
-		} else if (!strcmp(argv[i], "--appear") && i + 1 < argc)
+		} else if (!strcmp(argv[i], "--talk") && i + 1 < argc)
+			talk_npc = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--answers") && i + 1 < argc)
+			talk_answers = argv[++i];
+		else if (!strcmp(argv[i], "--appear") && i + 1 < argc)
 			appear_frame = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--trace") && i + 1 < argc)
 			e_world_trace = atoi(argv[++i]);

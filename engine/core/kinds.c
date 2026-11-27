@@ -207,6 +207,11 @@ static int in_view_slot(int k)
 	return k == avatar ? 0 : in_slot(k);
 }
 
+int avatar_index(void)
+{
+	return avatar;
+}
+
 static void place_of(int k, int *x, int *y)
 {
 	if (k == avatar) {

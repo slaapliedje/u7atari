@@ -2167,6 +2167,11 @@ static void draw_barks(struct ESurface *frame, int16_t vx, int16_t vy)
 	}
 }
 
+int16_t e_open_static(const char *name)
+{
+	return open_file("STATIC", name);
+}
+
 int32_t e_read_file(const char *dir, const char *name, uint8_t *to, uint32_t most)
 {
 	int16_t f = open_file(dir, name);
@@ -2253,7 +2258,19 @@ int e_npcs(struct ENpc *out, int max)
 		out[n].y = (int16_t) (region / 12 * 256 + rec[1]);
 		out[n].z = rec[9] >> 4;
 		out[n].activity = rec[22];      /* its work type: what it is doing */
+		/* its buffer, from byte 12: status, strength, dexterity, intelligence, combat, work
+		 * type, attack mode, type, hit points, magic, mana, face, ..., its name at 89 */
+		out[n].status = (uint16_t) (rec[16] | rec[17] << 8);
+		out[n].strength = rec[18];
+		out[n].dexterity = rec[19];
 		out[n].intelligence = rec[20];
+		out[n].combat = rec[21];
+		out[n].hit_points = rec[26];
+		out[n].magic = rec[27];
+		out[n].mana = rec[28];
+		out[n].face = rec[29];
+		memcpy(out[n].name, rec + 101, 16);
+		out[n].name[15] = 0;
 		out[n].number = (uint16_t) i;
 		n++;
 	}
@@ -2647,6 +2664,16 @@ int e_init(const char *prefix, uint8_t *memory, uint32_t size)
 			return -7;
 	open_sounds();
 	open_text();
+	{
+		/* the usecode's rooms, when there is usecode to run */
+		int16_t f = open_file("STATIC", "USECODE");
+		if (f >= 0) {
+			plat_file_close(f);
+			void *c = take(E_UC_CODE), *h = take(E_UC_HEAP);
+			if (c != NULL && h != NULL)
+				e_uc_memory(c, h);
+		}
+	}
 	pool = pool_next = pool_pinned = mem_next;
 	pool_end = mem_end;
 	if (pool_end - pool < 256 * 1024)

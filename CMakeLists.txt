@@ -38,12 +38,12 @@ if(U7_HOST)
     add_executable(u7host ${U7_HOST_SOURCES} tests/save_test.cpp tests/speech_hook.cpp)
     # The engine test on the PC (engine/README.md): views of the world as pictures.
     add_executable(u7engine EXCLUDE_FROM_ALL engine/core/engine.c engine/core/shapes.c
-        engine/core/world.c engine/core/kinds.c engine/core/route.c
+        engine/core/world.c engine/core/kinds.c engine/core/usecode.c engine/core/route.c
         engine/host/main.c)
     target_include_directories(u7engine PRIVATE engine/core)
     # Its dataset: the shapes converted once, for the Jaguar (U7/ENGINE/SHAPES.FLX).
     add_executable(u7jagdata EXCLUDE_FROM_ALL engine/tools/jagdata.c engine/core/engine.c
-        engine/core/shapes.c engine/core/world.c engine/core/kinds.c engine/core/route.c)
+        engine/core/shapes.c engine/core/world.c engine/core/kinds.c engine/core/usecode.c engine/core/route.c)
     target_include_directories(u7jagdata PRIVATE engine/core)
     target_compile_options(u7jagdata PRIVATE -O2 -Wall -Wextra)
     # Its sounds: the original's AdLib effects played by upstream's own effects driver, their
@@ -180,14 +180,15 @@ if(U7_JAGUAR)
     add_executable(u7engine_jag EXCLUDE_FROM_ALL platform/jaguar/startup.S engine/jaguar/main.c
         "${CMAKE_CURRENT_BINARY_DIR}/tiles_gpu.o" "${CMAKE_CURRENT_BINARY_DIR}/shapes_gpu.o"
         "${CMAKE_CURRENT_BINARY_DIR}/convert_gpu.o" "${CMAKE_CURRENT_BINARY_DIR}/movers_gpu.o"
-        "${CMAKE_CURRENT_BINARY_DIR}/sound_dsp.o" engine/jaguar/stubs.c engine/core/engine.c engine/core/shapes.c engine/core/world.c engine/core/kinds.c engine/core/route.c
+        "${CMAKE_CURRENT_BINARY_DIR}/sound_dsp.o" engine/jaguar/stubs.c engine/core/engine.c engine/core/shapes.c engine/core/world.c engine/core/kinds.c engine/core/usecode.c engine/core/route.c
         "${CMAKE_CURRENT_BINARY_DIR}/gdbios.o")
     target_include_directories(u7engine_jag PRIVATE engine/core platform/jaguar)
     if(U7_JAG_FRAME_POINTERS)
         target_compile_definitions(u7engine_jag PRIVATE JAG_PROF_FRAMES)
     endif()
     target_compile_options(u7engine_jag PRIVATE $<$<COMPILE_LANGUAGE:C>:-O2 -g -Wall -Wextra>)
-    target_link_options(u7engine_jag PRIVATE -nostartfiles
+    # The engine's stack: 64 K (the game's 256 K is for its big locals).
+    target_link_options(u7engine_jag PRIVATE -nostartfiles -Wl,--defsym=__stack_size=0x10000
         "-T${CMAKE_CURRENT_SOURCE_DIR}/platform/jaguar/jaguar.ld")
     add_custom_command(TARGET u7engine_jag POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E env "OBJCOPY=${CMAKE_OBJCOPY}"

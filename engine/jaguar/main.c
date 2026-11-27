@@ -101,7 +101,7 @@ static int16_t view_sx, view_sy;
 #define FRAMES 3
 #endif
 static uint8_t frames[FRAMES][W * H] __attribute__((aligned(16)));
-static uint8_t store[1260 * 1024] __attribute__((aligned(8)));
+static uint8_t store[1396 * 1024] __attribute__((aligned(8)));
 static uint8_t row_table[H * 4];
 static struct ESurface surfaces[FRAMES] = {
 	{ frames[0], W, W, H, row_table }, { frames[1], W, W, H, row_table },

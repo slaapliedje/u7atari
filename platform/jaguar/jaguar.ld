@@ -11,7 +11,8 @@ MEMORY
 }
 
 __stack = 0x200000;
-__stack_size = 0x40000;     /* as the Atari's _stksize: the game has big locals */
+/* as the Atari's _stksize: the game has big locals (a program may set its own: --defsym) */
+__stack_size = DEFINED(__stack_size) ? __stack_size : 0x40000;
 
 SECTIONS
 {

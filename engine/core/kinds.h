@@ -130,5 +130,9 @@ void kind_lost(int i);          /* no way to its place: it wanders */
 void kind_period(int i, int kind);      /* its next entry has come round */
 void kind_init(int i);          /* as the game was left */
 void kind_things(int blanks);   /* the items' scripts (a bellows, a loom), blanks on */
+int avatar_index(void);         /* the avatar's NPC index, or -1 */
+
+/* usecode.c */
+void uc_world_init(void);       /* the party: the avatar alone */
 
 #endif

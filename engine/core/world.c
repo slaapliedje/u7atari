@@ -143,6 +143,7 @@ void e_world_init(struct ENpc *npcs, int n, int start, uint32_t blanks)
 		d->route = -1;
 		kind_init(i);
 	}
+	uc_world_init();
 }
 
 int e_world_minutes(void)
