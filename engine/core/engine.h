@@ -611,6 +611,9 @@ void eb_music_gain(int gain);
 /* The intro's sounds and pictures shown where plat_file_direct finds them (the Jaguar's
  * GameDrive pages; a backend that keeps them in its memory anyway does nothing), or not. */
 void eb_intro_memory(int on);
+/* A bitmap (w by h bytes, its pitch w) drawn into dst with its top left at x0, y0, scaled by
+ * scale/256 (nearest), its 0 left clear, clipped to dst (the intro's zooms). */
+void eb_scaled(struct ESurface *dst, const uint8_t *px, int w, int h, int x0, int y0, int scale);
 
 /* ---- the intro (core/intro.c): the original's INTRO, its six scenes, from ENGINE/ENDSHAPE.FLX
  * (the pictures, made ahead), ENGINE/INTRO.FLX (its synth effects and the speech), MUSIC.FLX's

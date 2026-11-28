@@ -22,6 +22,7 @@
 
 extern const uint8_t gpu_tiles[], gpu_tiles_end[], gpu_shapes[], gpu_shapes_end[];
 extern const uint8_t gpu_convert[], gpu_convert_end[], gpu_movers[], gpu_movers_end[];
+extern const uint8_t gpu_scale[], gpu_scale_end[];
 extern const uint8_t dsp_sound[], dsp_sound_end[];
 #define G_FLAGS (*(volatile uint32_t *) 0xF02100)
 #define G_PC (*(volatile uint32_t *) 0xF02110)
@@ -34,6 +35,8 @@ extern const uint8_t dsp_sound[], dsp_sound_end[];
 #define CONVERT_CODE ((volatile uint32_t *) 0xF03500)
 #define MOVER_PARAMS ((volatile uint32_t *) 0xF03F40)
 #define MOVER_CODE ((volatile uint32_t *) 0xF03860)
+#define SCALE_PARAMS ((volatile uint32_t *) 0xF03FC0)
+#define SCALE_CODE ((volatile uint32_t *) 0xF03CA0)
 #define GPUGO 1
 
 static void gpu_finish(void);
@@ -114,7 +117,7 @@ static int16_t view_sx, view_sy;
 #define FRAMES 3
 #endif
 static uint8_t frames[FRAMES][W * H] __attribute__((aligned(16)));
-static uint8_t store[1476 * 1024] __attribute__((aligned(8)));
+static uint8_t store[1468 * 1024] __attribute__((aligned(8)));     /* (the statics end below the stack, $1F0000) */
 static uint8_t row_table[H * 4];
 static struct ESurface surfaces[FRAMES] = {
 	{ frames[0], W, W, H, row_table }, { frames[1], W, W, H, row_table },
@@ -762,6 +765,8 @@ static void gpu_load(void)
 		CONVERT_CODE[i] = ((const uint32_t *) gpu_convert)[i];
 	for (uint32_t i = 0; i < (uint32_t) (gpu_movers_end - gpu_movers + 3) / 4; i++)
 		MOVER_CODE[i] = ((const uint32_t *) gpu_movers)[i];
+	for (uint32_t i = 0; i < (uint32_t) (gpu_scale_end - gpu_scale + 3) / 4; i++)
+		SCALE_CODE[i] = ((const uint32_t *) gpu_scale)[i];
 	gpu_loaded = 1;
 }
 
@@ -1455,6 +1460,39 @@ static uint32_t sum_frames;
 #else
 #define MARK(rgb) ((void) 0)
 #endif
+/* A bitmap scaled into a frame by the GPU (scale_gpu.s), clipped and its rows' and columns' first
+ * places in it (16.16) worked out here. */
+void eb_scaled(struct ESurface *f, const uint8_t *px, int w, int h, int x0, int y0, int scale)
+{
+	if (scale <= 0 || w <= 0 || h <= 0)
+		return;
+	int dw = w * scale / 256, dh = h * scale / 256;
+	int dx0 = x0 < 0 ? 0 : x0, dy0 = y0 < 0 ? 0 : y0;
+	int dx1 = x0 + dw > f->w ? f->w : x0 + dw, dy1 = y0 + dh > f->h ? f->h : y0 + dh;
+	uint32_t step = (uint32_t) (256u * 65536u / (uint32_t) scale);
+	uint32_t sy0 = (uint32_t) (dy0 - y0) * step, sx0 = (uint32_t) (dx0 - x0) * step;
+	/* (none past the bitmap's last row or column) */
+	while (dy1 > dy0 && sy0 + (uint32_t) (dy1 - 1 - dy0) * step >= (uint32_t) h << 16)
+		dy1--;
+	while (dx1 > dx0 && sx0 + (uint32_t) (dx1 - 1 - dx0) * step >= (uint32_t) w << 16)
+		dx1--;
+	if (dx0 >= dx1 || dy0 >= dy1)
+		return;
+	gpu_load();
+	gpu_finish();
+	blit_wait();
+	SCALE_PARAMS[0] = (uint32_t) px;
+	SCALE_PARAMS[1] = (uint32_t) w;
+	SCALE_PARAMS[2] = (uint32_t) (f->pixels + dy0 * f->pitch + dx0);
+	SCALE_PARAMS[3] = f->pitch;
+	SCALE_PARAMS[4] = (uint32_t) (dy1 - dy0);
+	SCALE_PARAMS[5] = (uint32_t) (dx1 - dx0);
+	SCALE_PARAMS[6] = step;
+	SCALE_PARAMS[7] = sy0;
+	SCALE_PARAMS[8] = sx0;
+	gpu_start(0xF03CA0);
+}
+
 /* ---- the intro's frames (core/intro.c): drawn into the frames in turn, each shown with its
  * palette, the blanks its clock ---- */
 static int intro_f;

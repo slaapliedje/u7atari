@@ -104,7 +104,7 @@ static int reach(int n, int fr, int16_t r[4])
 /* ---- pictures drawn into bitmaps (the scaled and turned ones), in the spare room ---- */
 
 static uint8_t *room;
-static uint32_t room_size, room_used;
+static uint32_t room_size, room_used, room_base;
 
 struct Bitmap {
 	uint8_t *px;                /* w by h, 0 clear */
@@ -148,31 +148,39 @@ static int bitmap(int n, int fr, struct Bitmap *b)
 	return 1;
 }
 
+/* A full-screen picture (a scene's background) drawn once into a frame of its own and copied by
+ * the blitter after (redrawing its runs every frame was half the Guardian scene's time). */
+static struct ESurface back;
+static int back_n = -1;
+
+static void background(struct ESurface *f, int n)
+{
+	if (back.pixels == NULL) {
+		draw(f, n, 0, 0, 0);
+		return;
+	}
+	if (back_n != n) {
+		static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
+		eb_clear(&back, 0, 0, E_VIEW_W, E_VIEW_H);
+		if (pic(n))
+			e_picture_draw_clip(&back, pics[n].room, &pics[n].p, 0, 0, 0, whole);
+		eb_finish();
+		back_n = n;
+	}
+	eb_copy(f, 0, 0, &back, 0, 0, E_VIEW_W, E_VIEW_H);
+}
+
+/* the static's random grey and black, read from a random place each line (as the original read
+ * the PC's BIOS ROM) */
+#define NOISE 8192
+static uint8_t *noise;
+
 /* A bitmap drawn with its hot spot at x, y, scaled by scale/256 about it (nearest), its 0 clear. */
 static void blit(struct ESurface *f, const struct Bitmap *b, int x, int y, int scale)
 {
 	if (b->px == NULL || scale <= 0)
 		return;
-	int x0 = x - b->hx * scale / 256, y0 = y - b->hy * scale / 256;
-	int w = b->w * scale / 256, h = b->h * scale / 256;
-	int dx0 = x0 < 0 ? 0 : x0, dy0 = y0 < 0 ? 0 : y0;
-	int dx1 = x0 + w > E_VIEW_W ? E_VIEW_W : x0 + w, dy1 = y0 + h > E_VIEW_H ? E_VIEW_H : y0 + h;
-	if (dx0 >= dx1 || dy0 >= dy1)
-		return;
-	uint32_t step = (uint32_t) (256 * 65536 / scale);
-	for (int dy = dy0; dy < dy1; dy++) {
-		int sy = (int) ((uint32_t) (dy - y0) * step >> 16);
-		if (sy >= b->h)
-			break;
-		const uint8_t *src = b->px + sy * b->w;
-		uint8_t *dst = f->pixels + dy * f->pitch;
-		uint32_t sx = (uint32_t) (dx0 - x0) * step;
-		for (int dx = dx0; dx < dx1; dx++, sx += step) {
-			uint8_t c = src[sx >> 16];
-			if (c)
-				dst[dx] = c;
-		}
-	}
+	eb_scaled(f, b->px, b->w, b->h, x - b->hx * scale / 256, y - b->hy * scale / 256, scale);
 }
 
 /* A bitmap turned by deg degrees (clockwise on the screen) and scaled by scale/256 about its hot
@@ -213,14 +221,19 @@ static int turned(const struct Bitmap *b, int deg, int scale, struct Bitmap *out
 	out->px = take((uint32_t) out->w * out->h);
 	if (out->px == NULL)
 		return 0;
-	for (int y = 0; y < out->h; y++)
-		for (int x = 0; x < out->w; x++) {
-			/* back from the screen to the bitmap: turned the other way, unscaled */
-			int64_t qx = (int64_t) (x - out->hx) * 256 * 4096 / scale, qy = (int64_t) (y - out->hy) * 256 * 4096 / scale;
-			int px = (int) ((qx * c + qy * s) / 4096 / 4096) + b->hx;
-			int py = (int) ((-qx * s + qy * c) / 4096 / 4096) + b->hy;
-			out->px[y * out->w + x] = px >= 0 && px < b->w && py >= 0 && py < b->h ? b->px[py * b->w + px] : 0;
+	/* back from the screen to the bitmap (turned the other way, unscaled), stepped in 16.16: a
+	 * pixel right adds (c, -s) / k, a row down (s, c) / k, k the scale */
+	int32_t ax = (int32_t) ((int64_t) c * 4096 / scale), ay = (int32_t) ((int64_t) s * 4096 / scale);
+	int32_t rx = -out->hx * ax - out->hy * ay + (b->hx << 16) + 32768;
+	int32_t ry = out->hx * ay - out->hy * ax + (b->hy << 16) + 32768;
+	for (int y = 0; y < out->h; y++, rx += ay, ry += ax) {
+		int32_t px = rx, py = ry;
+		uint8_t *o = out->px + y * out->w;
+		for (int x = 0; x < out->w; x++, px += ax, py -= ay) {
+			int ix = px >> 16, iy = py >> 16;
+			o[x] = ix >= 0 && ix < b->w && iy >= 0 && iy < b->h ? b->px[iy * b->w + ix] : 0;
 		}
+	}
 	return 1;
 }
 
@@ -347,14 +360,13 @@ static void tv_static(int frames)
 		if (paint != NULL)
 			paint(f);
 		eb_finish();
+		int w = static_x1 - static_x0;
 		for (int y = static_y0; y < static_y1; y++) {
-			uint8_t *p = f->pixels + y * f->pitch;
-			for (int x = static_x0; x < static_x1; x += 16) {
-				seed = seed * 1103515245u + 12345u;
-				uint32_t bits = seed >> 8;
-				for (int i = 0; i < 16 && x + i < static_x1; i++)
-					p[x + i] = static_black ? 0 : (bits >> i & 1) ? STATIC_COLOR : 0;
-			}
+			uint8_t *p = f->pixels + y * f->pitch + static_x0;
+			if (static_black || noise == NULL)
+				memset(p, 0, (size_t) w);
+			else
+				memcpy(p, noise + rnd(NOISE - w), (size_t) w);
 		}
 		show(1);
 	}
@@ -389,7 +401,7 @@ static void hush_all(void)
 
 static void paint_presents(struct ESurface *f)
 {
-	draw(f, E_PRESENTS, 0, 0, 0);
+	background(f, E_PRESENTS);
 }
 
 static void presents(void)
@@ -420,7 +432,7 @@ static int bfly_x, bfly_y, bfly_frame, bfly_shown, bfly_dir;
 
 static void paint_title(struct ESurface *f)
 {
-	draw(f, E_TITLE_BACK, 0, 0, 0);
+	background(f, E_TITLE_BACK);
 	draw(f, E_TITLE, 0, 160, 50);
 	if (bfly_shown)
 		draw(f, E_BUTTERFLY, bfly_frame, bfly_x, bfly_y);
@@ -498,7 +510,7 @@ static void title(void)
 
 static void paint_noise(struct ESurface *f)
 {
-	draw(f, E_NOISE, 0, 0, 0);
+	background(f, E_NOISE);
 }
 
 static void static_scene(void)
@@ -527,7 +539,7 @@ static int swirl, swirl_frame, face_frame, guardian, mouth_frame, eye_frame, bro
 
 static void paint_guardian(struct ESurface *f)
 {
-	draw(f, E_NOISE, 0, 0, 0);
+	background(f, E_NOISE);
 	if (swirl == 1 && swirl_frame <= 9) {
 		draw(f, E_SWIRL1, 0, 118, 48);
 		draw(f, E_SWIRL1, swirl_frame, 118, 48);
@@ -772,7 +784,7 @@ static void orb(void)
 
 static void desk(void)
 {
-	room_used = 0;
+	room_used = room_base;
 	for (int k = 0; k < 4; k++)
 		bitmap(E_MONITOR + k, 0, &quarter[k]);
 	bitmap(E_SMALL_TITLE, 0, &small_title);
@@ -921,7 +933,7 @@ static void paint_moongate(struct ESurface *f)
 
 static void moongate(void)
 {
-	room_used = 0;
+	room_used = room_base;
 	bitmap(E_CURTAIN_L, 0, &curtain[0]);
 	bitmap(E_CURTAIN_R, 0, &curtain[1]);
 	for (int k = 0; k < 4; k++)
@@ -999,6 +1011,21 @@ int e_intro_run(void)
 		return -1;
 	}
 	room = e_spare_room(&room_size);
+	room_used = 0;
+	back.pixels = take(E_VIEW_W * E_VIEW_H);
+	back.rows = take(E_VIEW_H * 4);
+	if (back.pixels == NULL || back.rows == NULL)
+		back.pixels = NULL;
+	else {
+		back.pitch = back.w = E_VIEW_W;
+		back.h = E_VIEW_H;
+		e_surface_rows(&back);
+	}
+	back_n = -1;
+	noise = take(NOISE);
+	for (int k = 0; noise != NULL && k < NOISE; k++)
+		noise[k] = rnd(2) ? STATIC_COLOR : 0;
+	room_base = room_used;
 	eb_music_gain(E_MUSIC_GAIN_INTRO);
 	presents();
 	if (!quit)

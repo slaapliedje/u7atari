@@ -185,12 +185,16 @@ if(U7_JAGUAR)
     add_custom_command(OUTPUT movers_gpu.o
         COMMAND "${U7_RMAC}" -fe -o movers_gpu.o "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/movers_gpu.s"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/movers_gpu.s" VERBATIM)
+    add_custom_command(OUTPUT scale_gpu.o
+        COMMAND "${U7_RMAC}" -fe -o scale_gpu.o "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/scale_gpu.s"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/scale_gpu.s" VERBATIM)
     add_custom_command(OUTPUT sound_dsp.o
         COMMAND "${U7_RMAC}" -fe -o sound_dsp.o "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/sound_dsp.s"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/engine/jaguar/sound_dsp.s" VERBATIM)
     add_executable(u7engine_jag EXCLUDE_FROM_ALL platform/jaguar/startup.S engine/jaguar/main.c
         "${CMAKE_CURRENT_BINARY_DIR}/tiles_gpu.o" "${CMAKE_CURRENT_BINARY_DIR}/shapes_gpu.o"
         "${CMAKE_CURRENT_BINARY_DIR}/convert_gpu.o" "${CMAKE_CURRENT_BINARY_DIR}/movers_gpu.o"
+        "${CMAKE_CURRENT_BINARY_DIR}/scale_gpu.o"
         "${CMAKE_CURRENT_BINARY_DIR}/sound_dsp.o" engine/jaguar/stubs.c engine/core/engine.c engine/core/shapes.c engine/core/world.c engine/core/kinds.c engine/core/usecode.c engine/core/held.c engine/core/inv.c engine/core/save.c engine/core/opl.c engine/core/talk.c engine/core/route.c engine/core/front.c engine/core/intro.c
         "${CMAKE_CURRENT_BINARY_DIR}/gdbios.o")
     target_include_directories(u7engine_jag PRIVATE engine/core platform/jaguar)
@@ -202,6 +206,8 @@ if(U7_JAGUAR)
     target_link_options(u7engine_jag PRIVATE -nostartfiles -Wl,--defsym=__stack_size=0x10000
         "-T${CMAKE_CURRENT_SOURCE_DIR}/platform/jaguar/jaguar.ld")
     add_custom_command(TARGET u7engine_jag POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E env "NM=${CMAKE_NM}"
+            python3 "${CMAKE_CURRENT_SOURCE_DIR}/engine/tools/jagcheck.py" "$<TARGET_FILE:u7engine_jag>"
         COMMAND ${CMAKE_COMMAND} -E env "OBJCOPY=${CMAKE_OBJCOPY}"
             python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/jag-rom.py" "$<TARGET_FILE:u7engine_jag>"
             "${U7_JAG_HEADER}" "${CMAKE_CURRENT_BINARY_DIR}/U7ENGINE.rom"

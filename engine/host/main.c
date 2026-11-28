@@ -137,6 +137,27 @@ void eb_intro_memory(int on)
 	(void) on;
 }
 
+void eb_scaled(struct ESurface *f, const uint8_t *px, int w, int h, int x0, int y0, int scale)
+{
+	if (scale <= 0)
+		return;
+	int dw = w * scale / 256, dh = h * scale / 256;
+	int dx0 = x0 < 0 ? 0 : x0, dy0 = y0 < 0 ? 0 : y0;
+	int dx1 = x0 + dw > f->w ? f->w : x0 + dw, dy1 = y0 + dh > f->h ? f->h : y0 + dh;
+	uint32_t step = (uint32_t) (256u * 65536u / (uint32_t) scale);
+	for (int dy = dy0; dy < dy1; dy++) {
+		uint32_t sy = (uint32_t) (dy - y0) * step >> 16;
+		if (sy >= (uint32_t) h)
+			break;
+		const uint8_t *src = px + sy * (uint32_t) w;
+		uint8_t *dst = f->pixels + dy * f->pitch;
+		uint32_t sx = (uint32_t) (dx0 - x0) * step;
+		for (int dx = dx0; dx < dx1; dx++, sx += step)
+			if ((sx >> 16) < (uint32_t) w && src[sx >> 16])
+				dst[dx] = src[sx >> 16];
+	}
+}
+
 int32_t plat_file_length(int16_t f)
 {
 	long at = ftell(files[f]), n;
