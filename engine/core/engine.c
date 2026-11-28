@@ -168,8 +168,26 @@ static void make_room(uint32_t size)
 
 static const uint8_t *load_shape(uint16_t type);
 
+#ifdef ENGINE_STAGES_FILES
+/* (for tests: the shapes used since the last look, and their bytes) */
+static uint8_t used_mark[4096 / 8];
+uint32_t e_used_shapes, e_used_bytes;
+void e_used_reset(void)
+{
+	memset(used_mark, 0, sizeof used_mark);
+	e_used_shapes = e_used_bytes = 0;
+}
+#endif
+
 static const uint8_t *shape(uint16_t type)
 {
+#ifdef ENGINE_STAGES_FILES
+	if (type < shapes.count && type < 4096 && !(used_mark[type >> 3] & (1 << (type & 7)))) {
+		used_mark[type >> 3] |= (uint8_t) (1 << (type & 7));
+		e_used_shapes++;
+		e_used_bytes += shapes.table[type * 2 + 1];
+	}
+#endif
 
 	if (type >= shapes.count || shape_at[type] != NULL)
 		return type < shapes.count ? shape_at[type] : NULL;
@@ -187,6 +205,16 @@ static const uint8_t *load_shape(uint16_t type)
 	raw = shapes.table[type * 2 + 1];
 	if (raw == 0)
 		return NULL;
+	if ((type < TILE_TYPES || converted) && plat_file_direct != NULL && !e_little_endian()) {
+		/* the dataset's, or a flat, in the backend's memory as it is: used there, not copied
+		 * (never given way) */
+		const uint8_t *direct = plat_file_direct(shapes.f, at, raw);
+		if (direct != NULL && (type < TILE_TYPES || *(const uint32_t *) direct == raw)) {
+			shape_at[type] = direct;
+			e_stats.shape_loads++;
+			return direct;
+		}
+	}
 	if (type >= TILE_TYPES && converted) {
 		/* the dataset's: read as it is */
 		size = (raw + 7) & ~(uint32_t) 7;

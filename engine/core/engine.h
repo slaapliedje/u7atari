@@ -36,6 +36,9 @@ void plat_file_close(int16_t file);
 int32_t plat_file_read(int16_t file, void *buffer, int32_t count);
 int32_t plat_file_seek(int16_t file, int32_t offset, int16_t origin);
 int32_t plat_file_length(int16_t file);
+/* Optional (weak): where n bytes at file's place at can be read as they are, in memory, or NULL.
+ * A backend whose shape file sits in its address space (the Jaguar's GameDrive) has it. */
+const void *plat_file_direct(int16_t file, uint32_t at, uint32_t n) __attribute__((weak));
 
 /* w by h pixels from (sx, sy) of src to (dx, dy) of dst; x and w multiples of 8. */
 void eb_copy(struct ESurface *dst, int16_t dx, int16_t dy, const struct ESurface *src, int16_t sx,

@@ -41,6 +41,10 @@ uint16_t GD_DRead(uint16_t dir, void *info, uint16_t flags) __asm__("_GD_DRead")
 uint16_t GD_DClose(uint16_t dir) __asm__("_GD_DClose");
 uint16_t GD_CardIn(void) __asm__("_GD_CardIn");
 void GD_DebugString(const char *text) __asm__("_GD_DebugString");
+/* the cartridge space's 1 MB pages ($800000 page 0 .. $D00000 page 5) onto the GameDrive's 16 MB
+ * (banks 0-15), and writes to it let through or not (flags 1 or 0) */
+void GD_ROMWriteEnable(uint16_t flags) __asm__("_GD_ROMWriteEnable");
+void GD_ROMSetPage(uint16_t page, uint16_t bank) __asm__("_GD_ROMSetPage");
 #ifdef __cplusplus
 }
 #endif
