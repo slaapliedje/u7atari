@@ -225,12 +225,18 @@ static int gd_live(int16_t f)
 /* (on the console, without the GameDrive's debug text) how far the start has gone, as the whole
  * screen's colour: red the start, blue and cyan by turns at each file read, white the world
  * loaded, green past the first debug line, yellow the sound going, magenta the world failed */
-static void stage(uint16_t rgb)
+static void __attribute__((unused)) stage(uint16_t rgb)
 {
 	for (int i = 0; i < 256; i++)
 		((volatile uint16_t *) 0xF00400)[i] = rgb;
 }
+/* (the start's colours and bars only with ENGINE_LOAD_STAGES: they flash, and the start is
+ * known good on the console now) */
+#ifdef ENGINE_LOAD_STAGES
 static uint8_t staging = 1;
+#else
+static uint8_t staging = 0;
+#endif
 /* and while the files are read: the files opened and the reads so far as two rows of 12 bars
  * (white a 1, purple a 0, the highest bit leftmost) on a background red while it waits for the
  * GPU, blue in the GameDrive's read, green between */
@@ -264,7 +270,11 @@ static void stage_clut(uint16_t back)
 	clut[1] = 0xFFFF;
 	clut[2] = 0x8410;
 }
+#ifdef ENGINE_LOAD_STAGES
 #define STAGE(c) stage(c)
+#else
+#define STAGE(c) ((void) 0)
+#endif
 #else
 #define STAGE(c) ((void) 0)
 #define STEP(n) ((void) 0)
@@ -478,7 +488,8 @@ void eb_copy(struct ESurface *dst, int16_t dx, int16_t dy, const struct ESurface
 #define DSP_TABLES ((volatile uint32_t *) 0xF1BC00)
 #define MCTL ((volatile uint32_t *) 0xF1CF40)
 enum { M_RING, M_MASK, M_WR, M_RD, M_CMD, M_ENDED, M_VOL, M_ORD, M_OWR, M_WAIT, M_FRAC, M_LFOAM,
-	M_LFOVIB, M_WSE, M_BLOCKS, M_SHORT, M_CAP, M_CAPEND, M_LONGS };
+	M_LFOVIB, M_WSE, M_BLOCKS, M_SHORT, M_CAP, M_CAPEND, M_ISRS, M_PING, M_PONG, M_SEEN, M_QUIET, M_REARMS, M_LAST, M_TURNS, M_RESTARTS, M_LASTM, M_STAGE, M_RET,
+	M_BAD, M_BADSP, M_BADRET, M_BADSTAGE, M_LONGS };
 
 static uint32_t music_ring, music_mask;
 
@@ -498,14 +509,11 @@ static void sound_init(void)
 		DSP_TABLES[i] = t[i];
 	for (int i = 0; i < M_LONGS; i++)
 		MCTL[i] = 0;
-	MCTL[M_VOL] = 256;
+	MCTL[M_VOL] = 1024;         /* (4x: the OPL2's own level is quiet beside the sounds) */
 	MCTL[M_RING] = music_ring;
 	MCTL[M_MASK] = music_mask;
 	MCTL[M_CMD] = 1;            /* (its first: the synth silenced) */
-	/* the I2S clock: 26.59 MHz / (64 * (25 + 1)), 15980 Hz (E_SOUND_RATE); internal, word
-	 * strobe on, the interrupt each word pair */
-	SCLK = 25;
-	SMODE = 0x15;
+	/* (the I2S clock, SCLK 25 and SMODE internal: the DSP sets them itself, sound_dsp.s) */
 	D_PC = 0xF1B000;
 	D_CTRL = 1;
 }
@@ -533,9 +541,13 @@ void eb_music_restart(void)
 {
 	MCTL[M_WR] = 0;
 	MCTL[M_CMD] = 1;
-	/* (a block's time at most; not forever, should the DSP not be going) */
-	for (uint32_t k = 0; (D_CTRL & 1) && MCTL[M_CMD] != 0 && k < 200000; k++)
-		;
+	/* (looked at once a blank, a few at most: the DSP's RAM read from outside often, as a
+	 * tight loop here did, is what stopped its main loop on the console) */
+	for (uint32_t t = jag_ticks; (D_CTRL & 1) && MCTL[M_CMD] != 0 && jag_ticks - t < 4; ) {
+		uint32_t b = jag_ticks;
+		while (jag_ticks == b)
+			;
+	}
 }
 
 int eb_music_ended(void)
@@ -900,6 +912,73 @@ static uint32_t *make_list(const uint8_t *pixels)
  * them is no longer shown, and is the next to be drawn. With two, waits for the blank. */
 static uint32_t shown_tick;
 
+#ifdef ENGINE_STAGES
+/* The DSP's state as colour 0 (the cells' colour), looked at each 32 calls. */
+static void stage_status(void)
+	{
+		/* the main loop's turns, as the bars' top row (white the 1s), drawn into every frame */
+		static uint16_t turns;
+		/* the background: the DSP's state (red its loop not going, magenta its samples not
+		 * taken by the I2S interrupt, green both going) */
+		static uint32_t blocks, isrs, pinged;
+		if ((++turns & 31) == 0) {
+			uint32_t b = MCTL[M_BLOCKS], i = MCTL[M_ISRS], pong = MCTL[M_PONG];
+			uint16_t c = b != blocks ? (i != isrs ? 0x003F : 0xFFC0) : (i != isrs ? 0xF810 : 0xF800);
+			/* the ping: written now, read back (blue if not there), and the last one answered
+			 * by the DSP (white if not) */
+			if (pinged && pong != pinged)
+				c = 0xFFFF;
+			pinged = 0x5A000000 | turns;
+			MCTL[M_PING] = pinged;
+			if (MCTL[M_PING] != pinged)
+				c = 0x07C0;
+			((volatile uint16_t *) 0xF00400)[0] = c;
+			blocks = b;
+			isrs = i;
+		}
+	}
+
+/* The DSP's state in the corner and as rows of 12 cells, into a frame. */
+static void stage_cells(uint8_t *pixels)
+{
+	/* the DSP's state (colour 0, set above) as a square in the corner */
+	for (int sy = H - 40; sy < H - 16; sy++)
+		for (int sx = W - 64; sx < W - 36; sx++)
+			pixels[sy * W + sx] = 0;
+	{
+		/* rows of 12 cells, the highest bit leftmost (the square's colour a 1, black a 0): the
+		 * interrupts a second /16 (some 1000 wanted), the blocks a second (1000); then the
+		 * times the interrupt found R31 not at the stack's top, and the first time: R31's low
+		 * 12 bits, bank 1's R31's, and the place (offset /2) */
+		static uint32_t at, was[2], rate[2];
+		static int seeded;
+		uint32_t gone = jag_ticks - at;
+		if (!seeded || gone >= 60) {
+			uint32_t v[2] = { MCTL[M_ISRS], MCTL[M_BLOCKS] };
+			for (int k = 0; k < 2; k++) {
+				rate[k] = seeded ? (uint32_t) ((uint64_t) (v[k] - was[k]) * 60 / gone) : 0;
+				was[k] = v[k];
+			}
+			at = jag_ticks;
+			seeded = 1;
+		}
+		uint32_t place = MCTL[M_BADSTAGE];
+		uint32_t rows[6] = {
+			rate[0] >> 4, rate[1], MCTL[M_BAD], MCTL[M_BADSP] & 0xFFF, MCTL[M_BADRET] & 0xFFF,
+			place ? ((place - 0xF1B000) >> 1) & 0xFFF : 0
+		};
+		for (int r = 0; r < 6; r++)
+			if (rows[r] > 0xFFF)
+				rows[r] = 0xFFF;  /* (all lit: more) */
+		for (int r = 0; r < 6; r++)
+			for (int k = 0; k < 12; k++)
+				for (int sy = H - 124 + r * 18; sy < H - 112 + r * 18; sy++)
+					for (int sx = 24 + k * 18; sx < 38 + k * 18; sx++)
+						pixels[sy * W + sx] = rows[r] & (0x800 >> k) ? 0 : 255;
+	}
+}
+#endif
+
 static void show(const uint8_t *pixels)
 {
 	uint32_t *l = make_list(pixels);
@@ -1191,7 +1270,7 @@ static uint32_t sum_frames;
 #define world_clock() jag_ticks
 #endif
 
-#ifdef ENGINE_STAGES
+#ifdef ENGINE_LOAD_STAGES
 #define MARK(rgb) (((volatile uint16_t *) 0xF00400)[0] = (rgb))
 #else
 #define MARK(rgb) ((void) 0)
@@ -1457,6 +1536,10 @@ static void walk_update(void)
 	uint32_t now = (sum_frames++ / 2) * WALK_BLANKS;
 	while (now - walk_tick >= WALK_BLANKS) {
 #else
+	/* a long frame (the card slow, a file opened again) not made up all at once: the avatar
+	 * would jump */
+	if (jag_ticks - walk_tick > 3 * WALK_BLANKS)
+		walk_tick = jag_ticks - WALK_BLANKS;
 	while (jag_ticks - walk_tick >= WALK_BLANKS) {
 #endif
 		uint32_t held = pad();
@@ -1588,13 +1671,15 @@ void jag_main(void)
 	}
 #ifdef ENGINE_STAGES
 	staging = 0;
+#ifdef ENGINE_LOAD_STAGES
 	stage(0xFFFF);
+#endif
 #endif
 	snprintf(text, sizeof text, "shape pool %luK of %luK\n", (unsigned long) e_pool_size() / 1024,
 		(unsigned long) sizeof store / 1024);
 	DEBUG_TEXT(text);
 #ifdef ENGINE_STAGES
-	stage(0x003F);
+	stage(0x07FF);              /* cyan: loaded (a second) */
 	for (uint32_t t = jag_ticks; jag_ticks - t < 60; )
 		;
 #endif
@@ -1609,12 +1694,22 @@ void jag_main(void)
 #ifdef ENGINE_MUSIC_TEST
 	/* song n alone, nothing else going on (its audio against the host's --music); its samples
 	 * captured into the frames (not shown) for a RAM dump to hold against the host's */
+#ifndef ENGINE_STAGES
 	MCTL[M_CAPEND] = (uint32_t) frames + sizeof frames;
 	MCTL[M_CAP] = (uint32_t) frames;
+#else
+	/* (on the console: no capture, the DSP's state shown instead, the song alone) */
+	memset(frames[0], 128, sizeof frames[0]);
+#endif
 	e_music_play(ENGINE_MUSIC_TEST);
 	for (;;) {
 		uint32_t t0 = jag_ticks;
 		e_music_service();
+#ifdef ENGINE_STAGES
+		stage_status();
+		stage_cells(frames[0]);
+		show(frames[0]);
+#endif
 		while (jag_ticks == t0)
 			;
 	}
@@ -1685,12 +1780,7 @@ void jag_main(void)
 	for (;;) {
 		e_music_service();
 #ifdef ENGINE_STAGES
-		{
-			/* the main loop's turns, as the bars' top row (white the 1s), drawn into every frame */
-			static uint16_t turns;
-			/* the background green and cyan by turns */
-			((volatile uint16_t *) 0xF00400)[0] = ++turns & 1 ? 0x003F : 0x07FF;
-		}
+		stage_status();
 #endif
 #ifndef ENGINE_TOUR
 		walk_update();
@@ -1755,6 +1845,10 @@ void jag_main(void)
 			eb_clear(drawing, 0, 0, W, H);  /* (faded out: asleep) */
 		else
 			e_draw(drawing);
+#ifdef ENGINE_STAGES
+		eb_finish();
+		stage_cells(drawing->pixels);
+#endif
 		if (e_talk_active()) {
 			e_talk_draw(drawing);
 			eb_finish();

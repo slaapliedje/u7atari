@@ -33,7 +33,7 @@ CHANS		.equ	$F1C860		; 9 of 8 longs
 OPS		.equ	$F1C980		; 18 of 16 longs: a channel's modulator, then its carrier
 OBUF		.equ	$F1CE00		; 64 longs: the music's samples, made ahead
 CHANNELS	.equ	$F1CF00		; the samples' channels
-MCTL		.equ	$F1CF40		; the music's: 18 longs
+MCTL		.equ	$F1CF40		; the music's: 34 longs
 
 ; MCTL, longs: the ring's address, its size - 1, the end of what is written (the 68000's), the
 ; place read, the command, the end reached, the volume, OBUF's places (the interrupt's, the main
@@ -57,6 +57,22 @@ M_BLOCKS	.equ	14
 M_SHORT		.equ	15
 M_CAP		.equ	16		; (for tests) where the music's next sample is copied, as a word; 0 none
 M_CAPEND	.equ	17		; and the end of that room
+M_ISRS		.equ	18		; the interrupts taken (a count, for tests)
+M_PING		.equ	19		; (for tests) the 68000's, copied by the main loop to M_PONG
+M_PONG		.equ	20
+M_SEEN		.equ	21		; the interrupt count the watchdog last saw, the loop's turns since,
+M_QUIET		.equ	22		; and how often it had to set the I2S going again
+M_REARMS	.equ	23
+M_LAST		.equ	24		; (for tests) the last left sample sent
+M_TURNS		.equ	25		; (for tests) the main loop's turns, and the synth's restarts
+M_RESTARTS	.equ	26
+M_LASTM		.equ	27		; (for tests) the last music sample taken
+M_STAGE		.equ	28		; (for tests) the main loop's last stage (1 Loop .. 6 Restart)
+M_RET		.equ	29		; (for tests) where the main loop was at the last interrupt, +2
+M_BAD		.equ	30		; (for tests) the times R31 was not the stack's top less 4 at
+M_BADSP		.equ	31		; the interrupt's end; the first time: R31, bank 1's R31, the place
+M_BADRET	.equ	32
+M_BADSTAGE	.equ	33
 
 ; a channel, longs
 C_FNUM		.equ	0
@@ -114,6 +130,10 @@ dsp_sound:
 
 Isr:		movei	#D_FLAGS,r9
 		load	(r9),r10
+		movei	#MCTL,r14		; (counted)
+		load	(r14+M_ISRS),r1
+		addq	#1,r1
+		store	r1,(r14+M_ISRS)
 		movei	#CHANNELS,r14
 		moveq	#0,r20
 		moveq	#0,r21
@@ -127,11 +147,19 @@ Chan:		load	(r14),r1		; the next sample
 		nop
 		jump	EQ,(r23)
 		nop
-		loadw	(r1),r3
-		addq	#2,r1
-		store	r1,(r14)
-		shlq	#16,r3
+		move	r1,r3		; the sample: its long read (main memory only as longs,
+		shrq	#2,r3			; as etjag's DSP, heard on a console), the half wanted
+		shlq	#2,r3
+		load	(r3),r3
+		btst	#1,r1
+		jr	NE,.low
+		nop
+		jr	T,.got
+		sharq	#16,r3			; (the high half)
+.low:		shlq	#16,r3
 		sharq	#16,r3
+.got:		addq	#2,r1
+		store	r1,(r14)
 		load	(r14+2),r4
 		load	(r14+3),r5
 		move	r3,r6
@@ -143,8 +171,10 @@ Next:		subq	#1,r22
 		jump	NE,(r24)
 		addq	#16,r14
 		; the music's sample, if one is made
+		cmpq	#0,r14		; (read, not written, first: Atari's GPU/DSP bug 2)
 		movei	#MCTL,r14
 		load	(r14+M_ORD),r1
+		cmpq	#0,r2		; (read, not written, first: Atari's GPU/DSP bug 2)
 		load	(r14+M_OWR),r2
 		movei	#.out,r8
 		cmp	r1,r2
@@ -152,13 +182,16 @@ Next:		subq	#1,r22
 		nop
 		load	(r14+M_SHORT),r3
 		addq	#1,r3
-		jump	T,(r8)
 		store	r3,(r14+M_SHORT)
+		jump	T,(r8)
+		nop			; (not an indexed store after a jump: Atari's "Lies and Damned Lies")
 .music:		movei	#OBUF,r3
 		move	r1,r4
 		shlq	#2,r4
 		add	r4,r3
 		load	(r3),r5
+		movei	#MCTL+(M_LASTM*4),r7
+		store	r5,(r7)
 		load	(r14+M_VOL),r6
 		addq	#1,r1
 		moveq	#31,r7
@@ -173,21 +206,68 @@ Next:		subq	#1,r22
 		sharq	#8,r21
 		sat16s	r20
 		sat16s	r21
+		movei	#MCTL+(M_LAST*4),r14
+		store	r20,(r14)
 		movei	#LTXD,r14
 		store	r21,(r14)		; right
 		store	r20,(r14+1)		; left (RTXD)
-		; back: the flags as they were, the latch cleared, interrupts on again
-		bclr	#3,r10
-		bset	#10,r10
-		load	(r31),r3
+		; back: the flags written whole, not as read: the main loop's bank (1), the I2S interrupt
+		; on and its latch cleared, IMASK off; only the condition codes (Z C N) as they were
+		moveq	#7,r3
+		and	r3,r10
+		movei	#$4420,r3
+		or	r3,r10
+		; the place to go back to: at the stack's top always (on a console the interrupt now and
+		; then pushes it with bank 1's R31, not bank 0's: so read from the top, not through R31,
+		; and both banks' R31 put back to the top; counted, for tests, with both R31s and the
+		; place, the first time)
+		movei	#$F1CFFC,r4
+		movei	#MCTL,r14
+		load	(r4),r3
+		movei	#.spok,r6
+		cmp	r4,r31
+		jump	EQ,(r6)
+		nop
+		load	(r14+M_BAD),r5
+		addq	#1,r5
+		store	r5,(r14+M_BAD)
+		subq	#1,r5
+		jump	NE,(r6)			; (the first time only: the rest)
+		nop
+		store	r31,(r14+M_BADSP)
+		cmpq	#0,r5		; (read, not written, first: Atari's GPU/DSP bug 2)
+		movefa	r31,r5
+		movei	#MCTL+(M_BADRET*4),r7
+		store	r5,(r7)
+		addq	#4,r7
+		store	r3,(r7)			; (M_BADSTAGE: the place)
+.spok:		cmpq	#0,r31		; (read, not written, first: Atari's GPU/DSP bug 2)
+		movei	#$F1D000,r31
+		moveta	r31,r31
 		addq	#2,r3
-		addq	#4,r31
-		jump	T,(r3)
+		cmpq	#0,r3		; (read first: Atari's GPU/DSP bug 1, an indexed store's data)
+		store	r3,(r14+M_RET)
+		; the flags put back BEFORE the jump, not in its delay slot: there, the instruction
+		; interrupted can run in the wrong register bank (Atari's "Lies and Damned Lies", TWI's
+		; finding); the flags' store takes effect an instruction late, so the jump still reads
+		; this bank's register, and it is atomic with its delay slot (the place in both banks'
+		; R30 all the same, the main loop's never used, should the switch come sooner)
+		move	r3,r30
+		moveta	r30,r30
 		store	r10,(r9)
+		jump	T,(r30)
+		nop
 
 ; ---- the main loop (bank 1) ----
 
 Main:		movei	#$F1D000,r31		; the stack (bank 0's): the top of DSP RAM
+		moveta	r31,r31			; (and bank 1's: see the interrupt's end)
+		movei	#$F1A150,r1		; SCLK 25 and SMODE internal, word strobe, rising: set
+		moveq	#25,r0			; here, whole longs (as etjag's, heard on a console; the
+		store	r0,(r1)			; 68000's two halves were not)
+		movei	#$F1A154,r1
+		moveq	#$0D,r0
+		store	r0,(r1)
 		movei	#D_FLAGS,r1
 		movei	#$4020,r0		; bank 1 for this, the I2S interrupt on
 		store	r0,(r1)
@@ -196,7 +276,50 @@ Main:		movei	#$F1D000,r31		; the stack (bank 0's): the top of DSP RAM
 		nop
 		nop
 Loop:		movei	#MCTL,r14
-		load	(r14+M_CMD),r0
+		moveq	#1,r0			; (for tests: where the main loop got to)
+		store	r0,(r14+M_STAGE)
+		load	(r14+M_PING),r0		; (a test's: the 68000's ping back)
+		cmpq	#0,r0		; (read first: Atari's GPU/DSP bug 1, an indexed store's data)
+		store	r0,(r14+M_PONG)
+		load	(r14+M_TURNS),r0
+		addq	#1,r0
+		store	r0,(r14+M_TURNS)
+		; the watchdog: no interrupt over 4096 turns of this loop (some 20 ms), the I2S clock, its
+		; mode and the interrupt set going again (counted)
+		movei	#.watched,r2
+		load	(r14+M_ISRS),r0
+		load	(r14+M_SEEN),r1
+		cmp	r0,r1
+		jr	EQ,.quiet
+		nop
+		store	r0,(r14+M_SEEN)
+		moveq	#0,r0
+		store	r0,(r14+M_QUIET)
+		jump	T,(r2)
+		nop			; (not an indexed store after a jump: Atari's "Lies and Damned Lies")
+.quiet:		load	(r14+M_QUIET),r1
+		addq	#1,r1
+		store	r1,(r14+M_QUIET)
+		btst	#12,r1
+		jump	EQ,(r2)
+		nop
+		moveq	#0,r1
+		store	r1,(r14+M_QUIET)
+		load	(r14+M_REARMS),r1
+		addq	#1,r1
+		store	r1,(r14+M_REARMS)
+		movei	#$F1A150,r1
+		moveq	#25,r0
+		store	r0,(r1)
+		movei	#$F1A154,r1
+		moveq	#$0D,r0
+		store	r0,(r1)
+		movei	#D_FLAGS,r1
+		movei	#$4020,r0		; (IMASK off, the I2S interrupt on, bank 1)
+		store	r0,(r1)
+		nop
+		nop
+.watched:	load	(r14+M_CMD),r0
 		cmpq	#0,r0
 		movei	#Restart,r1
 		jump	NE,(r1)
@@ -219,14 +342,23 @@ Loop:		movei	#MCTL,r14
 		nop
 
 ; the synth silenced, the ring's place 0
-Restart:	movei	#CHANS,r1
+Restart:
+		moveq	#6,r0			; (for tests: where the main loop got to)
+		store	r0,(r14+M_STAGE)
+		load	(r14+M_RESTARTS),r0
+		addq	#1,r0
+		store	r0,(r14+M_RESTARTS)
+		movei	#CHANS,r1
+		cmpq	#0,r2		; (read, not written, first: Atari's GPU/DSP bug 2)
 		movei	#(OBUF-CHANS)/4,r2
 		moveq	#0,r0
 .zero:		store	r0,(r1)
 		subq	#1,r2
 		jr	NE,.zero
 		addq	#4,r1
+		cmpq	#0,r1		; (read, not written, first: Atari's GPU/DSP bug 2)
 		movei	#OPS+(O_ENV*4),r1
+		cmpq	#0,r2		; (read, not written, first: Atari's GPU/DSP bug 2)
 		moveq	#18,r2
 		movei	#511<<16,r0
 		movei	#64,r3
@@ -242,14 +374,20 @@ Restart:	movei	#CHANS,r1
 		store	r0,(r14+M_LFOAM)
 		store	r0,(r14+M_LFOVIB)
 		store	r0,(r14+M_WSE)
+		cmpq	#0,r1		; (read, not written, first: Atari's GPU/DSP bug 2)
 		movei	#Loop,r1
-		jump	T,(r1)
 		store	r0,(r14+M_CMD)
+		jump	T,(r1)
+		nop			; (not an indexed store after a jump: Atari's "Lies and Damned Lies")
 
 ; ---- a block: the ticks due, the envelopes, the samples ----
 ; the ticks: r1 frac  r3 RATE  r10 ring  r11 mask  r12 rd  r13 wr  r5 register  r6 value
 
-Block:		load	(r14+M_FRAC),r1
+Block:
+		moveq	#2,r1			; (for tests: where the main loop got to)
+		store	r1,(r14+M_STAGE)
+		load	(r14+M_FRAC),r1
+		cmpq	#0,r2		; (read, not written, first: Atari's GPU/DSP bug 2)
 		movei	#960,r2			; 16 samples * 60
 		add	r2,r1
 		movei	#RATE,r3
@@ -273,8 +411,9 @@ TickLoop:	move	r1,r4
 		jr	EQ,Token
 		nop
 		subq	#1,r4
-		jump	T,(r0)
 		store	r4,(r14+M_WAIT)
+		jump	T,(r0)
+		nop			; (not an indexed store after a jump: Atari's "Lies and Damned Lies")
 Token:		move	r13,r4			; two bytes there at least?
 		sub	r12,r4
 		and	r11,r4
@@ -282,14 +421,35 @@ Token:		move	r13,r4			; two bytes there at least?
 		movei	#TickLoop,r0
 		jump	CS,(r0)			; (below 2)
 		nop
+		movei	#$ff,r8
 		move	r10,r4
 		add	r12,r4
-		loadb	(r4),r5
+		move	r4,r5		; the byte: its long read, shifted down
+		shrq	#2,r5
+		shlq	#2,r5
+		load	(r5),r5
+		moveq	#3,r7
+		and	r4,r7
+		neg	r7
+		addq	#3,r7
+		shlq	#3,r7
+		sh	r7,r5
+		and	r8,r5
 		addq	#1,r12
 		and	r11,r12
 		move	r10,r4
 		add	r12,r4
-		loadb	(r4),r6
+		move	r4,r6		; the byte: its long read, shifted down
+		shrq	#2,r6
+		shlq	#2,r6
+		load	(r6),r6
+		moveq	#3,r7
+		and	r4,r7
+		neg	r7
+		addq	#3,r7
+		shlq	#3,r7
+		sh	r7,r6
+		and	r8,r6
 		movei	#$ff,r4
 		cmp	r4,r5
 		jump	EQ,(r0)			; the tick's end
@@ -299,8 +459,9 @@ Token:		move	r13,r4			; two bytes there at least?
 		jr	NE,.notend
 		nop
 		moveq	#1,r4
-		jump	T,(r0)
 		store	r4,(r14+M_ENDED)
+		jump	T,(r0)
+		nop			; (not an indexed store after a jump: Atari's "Lies and Damned Lies")
 .notend:	addq	#1,r12
 		and	r11,r12
 		addq	#1,r4			; $fe n: n ticks with none
@@ -308,12 +469,17 @@ Token:		move	r13,r4			; two bytes there at least?
 		jr	NE,Write
 		nop
 		subq	#1,r6
-		jump	T,(r0)
 		store	r6,(r14+M_WAIT)
-TicksDone:	store	r1,(r14+M_FRAC)
-		movei	#Envelopes,r0
 		jump	T,(r0)
+		nop			; (not an indexed store after a jump: Atari's "Lies and Damned Lies")
+TicksDone:
+		moveq	#3,r0			; (for tests: where the main loop got to)
+		store	r0,(r14+M_STAGE)
+		store	r1,(r14+M_FRAC)
+		movei	#Envelopes,r0
 		store	r12,(r14+M_RD)
+		jump	T,(r0)
+		nop			; (not an indexed store after a jump: Atari's "Lies and Damned Lies")
 
 ; a register written: r5 its number, r6 the value (r0 TickLoop's... Token's place again)
 Write:		movei	#Token,r0
@@ -323,8 +489,9 @@ Write:		movei	#Token,r0
 		moveq	#16,r7
 		shlq	#1,r7			; $20
 		and	r6,r7
-		jump	T,(r0)
 		store	r7,(r14+M_WSE)
+		jump	T,(r0)
+		nop			; (not an indexed store after a jump: Atari's "Lies and Damned Lies")
 .w20:		move	r5,r7
 		shrq	#5,r7			; the register's class
 		jump	EQ,(r0)			; (0: none else)
@@ -437,8 +604,9 @@ Write:		movei	#Token,r0
 		store	r7,(r15+O_STATE)
 		store	r9,(r15+O_PHASE)
 		store	r7,(r15+16+O_STATE)
-		jump	T,(r0)
 		store	r9,(r15+16+O_PHASE)
+		jump	T,(r0)
+		nop			; (not an indexed store after a jump: Atari's "Lies and Damned Lies")
 .off:		moveq	#4,r7			; off: the sounding ones released
 		load	(r15+O_STATE),r9
 		cmpq	#0,r9
@@ -449,8 +617,9 @@ Write:		movei	#Token,r0
 		cmpq	#0,r9
 		jump	EQ,(r0)
 		nop
-		jump	T,(r0)
 		store	r7,(r15+16+O_STATE)
+		jump	T,(r0)
+		nop			; (not an indexed store after a jump: Atari's "Lies and Damned Lies")
 
 ; ---- the envelopes a block on, each operator's step, wave and gain ----
 ; r14 channel  r15 operator  r16 keycode  r17 F-number  r18 block  r19 operators left
@@ -483,6 +652,7 @@ Envelopes:	load	(r14+M_LFOAM),r0	; tremolo: a triangle 0-5 (1 dB)
 		cmp	r1,r0
 		jr	CC,.vibhi
 		nop
+		cmpq	#0,r23		; (read, not written, first: Atari's GPU/DSP bug 2)
 		movei	#128,r23		; 128 - t
 		jr	T,.vib
 		sub	r0,r23
@@ -575,6 +745,7 @@ EnvOp:		load	(r15+O_R20),r2
 		nop
 		moveq	#31,r5
 .sl:		shlq	#20,r5
+		cmpq	#0,r4		; (read, not written, first: Atari's GPU/DSP bug 2)
 		load	(r15+O_R60),r4
 		movei	#.decayed,r7
 		moveq	#15,r6
@@ -597,6 +768,7 @@ EnvOp:		load	(r15+O_R20),r2
 		jump	CS,(r9)			; below the level
 		nop
 		move	r5,r1
+		cmpq	#0,r0		; (read, not written, first: Atari's GPU/DSP bug 2)
 		moveq	#3,r0			; sustain
 		jump	T,(r9)
 		nop
@@ -634,6 +806,7 @@ EnvOp:		load	(r15+O_R20),r2
 		; the gain it glides to: r0 state  r1 env  r2 20h
 EnvGain:	store	r0,(r15+O_STATE)
 		store	r1,(r15+O_ENV)
+		cmpq	#0,r4		; (read, not written, first: Atari's GPU/DSP bug 2, its delay slot's write)
 		moveq	#0,r4			; to
 		cmpq	#0,r0
 		movei	#.glide,r9
@@ -676,11 +849,13 @@ EnvGain:	store	r0,(r15+O_STATE)
 		shlq	#2,r6
 		movei	#GAIN32,r7
 		add	r7,r6
+		cmpq	#0,r4		; (read, not written, first: Atari's GPU/DSP bug 2)
 		load	(r6),r4
 		shrq	#5,r1
 		sh	r1,r4
 		shlq	#4,r4
 .glide:		load	(r15+O_G),r5		; dg = (to - g) / 16, toward 0; g = to - dg * 16
+		cmpq	#0,r6		; (read, not written, first: Atari's GPU/DSP bug 2, its delay slot's write)
 		move	r4,r6
 		sub	r5,r6
 		jr	PL,.up
@@ -711,7 +886,8 @@ EnvGain:	store	r0,(r15+O_STATE)
 		imult	r23,r5
 		sharq	#1,r5
 		add	r5,r4
-.step:		move	r18,r5
+.step:		cmpq	#0,r5		; (read, not written, first: Atari's GPU/DSP bug 2, its delay slot's write)
+		move	r18,r5
 		neg	r5
 		sh	r5,r4
 		store	r4,(r15+O_STEP)
@@ -720,6 +896,7 @@ EnvGain:	store	r0,(r15+O_STATE)
 		cmpq	#0,r24
 		jr	EQ,.wave
 		nop
+		cmpq	#0,r4		; (read, not written, first: Atari's GPU/DSP bug 2)
 		load	(r15+O_RE0),r4
 		moveq	#3,r5
 		and	r5,r4
@@ -729,6 +906,8 @@ EnvGain:	store	r0,(r15+O_STATE)
 		load	(r4),r5
 		addq	#4,r4
 		load	(r4),r6
+		cmpq	#0,r5		; (read first: Atari's GPU/DSP bug 1, an indexed store's data)
+		cmpq	#0,r6		; (read first: Atari's GPU/DSP bug 1, an indexed store's data)
 		store	r5,(r15+O_ZMASK)
 		store	r6,(r15+O_NMASK)
 		; the next operator
@@ -746,8 +925,10 @@ EnvGain:	store	r0,(r15+O_STATE)
 		or	r5,r4
 		jr	EQ,.dead
 		moveq	#0,r5
+		cmpq	#0,r5		; (read, not written, first: Atari's GPU/DSP bug 2)
 		moveq	#1,r5
 .dead:		store	r5,(r14+C_LIVE)
+		cmpq	#0,r4		; (read, not written, first: Atari's GPU/DSP bug 2)
 		load	(r14+C_RC0),r4
 		moveq	#1,r5
 		and	r4,r5
@@ -758,6 +939,7 @@ EnvGain:	store	r0,(r15+O_STATE)
 		and	r5,r4
 		jr	EQ,.fb
 		moveq	#0,r5
+		cmpq	#0,r5		; (read, not written, first: Atari's GPU/DSP bug 2)
 		moveq	#1,r5
 		neg	r4
 		sh	r4,r5			; 1 << feedback
@@ -770,6 +952,7 @@ EnvGain:	store	r0,(r15+O_STATE)
 		jump	NE,(r9)
 		nop
 		; the LFOs on
+		cmpq	#0,r14		; (read, not written, first: Atari's GPU/DSP bug 2)
 		movei	#MCTL,r14
 		load	(r14+M_LFOAM),r0
 		movei	#LFO_AM_STEP,r1
@@ -779,12 +962,14 @@ EnvGain:	store	r0,(r15+O_STATE)
 		movei	#LFO_VIB_STEP,r1
 		add	r1,r0
 		store	r0,(r14+M_LFOVIB)
+		moveq	#4,r1			; (for tests: where the main loop got to)
+		store	r1,(r14+M_STAGE)
 
 ; ---- the block's samples into OBUF: a channel at a time, its 16 ----
 ; the channel's: r1-r4 the modulator's phase, step, gain, gain step; r5-r8 the carrier's; r9 r10
 ; the modulator's last outputs; r11 2^feedback; r12 r13 the modulator's masks (silence, turn
 ; over); r16 r17 the carrier's; r18 -1 (it moves the carrier) or 0 (added); r19 MIX's place;
-; r20 HSINE; r21 511; r22 samples left; r14 channel; r15 operators; r0 Inner; r23-r31 temps
+; r20 HSINE; r21 511; r22 samples left; r14 channel; r15 operators; r0 Inner; r23-r29 temps (r30 r31 the interrupt's, in both banks)
 
 		movei	#MIX,r1			; MIX emptied
 		moveq	#16,r2
@@ -793,18 +978,21 @@ EnvGain:	store	r0,(r15+O_STATE)
 		subq	#1,r2
 		jr	NE,.clear
 		addq	#4,r1
+		cmpq	#0,r20		; (read, not written, first: Atari's GPU/DSP bug 2)
 		movei	#HSINE,r20
 		movei	#511,r21
 		movei	#CHANS,r14
+		cmpq	#0,r15		; (read, not written, first: Atari's GPU/DSP bug 2)
 		movei	#OPS,r15
-		moveq	#9,r31
 		movei	#Inner,r0
 OneChan:	load	(r14+C_LIVE),r23
 		cmpq	#0,r23
 		movei	#ChanDone,r24
 		jump	EQ,(r24)
 		nop
+		cmpq	#0,r1		; (read, not written, first: Atari's GPU/DSP bug 2)
 		load	(r15+O_PHASE),r1
+		cmpq	#0,r2		; (read, not written, first: Atari's GPU/DSP bug 2)
 		load	(r15+O_STEP),r2
 		load	(r15+O_G),r3
 		load	(r15+O_DG),r4
@@ -820,6 +1008,7 @@ OneChan:	load	(r14+C_LIVE),r23
 		load	(r15+16+O_ZMASK),r16
 		load	(r15+16+O_NMASK),r17
 		load	(r14+C_MODMASK),r18
+		cmpq	#0,r19		; (read, not written, first: Atari's GPU/DSP bug 2)
 		movei	#MIX,r19
 		moveq	#16,r22
 Inner:		add	r2,r1			; the modulator: phase, gain on
@@ -881,10 +1070,10 @@ Inner:		add	r2,r1			; the modulator: phase, gain on
 		sub	r26,r25
 		and	r27,r25
 		imult	r28,r25
-		load	(r19),r30
+		load	(r19),r26
 		sharq	#15,r25
 		add	r29,r25
-		add	r30,r25
+		add	r26,r25
 		store	r25,(r19)
 		subq	#1,r22
 		jump	NE,(r0)
@@ -898,12 +1087,15 @@ Inner:		add	r2,r1			; the modulator: phase, gain on
 ChanDone:	addq	#32,r14
 		movei	#128,r23
 		add	r23,r15
-		subq	#1,r31
+		movei	#CHANS+(9*32),r23	; (the channels' end: r31, as r30, the interrupt's on a console)
+		cmp	r23,r14
 		movei	#OneChan,r24
 		jump	NE,(r24)
 		nop
 		; the samples, saturated, into OBUF
+		cmpq	#0,r14		; (read, not written, first: Atari's GPU/DSP bug 2)
 		movei	#MCTL,r14
+		cmpq	#0,r19		; (read, not written, first: Atari's GPU/DSP bug 2)
 		load	(r14+M_OWR),r19
 		movei	#MIX,r1
 		movei	#OBUF,r2
@@ -939,6 +1131,8 @@ ChanDone:	addq	#32,r14
 		load	(r14+M_BLOCKS),r0
 		addq	#1,r0
 		store	r0,(r14+M_BLOCKS)
+		moveq	#5,r0			; (for tests: where the main loop got to)
+		store	r0,(r14+M_STAGE)
 		movei	#Loop,r0
 		jump	T,(r0)
 		nop

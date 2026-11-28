@@ -2357,7 +2357,9 @@ void e_music_service(void)
 {
 	if (!music_ok)
 		return;
+#ifndef ENGINE_NO_MUSIC_FEED    /* (a console test: the DSP going, no song fed it) */
 	music_feed();
+#endif
 	/* (the original's PlayAmbientSounds) a song over, the background again: the same if the
 	 * egg said so, else the land's (not yet the sea's 8 or the dungeons' 52) */
 	if ((song_stopped() && mu_current != E_MUSIC_NONE) || mu_background_due) {
