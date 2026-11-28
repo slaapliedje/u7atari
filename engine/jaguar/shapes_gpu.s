@@ -92,6 +92,7 @@ RunLoop:
 		btst	#0,r12
 		jr	NE,Past
 		moveq	#4,r21			; a fill's: a long
+		cmpq	#0,r21		; (read, not written, first: Atari's GPU/DSP bug 2)
 		move	r16,r21
 		addq	#3,r21
 		shrq	#2,r21
@@ -110,6 +111,7 @@ Past:
 		sub	r15,r17			; minimum - along
 		jr	PL,First
 		nop
+		cmpq	#0,r17		; (read, not written, first: Atari's GPU/DSP bug 2)
 		moveq	#0,r17
 First:
 		move	r8,r18
@@ -229,7 +231,7 @@ Done:
 		jr	EQ,Done
 		nop
 		load	(r0),r22		; after the last store has gone out
-		or	r22,r22
+		cmpq	#0,r22		; (read, not written: Atari's GPU/DSP bug 2, not or)
 		moveq	#0,r0			; stop
 		movei	#G_CTRL,r1
 		store	r0,(r1)

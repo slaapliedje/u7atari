@@ -183,6 +183,10 @@ static struct {
 	uint32_t used;
 } files[FILES];
 static uint32_t file_clock;
+#ifdef ENGINE_STAGES
+/* (for tests on the console: the card's reads, their time (eb_clock's units), bytes, opens) */
+static uint32_t io_reads, io_units, io_bytes, io_opens, io_seek, io_file_reads[FILES];
+#endif
 
 /* A GameDrive handle free, the least lately used (not being written) closed for it. */
 static int gd_room(void)
@@ -211,6 +215,9 @@ static int gd_live(int16_t f)
 		return 1;
 	if (!gd_room())
 		return 0;
+#ifdef ENGINE_STAGES
+	io_opens++;
+#endif
 	uint16_t gd = GD_FOpen(files[f].name, GD_FOPEN_READ);
 	if ((int16_t) gd < 0)
 		return 0;
@@ -347,6 +354,7 @@ int32_t plat_file_read(int16_t f, void *buffer, int32_t count)
 #ifdef ENGINE_STAGES
 	if (staging)
 		stage_clut(0x07C0);
+	uint32_t io_t0 = eb_clock();
 #endif
 	STEP(8);
 	if (!gd_live(f))
@@ -373,6 +381,10 @@ int32_t plat_file_read(int16_t f, void *buffer, int32_t count)
 #ifdef ENGINE_STAGES
 	if (staging)
 		stage_clut(0x003F);
+	io_reads++;
+	io_bytes += (uint32_t) count;
+	io_file_reads[f]++;
+	io_units += eb_clock() - io_t0;
 #endif
 	return count;
 }
@@ -403,8 +415,14 @@ int32_t plat_file_seek(int16_t f, int32_t offset, int16_t origin)
 		return -1;
 	STEP(6);
 	files[f].pos = offset;
+#ifdef ENGINE_STAGES
+	uint32_t io_t0 = eb_clock();
+#endif
 	if (files[f].live && (int16_t) GD_FSeek(files[f].gd, GD_FSEEK_SET, offset) < 0)
 		return -1;
+#ifdef ENGINE_STAGES
+	io_seek += eb_clock() - io_t0;
+#endif
 	STEP(7);
 	return offset;
 }
@@ -447,10 +465,23 @@ static uint32_t width_code(uint16_t w)
 #define PATDSEL 0x00010000UL
 #define B_PATD 0x68
 
+#ifdef ENGINE_STAGES
+static uint32_t wait_blit, wait_gpu;     /* (for tests: the time waited, eb_clock's units) */
+uint32_t eb_clock(void);
+#endif
 static void blit_wait(void)
 {
+#ifdef ENGINE_STAGES
+	if (!(BREG(B_CMD) & 1)) {
+		uint32_t t0 = eb_clock();
+		while (!(BREG(B_CMD) & 1))
+			;
+		wait_blit += eb_clock() - t0;
+	}
+#else
 	while (!(BREG(B_CMD) & 1))
 		;
+#endif
 }
 
 void eb_copy(struct ESurface *dst, int16_t dx, int16_t dy, const struct ESurface *src, int16_t sx,
@@ -626,6 +657,13 @@ static void gpu_wait(void)
 				for (;;)
 					;
 			}
+#elif defined ENGINE_STAGES
+		if (G_CTRL & GPUGO) {
+			uint32_t t0 = eb_clock();
+			while (G_CTRL & GPUGO)
+				;
+			wait_gpu += eb_clock() - t0;
+		}
 #else
 		while (G_CTRL & GPUGO)
 			;
@@ -913,6 +951,16 @@ static uint32_t *make_list(const uint8_t *pixels)
 static uint32_t shown_tick;
 
 #ifdef ENGINE_STAGES
+/* (for tests: a frame's parts' times, eb_clock's units, and the longest frame's) */
+static uint32_t part[4], part_keep[4], part_at, part_from, part_long;
+static void part_mark(int k)
+{
+	uint32_t now = eb_clock();
+	part[k] = now - part_at;
+	part_at = now;
+}
+#endif
+#ifdef ENGINE_STAGES
 /* The DSP's state as colour 0 (the cells' colour), looked at each 32 calls. */
 static void stage_status(void)
 	{
@@ -946,27 +994,35 @@ static void stage_cells(uint8_t *pixels)
 		for (int sx = W - 64; sx < W - 36; sx++)
 			pixels[sy * W + sx] = 0;
 	{
-		/* rows of 12 cells, the highest bit leftmost (the square's colour a 1, black a 0): the
-		 * interrupts a second /16 (some 1000 wanted), the blocks a second (1000); then the
-		 * times the interrupt found R31 not at the stack's top, and the first time: R31's low
-		 * 12 bits, bank 1's R31's, and the place (offset /2) */
-		static uint32_t at, was[2], rate[2];
-		static int seeded;
-		uint32_t gone = jag_ticks - at;
-		if (!seeded || gone >= 60) {
-			uint32_t v[2] = { MCTL[M_ISRS], MCTL[M_BLOCKS] };
-			for (int k = 0; k < 2; k++) {
-				rate[k] = seeded ? (uint32_t) ((uint64_t) (v[k] - was[k]) * 60 / gone) : 0;
-				was[k] = v[k];
+		/* rows of 12 cells, the highest bit leftmost (the square's colour a 1, black a 0), over
+		 * the last second: the frames, the longest frame (tenths of a blank), and in it: the
+		 * card's reads, their bytes /256, the seeks' time and the reads' (tenths of a blank) */
+		static uint32_t at, frames_n;
+		static uint32_t rows[6];
+		frames_n++;
+		if (jag_ticks - at >= 60) {
+			rows[0] = frames_n;
+			rows[1] = (uint32_t) tenths(part_long);
+			rows[2] = part_keep[0];
+			rows[3] = part_keep[1] >> 8;
+			rows[4] = (uint32_t) tenths(part_keep[2]);
+			rows[5] = (uint32_t) tenths(part_keep[3]);
+#ifdef ENGINE_STAGES_FILES
+			/* (for the emulator: the shapes loaded, then files 0-3's reads, over the second) */
+			{
+				static uint32_t was_loads, was_f[4];
+				rows[1] = e_stats.shape_loads - was_loads;
+				was_loads = e_stats.shape_loads;
+				for (int k = 0; k < 4; k++) {
+					rows[2 + k] = io_file_reads[k] - was_f[k];
+					was_f[k] = io_file_reads[k];
+				}
 			}
+#endif
+			frames_n = 0;
+			part_long = 0;
 			at = jag_ticks;
-			seeded = 1;
 		}
-		uint32_t place = MCTL[M_BADSTAGE];
-		uint32_t rows[6] = {
-			rate[0] >> 4, rate[1], MCTL[M_BAD], MCTL[M_BADSP] & 0xFFF, MCTL[M_BADRET] & 0xFFF,
-			place ? ((place - 0xF1B000) >> 1) & 0xFFF : 0
-		};
 		for (int r = 0; r < 6; r++)
 			if (rows[r] > 0xFFF)
 				rows[r] = 0xFFF;  /* (all lit: more) */
@@ -1778,12 +1834,37 @@ void jag_main(void)
 	DEBUG_TEXT("engine test: running\n");
 	mark_ticks = last_shown = jag_ticks;
 	for (;;) {
+#ifdef ENGINE_STAGES
+		/* (the frame before's parts timed: the music, the walk and the world, the drawing, the
+		 * rest (shown, the talk); the longest frame's kept for the cells) */
+		{
+			uint32_t now = eb_clock();
+			static uint32_t was_reads, was_bytes, was_seek, was_io;
+			part[3] = now - part_at;
+			if (part_from && now - part_from > part_long) {
+				part_long = now - part_from;
+				part_keep[0] = io_reads - was_reads;
+				part_keep[1] = io_bytes - was_bytes;
+				part_keep[2] = io_seek - was_seek;
+				part_keep[3] = io_units - was_io;
+			}
+			was_reads = io_reads;
+			was_bytes = io_bytes;
+			was_seek = io_seek;
+			was_io = io_units;
+			part_from = part_at = now;
+		}
+#endif
 		e_music_service();
 #ifdef ENGINE_STAGES
 		stage_status();
+		part_mark(0);
 #endif
 #ifndef ENGINE_TOUR
 		walk_update();
+#ifdef ENGINE_STAGES
+		part_mark(1);
+#endif
 		x = (int16_t) (ax - E_VIEW_CELLS_X / 2);
 		y = (int16_t) (ay - E_VIEW_CELLS_Y / 2);
 #else
@@ -1847,6 +1928,7 @@ void jag_main(void)
 			e_draw(drawing);
 #ifdef ENGINE_STAGES
 		eb_finish();
+		part_mark(2);
 		stage_cells(drawing->pixels);
 #endif
 		if (e_talk_active()) {

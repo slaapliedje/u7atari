@@ -297,6 +297,7 @@ Frame:
 		jump	PL,(r30)		; no such frame
 		nop
 		add	r6,r5
+		cmpq	#0,r10		; (read, not written, first: Atari's GPU/DSP bug 2)
 		load	(r5),r10
 		add	r6,r10			; the frame
 		loadw	(r10),r0		; right
@@ -387,6 +388,7 @@ AfterFootB:					; b: x0 r0, x1 r1, y0 r2, y1 r3, z0 r7, z1 r8
 XNotBehind:	cmp	r11,r1			; b.x1 - a.x0
 		jr	PL,XDone
 		nop
+		cmpq	#0,r9		; (read, not written, first: Atari's GPU/DSP bug 2)
 		moveq	#1,r9
 XDone:		moveq	#0,r6			; yc
 		cmp	r2,r10			; a.y1 - b.y0
@@ -397,6 +399,7 @@ XDone:		moveq	#0,r6			; yc
 YNotBehind:	cmp	r13,r3			; b.y1 - a.y0
 		jr	PL,YDone
 		nop
+		cmpq	#0,r6		; (read, not written, first: Atari's GPU/DSP bug 2)
 		moveq	#1,r6
 YDone:		moveq	#0,r0			; zc
 		cmp	r7,r5			; a.z1 - b.z0: <= 0, behind
@@ -409,6 +412,7 @@ ZBehind:	jr	T,ZDone
 ZNotBehind:	cmp	r8,r15			; a.z0 - b.z1: >= 0, in front
 		jr	MI,ZDone
 		nop
+		cmpq	#0,r0		; (read, not written, first: Atari's GPU/DSP bug 2)
 		moveq	#1,r0
 ZDone:
 		; xc r9, yc r6, zc r0
@@ -449,6 +453,7 @@ HasBoth:	moveq	#0,r10
 		cmp	r6,r9
 		jr	NE,Disagree
 		nop
+		cmpq	#0,r10		; (read, not written, first: Atari's GPU/DSP bug 2)
 		move	r9,r10
 Disagree:	jump	T,(r30)
 		nop
@@ -497,6 +502,7 @@ Emit:
 		addq	#4,r28
 		store	r6,(r28)
 		addq	#4,r28
+		cmpq	#0,r8		; (read, not written, first: Atari's GPU/DSP bug 2)
 		moveq	#1,r8
 		cmpq	#0,r13
 		movei	#EmitTurned,r9

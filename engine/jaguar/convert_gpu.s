@@ -366,7 +366,7 @@ Fail:
 Stop:
 		store	r3,(r14+3)
 		load	(r0),r17		; after the last store has gone out
-		or	r17,r17
+		cmpq	#0,r17		; (read, not written: Atari's GPU/DSP bug 2, not or)
 		moveq	#0,r0			; stop
 		movei	#G_CTRL,r1
 		store	r0,(r1)
