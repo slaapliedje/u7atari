@@ -317,9 +317,11 @@ void eb_log(const char *text)
 	fputs(text, stderr);
 }
 
+static const uint8_t *save_palette;    /* (the front's, when it is shown) */
+
 static void save(const char *name)
 {
-	const uint8_t *pal = e_palette();
+	const uint8_t *pal = save_palette != NULL ? save_palette : e_palette();
 	FILE *f = fopen(name, "wb");
 
 	if (f == NULL)
@@ -348,6 +350,9 @@ static int start_minutes = 6 * 60;
 static void save(const char *name);
 
 static const char *path;
+/* --front keys: the main menu run a tick a key (. none, u d l r up down left right, a the pad's
+ * A, b its B), then drawn into --out (or front.ppm) and what was chosen printed */
+static const char *front_keys;
 static int from_x = -1, from_y = -1, from_z = -1;
 static int route_x = -1, route_y = -1, route_z;
 
@@ -410,6 +415,7 @@ static int combat_on;
 static int save_slot, load_slot;
 static int show_equipment;
 static int show_eggs;           /* --eggs: the eggs read in, and the monster eggs set or hatched */
+static const char *avatar_name;  /* --name: the avatar's (as the front's new character) */
 static int female;              /* --female: the avatar a woman (as the original's character made) */      /* --equipment: what the avatar and NPCs 1-4 wear */
 static int save_at = -1, load_at = -1;  /* --save-at f, --load-at f: slot 9 saved, loaded, mid-walk */        /* --save n: saved at the end; --load n: loaded at the start */           /* --combat: the party in combat mode */   /* --party a,b,..: NPCs joining at the start */
 static int uc_function = -1;
@@ -441,6 +447,11 @@ static void walk_avatar(int dx, int dy, int n, const char *out, int every)
 		npcs[me].y = (int16_t) from_y;
 		if (from_z >= 0)
 			npcs[me].z = (uint8_t) from_z;
+	}
+	if (avatar_name != NULL) {
+		/* as the front's new character: the name */
+		memset(npcs[me].name, 0, sizeof npcs[me].name);
+		strncpy(npcs[me].name, avatar_name, sizeof npcs[me].name - 1);
 	}
 	if (female) {
 		/* as the original's character made a woman: her shape (989), the flag off */
@@ -1007,6 +1018,8 @@ int main(int argc, char **argv)
 			sscanf(argv[++i], "%d,%d", &spawn_type, &spawn_n);
 		else if (!strcmp(argv[i], "--save") && i + 1 < argc)
 			save_slot = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--name") && i + 1 < argc)
+			avatar_name = argv[++i];
 		else if (!strcmp(argv[i], "--female"))
 			female = 1;
 		else if (!strcmp(argv[i], "--eggs"))
@@ -1042,6 +1055,8 @@ int main(int argc, char **argv)
 			e_world_trace = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--npcs"))
 			list_npcs = 1;
+		else if (!strcmp(argv[i], "--front") && i + 1 < argc)
+			front_keys = argv[++i];
 		else if (!strcmp(argv[i], "--time") && i + 1 < argc)
 			start_minutes = atoi(argv[++i]);
 	}
@@ -1054,6 +1069,29 @@ int main(int argc, char **argv)
 	if (r != 0) {
 		fprintf(stderr, "e_init: %d\n", r);
 		return 1;
+	}
+	if (front_keys != NULL) {
+		static uint8_t pal[768];
+		char chosen[15];
+		int male, got = 0, ticks = 0;
+		if (!e_front_open(0, 0, 0)) {
+			fprintf(stderr, "e_front_open failed\n");
+			return 1;
+		}
+		for (const char *k = front_keys; *k && !got; k++, ticks++) {
+			static const char from[] = "udlrab";
+			static const int to[] = { E_KEY_UP, E_KEY_DOWN, E_KEY_LEFT, E_KEY_RIGHT, E_KEY_NEXT, E_KEY_BACK };
+			const char *at = strchr(from, *k);
+			got = e_front_tick(at != NULL && *k ? to[at - from] : 0);
+		}
+		e_front_draw(&frame);
+		eb_finish();
+		e_front_palette(pal);
+		save_palette = pal;
+		save(out != NULL ? out : "front.ppm");
+		e_front_result(chosen, &male);
+		printf("front: %d after %d ticks, name '%s', %s\n", got, ticks, chosen, male ? "male" : "female");
+		return 0;
 	}
 	if (music_song >= 0) {
 		/* the song alone, into the WAV */

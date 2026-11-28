@@ -2746,19 +2746,13 @@ void e_draw_pointer(struct ESurface *frame, int fr, int16_t x, int16_t y)
 
 #define GUMP_ROOM (8 * 1024)
 #define GUMPS_KEPT 8
-#define GUMP_PARTS 2
-struct Gump {
-	int16_t n, w, h;
-	uint8_t parts;
-	uint32_t at[GUMP_PARTS];    /* each part, converted, in its room */
-	int16_t dx[GUMP_PARTS], dy[GUMP_PARTS];     /* where its hot spot is from the gump's */
-};
+#define GUMP_PARTS E_PICTURE_PARTS
 static uint8_t *gump_room, *font2;
 static uint32_t gump_used;
-static struct Gump gumps_kept[GUMPS_KEPT];
+static struct EPicture gumps_kept[GUMPS_KEPT];
 static int ngumps_kept;
 #define READ_ROOM (FACE_SLOTS * FACE_ROOM)
-static struct Gump reading;     /* the gump being read (parts 0: none) */
+static struct EPicture reading;     /* the gump being read (parts 0: none) */
 static uint8_t *reading_font;
 static int reading_font_n = -1;
 static uint8_t span_px[512];
@@ -2880,14 +2874,15 @@ static uint32_t cut_raw(const uint8_t *s, uint32_t size, int lo, int hi, int cx,
 	return o;
 }
 
-/* Gump n read and converted into room bytes at out (cut in bands if need be): 1 and g. */
-static int load_gump(int n, uint8_t *out, uint32_t room, struct Gump *g)
+/* Entry n of the shape file dir/file read and converted into room bytes at out (cut in bands if
+ * need be): 1 and g. */
+static int load_picture(const char *dir, const char *file, int n, uint8_t *out, uint32_t room, struct EPicture *g)
 {
 	uint8_t head[8], *raw = scratch, *cut = scratch + SCRATCH / 2;
 	uint32_t used = 0;
 
 	g->parts = 0;
-	int16_t f = open_file("STATIC", "GUMPS.VGA");
+	int16_t f = open_file(dir, file);
 	if (f < 0)
 		return 0;
 	int ok = read_at(f, 0x80 + 8 * (uint32_t) n, head, 8);
@@ -2930,7 +2925,91 @@ static int load_gump(int n, uint8_t *out, uint32_t room, struct Gump *g)
 	return g->parts > 0;
 }
 
-static void draw_gump(struct ESurface *frame, const uint8_t *room, const struct Gump *g, int16_t x, int16_t y)
+/* Gump n read and converted into room bytes at out (cut in bands if need be): 1 and g. */
+static int load_gump(int n, uint8_t *out, uint32_t room, struct EPicture *g)
+{
+	return load_picture("STATIC", "GUMPS.VGA", n, out, room, g);
+}
+
+int e_picture_load(const char *dir, const char *file, int n, uint8_t *room, uint32_t size, struct EPicture *p)
+{
+	return scratch != NULL && room != NULL && load_picture(dir, file, n, room, size, p);
+}
+
+uint32_t e_picture_used(const uint8_t *room, const struct EPicture *p)
+{
+	uint32_t end = 0;
+	for (int k = 0; k < p->parts; k++) {
+		uint32_t e = p->at[k] + ((const uint32_t *) (room + p->at[k]))[0] + E_CONVERT_SLACK;
+		if (e > end)
+			end = e;
+	}
+	return (end + 7) & ~7u;
+}
+
+void e_picture_draw(struct ESurface *frame, const uint8_t *room, const struct EPicture *p, int fr, int16_t x,
+	int16_t y)
+{
+	static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
+
+	for (int k = 0; k < p->parts; k++) {
+		const int16_t *f = shape_frame(room + p->at[k], p->parts == 1 ? fr : 0);
+		if (f != NULL)
+			eb_shape(frame, whole, (const uint32_t *) (f + 4), (int16_t) (x + p->dx[k]),
+				(int16_t) (y + p->dy[k]), 0);
+	}
+}
+
+int e_picture_reach(const uint8_t *room, const struct EPicture *p, int fr, int16_t reach[4])
+{
+	const int16_t *f = p->parts == 1 ? shape_frame(room + p->at[0], fr) : NULL;
+
+	if (f == NULL) {
+		if (p->parts < 2 || fr != 0)
+			return 0;
+		/* cut in bands: the whole of frame 0, from its first band's hot spot */
+		reach[0] = (int16_t) (p->w - 1);
+		reach[1] = reach[2] = 0;
+		reach[3] = (int16_t) (p->h - 1);
+		return 1;
+	}
+	for (int k = 0; k < 4; k++)
+		reach[k] = f[k];
+	return 1;
+}
+
+int32_t e_flex_read(const char *dir, const char *file, int n, uint8_t *to, uint32_t most)
+{
+	uint8_t head[8];
+	int16_t f = open_file(dir, file);
+
+	if (f < 0)
+		return -1;
+	int ok = n >= 0 && read_at(f, 0x80 + 8 * (uint32_t) n, head, 8);
+	uint32_t at = rd32(head), size = rd32(head + 4);
+	ok = ok && size <= most && read_at(f, at, to, size);
+	plat_file_close(f);
+	return ok ? (int32_t) size : -1;
+}
+
+int e_palette_read(const char *dir, const char *file, int n, uint8_t rgb[768])
+{
+	if (scratch == NULL || e_flex_read(dir, file, n, scratch, SCRATCH) != 1536)
+		return 0;
+	for (int k = 0; k < 768; k++)
+		rgb[k] = scratch[2 * k] & 63;
+	return 1;
+}
+
+uint8_t *e_spare_room(uint32_t *size)
+{
+	if (pool == NULL || queue_count != 0 || pool_next != pool || pool_pinned != pool)
+		return NULL;
+	*size = (uint32_t) (pool_end - pool);
+	return pool;
+}
+
+static void draw_gump(struct ESurface *frame, const uint8_t *room, const struct EPicture *g, int16_t x, int16_t y)
 {
 	static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
 
@@ -2942,7 +3021,7 @@ static void draw_gump(struct ESurface *frame, const uint8_t *room, const struct 
 	}
 }
 
-static const struct Gump *gump_shape(int n)
+static const struct EPicture *gump_shape(int n)
 {
 	for (int k = 0; k < ngumps_kept; k++)
 		if (gumps_kept[k].n == n)
@@ -2952,7 +3031,7 @@ static const struct Gump *gump_shape(int n)
 	for (int tries = 0; tries < 2; tries++) {
 		if (ngumps_kept == GUMPS_KEPT)
 			ngumps_kept = 0, gump_used = 0;     /* full: all given way */
-		struct Gump *g = &gumps_kept[ngumps_kept];
+		struct EPicture *g = &gumps_kept[ngumps_kept];
 		if (load_gump(n, gump_room + gump_used, GUMP_ROOM - gump_used, g)) {
 			uint32_t base = gump_used, end = 0;
 			for (int k = 0; k < g->parts; k++) {
@@ -2976,7 +3055,7 @@ static const struct Gump *gump_shape(int n)
 
 void e_draw_gump(struct ESurface *frame, int n, int fr, int16_t x, int16_t y, int16_t *w, int16_t *h)
 {
-	const struct Gump *g = gump_shape(n);
+	const struct EPicture *g = gump_shape(n);
 
 	(void) fr;
 	if (w != NULL)
@@ -3037,7 +3116,7 @@ void e_draw_reading(struct ESurface *frame, int16_t x, int16_t y)
 }
 
 /* The containers' gumps (E_PANELS), one after another in the faces' room. */
-static struct Gump panels[E_PANELS];
+static struct EPicture panels[E_PANELS];
 static int npanels;
 
 int e_panels_load(const int16_t *gumps, int n)

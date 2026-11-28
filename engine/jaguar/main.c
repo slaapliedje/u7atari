@@ -1409,6 +1409,66 @@ static uint32_t sum_frames;
 #else
 #define MARK(rgb) ((void) 0)
 #endif
+/* The new character the front made (its name and sex), when it made one. */
+static char chosen_name[15];
+static int chosen, chosen_male = 1;
+
+/* The front (core/front.c): the original's main menu and new-character screen, a tick at a time
+ * (each blank's, however long a frame takes), the pad's presses its keys, its palette set each
+ * frame for its fades. Until the intro and the credits are made, those bring the menu back. */
+static void front_run(void)
+{
+	static const uint32_t bit[6] = { 1UL << 20, 1UL << 21, 1UL << 22, 1UL << 23, PAD_A, PAD_B };
+	static const int key[6] = { E_KEY_UP, E_KEY_DOWN, E_KEY_LEFT, E_KEY_RIGHT, E_KEY_NEXT, E_KEY_BACK };
+	static uint8_t pal[768];
+	uint32_t ticked = jag_ticks;
+	int f = 0;
+
+	if (!e_front_open(0, 0, 0))
+		return;
+	pad_take(&vbl_pressed);
+	for (;;) {
+		uint32_t pressed = pad_take(&vbl_pressed);
+		int k = 0, r = E_FRONT_RUNNING;
+		for (int b = 0; b < 6 && k == 0; b++)
+			if (pressed & bit[b])
+				k = key[b];
+		/* the ticks gone since the last frame: the first takes the key */
+		do {
+			r = e_front_tick(k);
+			k = 0;
+		} while (r == E_FRONT_RUNNING && ++ticked != jag_ticks);
+		ticked = jag_ticks;
+		if (r == E_FRONT_NEW) {
+			e_front_result(chosen_name, &chosen_male);
+			chosen = 1;
+			break;
+		}
+		if (r == E_FRONT_JOURNEY)
+			break;
+		if (r != E_FRONT_RUNNING && !e_front_open(0, 0, 0))
+			break;
+		struct ESurface *drawing = &surfaces[f = (f + 1) % FRAMES];
+		e_front_draw(drawing);
+		eb_finish();
+		e_front_palette(pal);
+		set_palette(pal);
+		show(drawing->pixels);
+		while (jag_ticks == ticked)
+			;
+	}
+	/* black till the world's palette, and nothing shown that the world's palette would colour */
+	memset(pal, 0, sizeof pal);
+	set_palette(pal);
+	struct ESurface *blank = &surfaces[f = (f + 1) % FRAMES];
+	eb_clear(blank, 0, 0, W, H);
+	eb_finish();
+	show(blank->pixels);
+	uint32_t t = jag_ticks;
+	while (jag_ticks - t < 2)
+		;
+}
+
 static int walk_init(void)
 {
 	nnpcs = e_npcs(npcs, 400);
@@ -1419,10 +1479,18 @@ static int walk_init(void)
 	if (me < 0)
 		return 0;
 #ifdef ENGINE_FEMALE
-	/* (a test: the avatar a woman, as the original's character made: her shape, the flag off) */
-	npcs[me].male = 0;
-	npcs[me].tf = (uint16_t) ((npcs[me].tf & ~0x3ffu) | 989);
+	chosen = 1;                 /* (a test: the avatar a woman) */
+	chosen_male = 0;
 #endif
+	if (chosen) {
+		/* the new character's (the front's): the name, and a woman her shape (989) and the
+		 * flag off, as the original's game makes them from its GAMEARGS.DAT */
+		if (chosen_name[0])
+			memcpy(npcs[me].name, chosen_name, sizeof chosen_name);
+		npcs[me].male = (uint8_t) (chosen_male != 0);
+		if (!chosen_male)
+			npcs[me].tf = (uint16_t) ((npcs[me].tf & ~0x3ffu) | 989);
+	}
 	ax = npcs[me].x;
 	ay = npcs[me].y;
 	az = npcs[me].z;
@@ -1947,6 +2015,10 @@ void jag_main(void)
 	(void) step;
 #ifdef ENGINE_STAGES
 	((volatile uint16_t *) 0xF00400)[0] = 0x07C0;     /* blue: in walk_init */
+#endif
+#ifndef ENGINE_NO_FRONT
+	front_run();
+	set_palette(e_palette());
 #endif
 	if (!walk_init()) {
 		DEBUG_TEXT("no NPC.DAT: no avatar\n");

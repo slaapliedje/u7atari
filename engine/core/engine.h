@@ -383,6 +383,53 @@ const char *e_talk_line(int place, int line);
 /* Gump n (GUMPS.VGA's entry) drawn with its hot spot at x, y (frame NULL: only its size);
  * text in font 2 (the slider's numbers) from x on its line at y. */
 void e_draw_gump(struct ESurface *frame, int n, int fr, int16_t x, int16_t y, int16_t *w, int16_t *h);
+
+/* ---- the front (core/front.c): the original's main menu and new-character screen, driven a
+ * 60 Hz tick at a time. Opened in the shapes' spare room (e_spare_room: before the world), with
+ * whether a game is saved (Journey Onward), and the endgame and quotes seen (their entries
+ * shown). e_front_tick takes a key (E_KEY_UP/DOWN/LEFT/RIGHT, E_KEY_NEXT the pad's A, E_KEY_BACK
+ * its B; 0 none) and says what the player chose once the screen has faded out. e_front_draw
+ * draws it (320x200), e_front_palette gives its palette now (0-63, its fades in it, 255 black).
+ * e_front_result: the new character's name and sex. ---- */
+#define E_FRONT_RUNNING 0
+#define E_FRONT_INTRO 1
+#define E_FRONT_NEW 2           /* a new game, with the name and sex chosen */
+#define E_FRONT_JOURNEY 3       /* the saved game */
+#define E_FRONT_CREDITS 4
+#define E_FRONT_QUOTES 5
+#define E_FRONT_ENDGAME 6
+int e_front_open(int saved, int endgame_seen, int quotes_seen);
+int e_front_tick(int key);
+void e_front_draw(struct ESurface *frame);
+void e_front_palette(uint8_t rgb[768]);
+void e_front_result(char name[15], int *male);
+
+/* ---- pictures from any of the data's shape files (the main menu's MAINSHP.FLX, the intro's),
+ * read into a room of the caller's: a shape whose frames all lie within the converter's reach of
+ * its hot spot is kept whole (every frame); a wider one (a 320-wide background) is cut in bands,
+ * its frame 0 only. Entry n of dir/file: 1 when read. ---- */
+#define E_PICTURE_PARTS 2
+struct EPicture {
+	int16_t n, w, h;            /* (w, h: frame 0's) */
+	uint8_t parts;
+	uint32_t at[E_PICTURE_PARTS];       /* each part, converted, in the room */
+	int16_t dx[E_PICTURE_PARTS], dy[E_PICTURE_PARTS];   /* its hot spot's from the picture's */
+};
+int e_picture_load(const char *dir, const char *file, int n, uint8_t *room, uint32_t size, struct EPicture *p);
+/* The room's bytes it took (from the room's start to its last part's end). */
+uint32_t e_picture_used(const uint8_t *room, const struct EPicture *p);
+/* Frame fr (frame 0 if cut in bands) with its hot spot at x, y. */
+void e_picture_draw(struct ESurface *frame, const uint8_t *room, const struct EPicture *p, int fr, int16_t x,
+	int16_t y);
+/* Frame fr's reach from its hot spot (right, left, above, below): 1, or 0 if it has none. */
+int e_picture_reach(const uint8_t *room, const struct EPicture *p, int fr, int16_t reach[4]);
+/* Entry n of the flex dir/file as it is (a text, a palette), most bytes at most: its size, or -1. */
+int32_t e_flex_read(const char *dir, const char *file, int n, uint8_t *to, uint32_t most);
+/* Palette n of a palette flex (INTROPAL.DAT: 768 little-endian words, R G B, 0-63): 1 when read. */
+int e_palette_read(const char *dir, const char *file, int n, uint8_t rgb[768]);
+/* The shapes' room before the world takes any of it (the main menu's, the intro's): its start and
+ * size, or NULL once shapes are in it. */
+uint8_t *e_spare_room(uint32_t *size);
 void e_draw_small(struct ESurface *frame, int16_t x, int16_t y, const char *s);
 /* A book's, scroll's or sign's gump and font read in to be read (the faces' room taken: none is
  * shown meanwhile): 1 when both are; drawn with its hot spot at x, y; given up. */
