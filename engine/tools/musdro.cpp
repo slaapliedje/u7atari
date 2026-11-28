@@ -10,6 +10,13 @@
  *
  * Writes <out>/musNN.dro and <out>/index.txt: the song, its length (ms; for one that loops, to
  * the jump back), where its loop starts and ends (ms; 0 0 when it ends instead).
+ *
+ * Then the intro's and main menu's songs (STATIC/INTROADM.DAT, with their own timbres:
+ * STATIC/U7INTRO.TIM, record 1, the AdLib's) as songs 64 on (INTROADM's entry n as 64 + n), at
+ * the player's own volume (they set none); and the intro's eight sound effects, each a note the
+ * player starts on its channels as the intro's SoundEffects do, as isfxN.dro, listed in
+ * <out>/isfx.txt (N, ticks). One the intro holds till it stops it is recorded for its longest
+ * use there.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -206,24 +213,11 @@ static void use_adlib(void)
 	DriverClaimChannelEntry = AdlibClaimVoice;
 }
 
-int main(int argc, char **argv)
+/* Each song of a flex of standard MIDI files played and recorded: entry n as song base + n. */
+static int record_songs(const std::vector<uint8_t> &songs, const std::vector<uint8_t> &timbres, uint32_t base,
+	int volumes, const char *dir, FILE *index)
 {
-	if (argc != 3) {
-		fprintf(stderr, "usage: u7musdro <STATIC dir> <out dir>\n");
-		return 2;
-	}
-	std::vector<uint8_t> songs = read_all(argv[1], "ADLIBMUS.DAT"), voices = read_all(argv[1], "U7VOICE.FLX");
-	if (songs.size() < 0x80 || voices.size() < 0x90)
-		return 1;
-	std::vector<uint8_t> timbres(voices.begin() + rd32(&voices[0x88]),
-		voices.begin() + rd32(&voices[0x88]) + rd32(&voices[0x8c]));
 	char name[1024];
-	snprintf(name, sizeof name, "%s/index.txt", argv[2]);
-	FILE *index = fopen(name, "w");
-	if (index == NULL) {
-		perror(name);
-		return 1;
-	}
 	uint32_t count = rd32(&songs[0x54]);
 	for (uint32_t n = 0; n < count; n++) {
 		uint32_t at = rd32(&songs[0x80 + n * 8]), size = rd32(&songs[0x84 + n * 8]);
@@ -239,12 +233,13 @@ int main(int argc, char **argv)
 		use_adlib();
 		SoundDriverInfo = AdlibDescribe();
 		if (AdlibInit(bank.data()) == 0) {
-			fprintf(stderr, "song %u: the driver did not start\n", n);
-			return 1;
+			fprintf(stderr, "song %u: the driver did not start\n", base + n);
+			return 0;
 		}
-		SetMusicVolume(n < 60 ? song_volume[n] : 180);
+		if (volumes)
+			SetMusicVolume(n < 60 ? song_volume[n] : 180);
 		if (!PlaySong(song.data())) {
-			fprintf(stderr, "song %u: not played\n", n);
+			fprintf(stderr, "song %u: not played\n", base + n);
 			continue;
 		}
 		MusicFlags = 0;
@@ -281,15 +276,105 @@ int main(int argc, char **argv)
 		}
 		AdlibShutdown();
 		uint32_t length = (uint32_t) ((uint64_t) ticks * 1000 / 60);
-		snprintf(name, sizeof name, "%s/mus%02u.dro", argv[2], n);
+		snprintf(name, sizeof name, "%s/mus%02u.dro", dir, base + n);
 		if (!write_dro(name, length)) {
 			fprintf(stderr, "%s: not written\n", name);
-			return 1;
+			return 0;
 		}
-		fprintf(index, "%u %u %u %u\n", n, length, jumps == 2 ? jump[0] : 0, jumps == 2 ? jump[1] : 0);
-		printf("song %2u: %6.1f s%s, %zu writes\n", n, length / 1000.0,
+		fprintf(index, "%u %u %u %u\n", base + n, length, jumps == 2 ? jump[0] : 0, jumps == 2 ? jump[1] : 0);
+		printf("song %2u: %6.1f s%s, %zu writes\n", base + n, length / 1000.0,
 			jumps == 2 ? " (loops)" : ended >= 0 ? " (ends)" : " (cut)", writes.size());
 	}
+	return 1;
+}
+
+/* The intro's sound effects (its SoundEffect table: the note's flags, program + 1, key,
+ * velocity, ticks; volume 255, centre, priority 1), and how long the intro holds the held ones
+ * at most (ticks; 0: as long as the note). */
+static const struct {
+	uint8_t flags, program, key, velocity;
+	int16_t ticks;
+	int held;
+} intro_sfx[8] = {
+	{ 4, 100, 41, 64, 60, 90 },     /* 0 static: its longest burst, the final 20 frames */
+	{ 0, 99, 48, 64, 90, 0 },       /* 1 power off */
+	{ 4, 62, 48, 127, 60, 90 },     /* 2 appear: the face forming, 71 steps */
+	{ 0, 105, 48, 127, 20, 0 },     /* 3 punch */
+	{ 4, 106, 48, 64, 120, 840 },   /* 4 moongate: all of the moongate scene */
+	{ 0, 107, 41, 127, 5, 0 },      /* 5 enter */
+	{ 4, 109, 48, 96, 5, 90 },      /* 6 vanish: the face going, 71 steps */
+	{ 4, 111, 48, 64, 15, 180 },    /* 7 dot: the dot and the monitor's pull-back */
+};
+
+static int record_intro_sfx(const std::vector<uint8_t> &timbres, const char *dir)
+{
+	char name[1024];
+	snprintf(name, sizeof name, "%s/isfx.txt", dir);
+	FILE *index = fopen(name, "w");
+	if (index == NULL)
+		return 0;
+	for (int k = 0; k < 8; k++) {
+		std::vector<uint8_t> bank(timbres);
+		writes.clear();
+		now_ms = 0;
+		ResetMidiplayGlobals();
+		ResetAdlibdrvGlobals();
+		use_adlib();
+		SoundDriverInfo = AdlibDescribe();
+		if (AdlibInit(bank.data()) == 0)
+			return 0;
+		/* the note as the intro's SfxNote lays it out (the host's byte order) */
+		uint8_t note[8] = { intro_sfx[k].flags, intro_sfx[k].program, intro_sfx[k].key, intro_sfx[k].velocity,
+			0, 0, 0, 0 };
+		int16_t d = intro_sfx[k].ticks;
+		memcpy(note + 4, &d, 2);
+		StartMidiSfx(note, 0, 255, 64, 1, 1);
+		int stop_at = intro_sfx[k].held, ticks = 0;
+		int end = (stop_at ? stop_at : intro_sfx[k].ticks) + TAIL_TICKS;
+		for (; ticks < end; ticks++) {
+			now_ms = (uint32_t) ((uint64_t) ticks * 1000 / 60);
+			if (stop_at && ticks == stop_at)
+				StopMidiSfx(0, 1);
+			AdlibTimer();
+			MusicTimerHandler();
+		}
+		AdlibShutdown();
+		uint32_t length = (uint32_t) ((uint64_t) ticks * 1000 / 60);
+		snprintf(name, sizeof name, "%s/isfx%d.dro", dir, k);
+		if (!write_dro(name, length))
+			return 0;
+		fprintf(index, "%d %d\n", k, ticks);
+		printf("intro effect %d: %d ticks, %zu writes\n", k, ticks, writes.size());
+	}
+	return fclose(index) == 0;
+}
+
+int main(int argc, char **argv)
+{
+	if (argc != 3) {
+		fprintf(stderr, "usage: u7musdro <STATIC dir> <out dir>\n");
+		return 2;
+	}
+	std::vector<uint8_t> songs = read_all(argv[1], "ADLIBMUS.DAT"), voices = read_all(argv[1], "U7VOICE.FLX");
+	if (songs.size() < 0x80 || voices.size() < 0x90)
+		return 1;
+	std::vector<uint8_t> timbres(voices.begin() + rd32(&voices[0x88]),
+		voices.begin() + rd32(&voices[0x88]) + rd32(&voices[0x8c]));
+	std::vector<uint8_t> intro_songs = read_all(argv[1], "INTROADM.DAT"), tim = read_all(argv[1], "U7INTRO.TIM");
+	if (intro_songs.size() < 0x80 || tim.size() < 0x90)
+		return 1;
+	std::vector<uint8_t> intro_timbres(tim.begin() + rd32(&tim[0x88]), tim.begin() + rd32(&tim[0x88]) + rd32(&tim[0x8c]));
+	char name[1024];
+	snprintf(name, sizeof name, "%s/index.txt", argv[2]);
+	FILE *index = fopen(name, "w");
+	if (index == NULL) {
+		perror(name);
+		return 1;
+	}
+	if (!record_songs(songs, timbres, 0, 1, argv[2], index)
+		|| !record_songs(intro_songs, intro_timbres, 64, 0, argv[2], index)
+		|| !record_intro_sfx(intro_timbres, argv[2]))
+		return 1;
 	fclose(index);
 	return 0;
 }
