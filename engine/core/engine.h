@@ -571,6 +571,10 @@ void e_music_play(int track);           /* 255: stops it */
 void e_music_resume(int resume);        /* the music egg's: the song comes again when it ends */
 void e_music_service(void);             /* the ring kept filled, the songs' ends seen to */
 int e_music_current(void);
+/* A song on its own, the front's and intro's (ENGINE/MUSIC.FLX's entry: INTROADM's n as 64 + n):
+ * from its start, looping if it loops, no background after (255 stops it); whether it is over. */
+void e_music_song(int track);
+int e_music_song_over(void);
 /* The backend's: its ring (made once, by e_music_service), the player's place in it, telling it
  * where what is written ends, starting over (the synth silenced, the place 0, waited for), and
  * whether it has reached the song's end. */
@@ -579,6 +583,11 @@ uint32_t eb_music_read(void);
 void eb_music_written(uint32_t wr);
 void eb_music_restart(void);
 int eb_music_ended(void);
+/* The music's loudness, in 256ths of the synth's own (the game's songs: 1024, as loud as the
+ * sound effects; the intro's and menu's songs, recorded at the player's full volume, 384: the loudest, the menu's, then peaks at 28000). */
+#define E_MUSIC_GAIN 1024
+#define E_MUSIC_GAIN_INTRO 384
+void eb_music_gain(int gain);
 
 /* ---- saved games (core/save.c): U7/ENGINE/SAVEn.DAT, the engine's own (not the original's
  * format): the clock, the NPCs, the usecode's flags and party, what is held and carried, the

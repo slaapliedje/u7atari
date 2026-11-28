@@ -239,6 +239,13 @@ void eb_music_restart(void)
 	music_left = 0;
 }
 
+static int music_gain = E_MUSIC_GAIN;
+
+void eb_music_gain(int gain)
+{
+	music_gain = gain;
+}
+
 int eb_music_ended(void)
 {
 	return music_stream.ended;
@@ -285,7 +292,7 @@ static void mix(int blanks)
 
 	owed += (uint32_t) blanks * E_SOUND_RATE;
 	for (; owed >= 60; owed -= 60) {
-		int32_t l = 0, r = 0, m = wav != NULL ? music_sample() : 0;
+		int32_t l = 0, r = 0, m = wav != NULL ? music_sample() * music_gain / E_MUSIC_GAIN : 0;
 		for (int c = 0; c < SOUND_CHANNELS; c++) {
 			if (channel[c].left == 0)
 				continue;

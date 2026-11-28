@@ -2326,6 +2326,30 @@ static int song_stopped(void)
 	return mu_feeding.track < 0 && (!music_end_written || eb_music_ended());
 }
 
+/* A song on its own (the front's and the intro's): played from its start, looping if it loops,
+ * nothing after it; 255 stops it. The game's PlayMusic (e_music_play) takes over again after. */
+static uint8_t mu_alone;
+
+void e_music_song(int track)
+{
+	if (!music_ok)
+		return;
+	if (track == E_MUSIC_NONE) {
+		music_stop();
+		mu_alone = 0;
+		mu_current = mu_deferred = E_MUSIC_NONE;
+		return;
+	}
+	music_start(track);
+	mu_alone = 1;
+	mu_current = E_MUSIC_NONE;
+}
+
+int e_music_song_over(void)
+{
+	return !music_ok || song_stopped();
+}
+
 /* As the original's PlayMusic. */
 void e_music_play(int track)
 {
@@ -2333,6 +2357,7 @@ void e_music_play(int track)
 
 	if (!music_ok)
 		return;
+	mu_alone = 0;
 	mu_resume = 0;
 	if (track >= MUSIC_TRACKS && track != E_MUSIC_NONE)
 		return;
@@ -2388,6 +2413,8 @@ void e_music_service(void)
 #ifndef ENGINE_NO_MUSIC_FEED    /* (a console test: the DSP going, no song fed it) */
 	music_feed();
 #endif
+	if (mu_alone)
+		return;
 	/* (the original's PlayAmbientSounds) a song over, the background again: the same if the
 	 * egg said so, else the land's (not yet the sea's 8 or the dungeons' 52) */
 	if ((song_stopped() && mu_current != E_MUSIC_NONE) || mu_background_due) {

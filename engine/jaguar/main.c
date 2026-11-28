@@ -615,7 +615,7 @@ static void sound_init(void)
 		DSP_TABLES[i] = t[i];
 	for (int i = 0; i < M_LONGS; i++)
 		MCTL[i] = 0;
-	MCTL[M_VOL] = 1024;         /* (4x: the OPL2's own level is quiet beside the sounds) */
+	MCTL[M_VOL] = E_MUSIC_GAIN; /* (4x: the OPL2's own level is quiet beside the sounds) */
 	MCTL[M_RING] = music_ring;
 	MCTL[M_MASK] = music_mask;
 	MCTL[M_CMD] = 1;            /* (its first: the synth silenced) */
@@ -641,6 +641,11 @@ uint32_t eb_music_read(void)
 void eb_music_written(uint32_t wr)
 {
 	MCTL[M_WR] = wr;
+}
+
+void eb_music_gain(int gain)
+{
+	MCTL[M_VOL] = (uint32_t) gain;
 }
 
 void eb_music_restart(void)
@@ -1416,6 +1421,8 @@ static int chosen, chosen_male = 1;
 /* The front (core/front.c): the original's main menu and new-character screen, a tick at a time
  * (each blank's, however long a frame takes), the pad's presses its keys, its palette set each
  * frame for its fades. Until the intro and the credits are made, those bring the menu back. */
+#define FRONT_SONG (64 + 3)     /* INTROADM.DAT's song 3, the menu's */
+
 static void front_run(void)
 {
 	static const uint32_t bit[6] = { 1UL << 20, 1UL << 21, 1UL << 22, 1UL << 23, PAD_A, PAD_B };
@@ -1426,8 +1433,14 @@ static void front_run(void)
 
 	if (!e_front_open(0, 0, 0))
 		return;
+	eb_music_gain(E_MUSIC_GAIN_INTRO);
+	e_music_song(FRONT_SONG);
 	pad_take(&vbl_pressed);
 	for (;;) {
+		/* the menu's song, again whenever it ends (as the original's menu) */
+		e_music_service();
+		if (e_music_song_over())
+			e_music_song(FRONT_SONG);
 		uint32_t pressed = pad_take(&vbl_pressed);
 		int k = 0, r = E_FRONT_RUNNING;
 		for (int b = 0; b < 6 && k == 0; b++)
@@ -1446,8 +1459,11 @@ static void front_run(void)
 		}
 		if (r == E_FRONT_JOURNEY)
 			break;
-		if (r != E_FRONT_RUNNING && !e_front_open(0, 0, 0))
-			break;
+		if (r != E_FRONT_RUNNING) {
+			if (!e_front_open(0, 0, 0))
+				break;
+			e_music_song(FRONT_SONG);
+		}
 		struct ESurface *drawing = &surfaces[f = (f + 1) % FRAMES];
 		e_front_draw(drawing);
 		eb_finish();
@@ -1457,6 +1473,8 @@ static void front_run(void)
 		while (jag_ticks == ticked)
 			;
 	}
+	e_music_song(E_MUSIC_NONE);
+	eb_music_gain(E_MUSIC_GAIN);
 	/* black till the world's palette, and nothing shown that the world's palette would colour */
 	memset(pal, 0, sizeof pal);
 	set_palette(pal);
