@@ -139,7 +139,9 @@ void eb_tiles(struct ESurface *dst, const struct EFlat flats[E_FLAT_TYPES],
  * which stay put while it plays; volume and pan 0-127 (0 left). On a free channel, else the one
  * nearest its end. */
 #define E_SOUND_RATE 15980
-void eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan);
+int eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan);
+/* A sound eb_sound started (the channel it gave) stopped, if it still plays. */
+void eb_sound_stop(int channel);
 /* All drawing asked for so far is done when this returns (before the CPU touches a surface). */
 void eb_finish(void);
 void eb_log(const char *text);
@@ -411,21 +413,29 @@ void e_front_result(char name[15], int *male);
 #define E_PICTURE_PARTS 2
 struct EPicture {
 	int16_t n, w, h;            /* (w, h: frame 0's) */
+	int16_t left, above;        /* frame 0's reach left of and above its hot spot */
 	uint8_t parts;
 	uint32_t at[E_PICTURE_PARTS];       /* each part, converted, in the room */
 	int16_t dx[E_PICTURE_PARTS], dy[E_PICTURE_PARTS];   /* its hot spot's from the picture's */
 };
 int e_picture_load(const char *dir, const char *file, int n, uint8_t *room, uint32_t size, struct EPicture *p);
 /* A picture as the data's tools write them (ENGINE/ENDSHAPE.FLX, the intro's): a head of
- * E_PICTURE_HEAD bytes (parts, w, h, 0, at[2], dx[2], dy[2], in the CPU's order), then its room.
+ * E_PICTURE_HEAD bytes (parts, w, h, 0, at[2], dx[2], dy[2], left, above, 0, 0, in the CPU's
+ * order), then its room.
  * p from the head; the room is entry + E_PICTURE_HEAD. */
-#define E_PICTURES_TITLE "U7 engine pictures 1"
-#define E_PICTURE_HEAD 24
+#define E_PICTURES_TITLE "U7 engine pictures 2"
+#define E_PICTURE_HEAD 32
 void e_picture_head(const uint8_t *entry, struct EPicture *p);
 /* The same from a raw shape of the caller's (size bytes at raw; cut: room to cut bands in, as
  * big as the shape): the data's tools, for shapes bigger than the core's scratch room. */
 int e_picture_convert(const uint8_t *raw, uint32_t size, uint8_t *cut, uint32_t cut_room, uint8_t *room,
 	uint32_t room_size, struct EPicture *p);
+/* As e_picture_draw, clipped to clip (x0, y0, x1, y1 inclusive) of frame (which may be any surface). */
+void e_picture_draw_clip(struct ESurface *frame, const uint8_t *room, const struct EPicture *p, int fr,
+	int16_t x, int16_t y, const int16_t clip[4]);
+/* Entry n of dir/file where the backend keeps it to be read as it is (plat_file_direct), and its
+ * size; NULL when it does not. */
+const uint8_t *e_flex_direct(const char *dir, const char *file, int n, uint32_t *size);
 /* The room's bytes it took (from the room's start to its last part's end). */
 uint32_t e_picture_used(const uint8_t *room, const struct EPicture *p);
 /* Frame fr (frame 0 if cut in bands) with its hot spot at x, y. */
@@ -598,6 +608,22 @@ int eb_music_ended(void);
 #define E_MUSIC_GAIN 1024
 #define E_MUSIC_GAIN_INTRO 384
 void eb_music_gain(int gain);
+/* The intro's sounds and pictures shown where plat_file_direct finds them (the Jaguar's
+ * GameDrive pages; a backend that keeps them in its memory anyway does nothing), or not. */
+void eb_intro_memory(int on);
+
+/* ---- the intro (core/intro.c): the original's INTRO, its six scenes, from ENGINE/ENDSHAPE.FLX
+ * (the pictures, made ahead), ENGINE/INTRO.FLX (its synth effects and the speech), MUSIC.FLX's
+ * songs 64-66, STATIC/INTROPAL.DAT and MAINSHP.FLX (the speech's sync track). The pad: B ends it
+ * (the original's Esc), any other key cuts short what is going on (its other keys). Returns 0
+ * when it ran to its end, 1 when B ended it, -1 when its data is not there. ---- */
+int e_intro_run(void);
+/* The backend's for it: the frame to draw the next picture in (320x200); that frame shown with
+ * the palette rgb (0-63; 255 black), ticks blanks after the one before (0: at once, the next
+ * blank), and the key pressed since (E_KEY_; 0 none); the blanks since it began. */
+struct ESurface *eb_frame_next(void);
+int eb_frame_show(const uint8_t rgb[768], int ticks);
+uint32_t eb_blanks(void);
 
 /* ---- saved games (core/save.c): U7/ENGINE/SAVEn.DAT, the engine's own (not the original's
  * format): the clock, the NPCs, the usecode's flags and party, what is held and carried, the

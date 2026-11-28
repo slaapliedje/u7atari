@@ -2314,8 +2314,9 @@ static void music_feed(void)
 	} else if (mu_feeding.loop != 0xffffffffu)
 		mu_feeding.pos = mu_feeding.loop;
 	else {
-		static const uint8_t end = 0xfd;
-		music_put(&end, 1);
+		/* (two: the synth reads the ring only with two bytes there, as a write takes) */
+		static const uint8_t end[2] = { 0xfd, 0xfd };
+		music_put(end, 2);
 		music_end_written = 1;
 		mu_feeding.track = -1;
 	}
@@ -2919,6 +2920,8 @@ static int convert_picture(const uint8_t *raw, uint32_t size, uint8_t *cut, uint
 	int right = rds16(raw + p), left = rds16(raw + p + 2), up = rds16(raw + p + 4), down = rds16(raw + p + 6);
 	g->w = (int16_t) (right + left + 1);
 	g->h = (int16_t) (up + down + 1);
+	g->left = (int16_t) left;
+	g->above = (int16_t) up;
 	uint32_t made = convert_size(raw, size);
 	if (made != 0) {
 		if (made + E_CONVERT_SLACK > room || !convert_into(raw, size, out, made + E_CONVERT_SLACK))
@@ -2978,6 +2981,8 @@ void e_picture_head(const uint8_t *entry, struct EPicture *p)
 		p->dx[k] = (int16_t) h[8 + k];
 		p->dy[k] = (int16_t) h[10 + k];
 	}
+	p->left = (int16_t) h[12];
+	p->above = (int16_t) h[13];
 }
 
 int e_picture_convert(const uint8_t *raw, uint32_t size, uint8_t *cut, uint32_t cut_room, uint8_t *room,
@@ -3009,30 +3014,56 @@ uint32_t e_picture_used(const uint8_t *room, const struct EPicture *p)
 	return (end + 7) & ~7u;
 }
 
+void e_picture_draw_clip(struct ESurface *frame, const uint8_t *room, const struct EPicture *p, int fr,
+	int16_t x, int16_t y, const int16_t clip[4])
+{
+	for (int k = 0; k < p->parts; k++) {
+		const int16_t *f = shape_frame(room + p->at[k], p->parts == 1 ? fr : 0);
+		if (f != NULL)
+			eb_shape(frame, clip, (const uint32_t *) (f + 4), (int16_t) (x + p->dx[k]),
+				(int16_t) (y + p->dy[k]), 0);
+	}
+}
+
 void e_picture_draw(struct ESurface *frame, const uint8_t *room, const struct EPicture *p, int fr, int16_t x,
 	int16_t y)
 {
 	static const int16_t whole[4] = { 0, 0, E_VIEW_W - 1, E_VIEW_H - 1 };
 
-	for (int k = 0; k < p->parts; k++) {
-		const int16_t *f = shape_frame(room + p->at[k], p->parts == 1 ? fr : 0);
-		if (f != NULL)
-			eb_shape(frame, whole, (const uint32_t *) (f + 4), (int16_t) (x + p->dx[k]),
-				(int16_t) (y + p->dy[k]), 0);
+	e_picture_draw_clip(frame, room, p, fr, x, y, whole);
+}
+
+const uint8_t *e_flex_direct(const char *dir, const char *file, int n, uint32_t *size)
+{
+	uint8_t head[8];
+	const uint8_t *at = NULL;
+
+	if (plat_file_direct == NULL)
+		return NULL;
+	int16_t f = open_file(dir, file);
+	if (f < 0)
+		return NULL;
+	if (n >= 0 && read_at(f, 0x80 + 8 * (uint32_t) n, head, 8) && rd32(head + 4) != 0) {
+		*size = rd32(head + 4);
+		at = (const uint8_t *) plat_file_direct(f, rd32(head), *size);
 	}
+	plat_file_close(f);
+	return at;
 }
 
 int e_picture_reach(const uint8_t *room, const struct EPicture *p, int fr, int16_t reach[4])
 {
-	const int16_t *f = p->parts == 1 ? shape_frame(room + p->at[0], fr) : NULL;
+	int banded = p->parts > 1 || p->dx[0] != 0 || p->dy[0] != 0;
+	const int16_t *f = !banded ? shape_frame(room + p->at[0], fr) : NULL;
 
 	if (f == NULL) {
-		if (p->parts < 2 || fr != 0)
+		if (!banded || fr != 0)
 			return 0;
-		/* cut in bands: the whole of frame 0, from its first band's hot spot */
-		reach[0] = (int16_t) (p->w - 1);
-		reach[1] = reach[2] = 0;
-		reach[3] = (int16_t) (p->h - 1);
+		/* cut in bands: the whole of frame 0 */
+		reach[0] = (int16_t) (p->w - 1 - p->left);
+		reach[1] = p->left;
+		reach[2] = p->above;
+		reach[3] = (int16_t) (p->h - 1 - p->above);
 		return 1;
 	}
 	for (int k = 0; k < 4; k++)

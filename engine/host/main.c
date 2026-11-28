@@ -26,6 +26,7 @@
 /* ---- files ---- */
 
 static FILE *files[16];
+static char file_names[16][240];
 
 int16_t plat_file_open(const char *name, int16_t mode)
 {
@@ -33,6 +34,7 @@ int16_t plat_file_open(const char *name, int16_t mode)
 		if (files[i] == NULL) {
 			if ((files[i] = fopen(name, mode == PLAT_WRITE ? "wb" : "rb")) == NULL)
 				return -1;
+			snprintf(file_names[i], sizeof file_names[i], "%s", name);
 			if (getenv("U7_TRACE_FILES")) {
 				static int opens;
 				fprintf(stderr, "open %d: %s (%d)\n", ++opens, name, i);
@@ -69,6 +71,70 @@ int32_t plat_file_seek(int16_t f, int32_t offset, int16_t origin)
 {
 	(void) origin;
 	return fseek(files[f], offset, SEEK_SET) == 0 ? offset : -1;
+}
+
+/* Where n bytes of a file are to be read as they are: the intro's sounds and pictures (ENGINE/
+ * INTRO.FLX, ENGINE/ENDSHAPE.FLX) read whole into memory, as the Jaguar keeps them in its
+ * GameDrive's; the pictures' heads and parts turned to this CPU's order. Others: NULL. */
+const void *plat_file_direct(int16_t f, uint32_t at, uint32_t n)
+{
+	static struct { char name[240]; uint8_t *data; long size; } kept[2];
+	const char *name = f >= 0 && f < 16 ? file_names[f] : "";
+	int pictures = strstr(name, "ENDSHAPE.FLX") != NULL;
+	if (!pictures && strstr(name, "INTRO.FLX") == NULL)
+		return NULL;
+	int k = pictures;
+	if (strcmp(kept[k].name, name) != 0) {
+		FILE *in = fopen(name, "rb");
+		if (in == NULL)
+			return NULL;
+		fseek(in, 0, SEEK_END);
+		kept[k].size = ftell(in);
+		fseek(in, 0, SEEK_SET);
+		free(kept[k].data);
+		kept[k].data = malloc((size_t) kept[k].size + 8);
+		if (kept[k].data == NULL || fread(kept[k].data, 1, (size_t) kept[k].size, in) != (size_t) kept[k].size) {
+			fclose(in);
+			return NULL;
+		}
+		fclose(in);
+		snprintf(kept[k].name, sizeof kept[k].name, "%s", name);
+		if (pictures && e_little_endian()) {
+			uint8_t *d = kept[k].data;
+			uint32_t count = (uint32_t) d[0x54] | (uint32_t) d[0x55] << 8;
+			for (uint32_t e = 0; e < count; e++) {
+				uint8_t *t = d + 0x80 + 8 * e;
+				uint32_t eat = t[0] | t[1] << 8 | t[2] << 16 | (uint32_t) t[3] << 24, esize = t[4] | t[5] << 8 | t[6] << 16;
+				if (esize < E_PICTURE_HEAD)
+					continue;
+				uint8_t *h = d + eat;
+				for (int i = 0; i < 8; i += 2) {    /* parts, w, h, 0 */
+					uint8_t c = h[i]; h[i] = h[i + 1]; h[i + 1] = c;
+				}
+				for (int i = 8; i < 16; i += 4) {   /* at[2] */
+					uint8_t c = h[i]; h[i] = h[i + 3]; h[i + 3] = c;
+					c = h[i + 1]; h[i + 1] = h[i + 2]; h[i + 2] = c;
+				}
+				for (int i = 16; i < 32; i += 2) {  /* dx[2], dy[2], left, above, 0, 0 */
+					uint8_t c = h[i]; h[i] = h[i + 1]; h[i + 1] = c;
+				}
+				uint16_t parts = *(uint16_t *) h;
+				for (int p = 0; p < parts && p < E_PICTURE_PARTS; p++) {
+					uint8_t *part = h + E_PICTURE_HEAD + ((uint32_t *) (h + 8))[p];
+					uint32_t psize = (uint32_t) part[0] << 24 | part[1] << 16 | part[2] << 8 | part[3];
+					e_swap_shape(part, psize, 1);
+				}
+			}
+		}
+	}
+	if ((long) (at + n) > kept[k].size)
+		return NULL;
+	return kept[k].data + at;
+}
+
+void eb_intro_memory(int on)
+{
+	(void) on;
 }
 
 int32_t plat_file_length(int16_t f)
@@ -194,7 +260,7 @@ static FILE *wav;
 static uint32_t wav_frames;
 static int sound_frame;
 
-void eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
+int eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
 {
 	int c = 0;
 
@@ -207,6 +273,13 @@ void eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
 	channel[c].vl = volume * (127 - pan) * 2 / 127;
 	channel[c].vr = volume * pan * 2 / 127;
 	printf("frame %d: sound of %u samples, volume %d, pan %d\n", sound_frame, n, volume, pan);
+	return c;
+}
+
+void eb_sound_stop(int c)
+{
+	if (c >= 0 && c < SOUND_CHANNELS)
+		channel[c].left = 0;
 }
 
 /* The music: the ring played by the engine's OPL2 a block at a time, as the Jaguar's DSP. */
@@ -325,6 +398,8 @@ void eb_log(const char *text)
 }
 
 static const uint8_t *save_palette;    /* (the front's, when it is shown) */
+static const uint8_t *save_palette_get(void) { return save_palette; }
+static void save_palette_set(const uint8_t *p) { save_palette = p; }
 
 static void save(const char *name)
 {
@@ -355,11 +430,52 @@ static int nnpcs;
 static int start_minutes = 6 * 60;
 
 static void save(const char *name);
+static void mix(int blanks);
+
+/* ---- the intro's frames (--intro): the blanks counted, the sound mixed for them, pictures
+ * saved at --intro-every blanks ---- */
+static uint32_t intro_blanks, intro_every, intro_next;
+static const char *intro_out;
+
+struct ESurface *eb_frame_next(void)
+{
+	return &frame;
+}
+
+int eb_frame_show(const uint8_t rgb[768], int ticks)
+{
+	int n = ticks > 0 ? ticks : 1;
+	mix(n);
+	intro_blanks += (uint32_t) n;
+	if (getenv("U7_TRACE_INTRO") && intro_blanks % 300 < (uint32_t) n)
+		fprintf(stderr, "blank %u: song over %d ended %d\n", intro_blanks, e_music_song_over(), music_stream.ended);
+	if (intro_every != 0 && intro_blanks >= intro_next) {
+		char name[300];
+		snprintf(name, sizeof name, "%s.%05u.ppm", intro_out != NULL ? intro_out : "intro", intro_blanks);
+		static uint8_t pal[768];
+		memcpy(pal, rgb, sizeof pal);
+		const uint8_t *was = save_palette_get();
+		save_palette_set(pal);
+		save(name);
+		save_palette_set(was);
+		while (intro_next <= intro_blanks)
+			intro_next += intro_every;
+	}
+	return 0;
+}
+
+uint32_t eb_blanks(void)
+{
+	return intro_blanks;
+}
 
 static const char *path;
 /* --front keys: the main menu run a tick a key (. none, u d l r up down left right, a the pad's
  * A, b its B), then drawn into --out (or front.ppm) and what was chosen printed */
 static const char *front_keys;
+/* --intro k: the intro run, a picture saved every k blanks (0 none) into --out's prefix, the sound
+ * into --wav */
+static int intro_run;
 static int from_x = -1, from_y = -1, from_z = -1;
 static int route_x = -1, route_y = -1, route_z;
 
@@ -1062,6 +1178,8 @@ int main(int argc, char **argv)
 			e_world_trace = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--npcs"))
 			list_npcs = 1;
+		else if (!strcmp(argv[i], "--intro") && i + 1 < argc)
+			intro_every = (uint32_t) atoi(argv[++i]), intro_run = 1;
 		else if (!strcmp(argv[i], "--front") && i + 1 < argc)
 			front_keys = argv[++i];
 		else if (!strcmp(argv[i], "--time") && i + 1 < argc)
@@ -1076,6 +1194,17 @@ int main(int argc, char **argv)
 	if (r != 0) {
 		fprintf(stderr, "e_init: %d\n", r);
 		return 1;
+	}
+	if (intro_run) {
+		intro_out = out;
+		intro_next = intro_every;
+		int r = e_intro_run();
+		printf("intro: %d after %u blanks (%.1f s)\n", r, intro_blanks, intro_blanks / 60.0);
+		if (wav != NULL) {
+			wav_header();
+			fclose(wav);
+		}
+		return 0;
 	}
 	if (front_keys != NULL) {
 		static uint8_t pal[768];

@@ -38,7 +38,7 @@ if(U7_HOST)
     add_executable(u7host ${U7_HOST_SOURCES} tests/save_test.cpp tests/speech_hook.cpp)
     # The engine test on the PC (engine/README.md): views of the world as pictures.
     add_executable(u7engine EXCLUDE_FROM_ALL engine/core/engine.c engine/core/shapes.c
-        engine/core/world.c engine/core/kinds.c engine/core/usecode.c engine/core/held.c engine/core/inv.c engine/core/save.c engine/core/opl.c engine/core/talk.c engine/core/route.c engine/core/front.c
+        engine/core/world.c engine/core/kinds.c engine/core/usecode.c engine/core/held.c engine/core/inv.c engine/core/save.c engine/core/opl.c engine/core/talk.c engine/core/route.c engine/core/front.c engine/core/intro.c
         engine/host/main.c)
     target_include_directories(u7engine PRIVATE engine/core)
     # Its dataset: the shapes converted once, for the Jaguar (U7/ENGINE/SHAPES.FLX).
@@ -191,7 +191,7 @@ if(U7_JAGUAR)
     add_executable(u7engine_jag EXCLUDE_FROM_ALL platform/jaguar/startup.S engine/jaguar/main.c
         "${CMAKE_CURRENT_BINARY_DIR}/tiles_gpu.o" "${CMAKE_CURRENT_BINARY_DIR}/shapes_gpu.o"
         "${CMAKE_CURRENT_BINARY_DIR}/convert_gpu.o" "${CMAKE_CURRENT_BINARY_DIR}/movers_gpu.o"
-        "${CMAKE_CURRENT_BINARY_DIR}/sound_dsp.o" engine/jaguar/stubs.c engine/core/engine.c engine/core/shapes.c engine/core/world.c engine/core/kinds.c engine/core/usecode.c engine/core/held.c engine/core/inv.c engine/core/save.c engine/core/opl.c engine/core/talk.c engine/core/route.c engine/core/front.c
+        "${CMAKE_CURRENT_BINARY_DIR}/sound_dsp.o" engine/jaguar/stubs.c engine/core/engine.c engine/core/shapes.c engine/core/world.c engine/core/kinds.c engine/core/usecode.c engine/core/held.c engine/core/inv.c engine/core/save.c engine/core/opl.c engine/core/talk.c engine/core/route.c engine/core/front.c engine/core/intro.c
         "${CMAKE_CURRENT_BINARY_DIR}/gdbios.o")
     target_include_directories(u7engine_jag PRIVATE engine/core platform/jaguar)
     if(U7_JAG_FRAME_POINTERS)

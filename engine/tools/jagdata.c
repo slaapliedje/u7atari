@@ -8,7 +8,7 @@
  *               own core does it here, shown STATIC/ alone (E_CHUNKS_TITLE)
  *   NPC.DAT     a new game's NPCs, and U7IREGxx its movable items, as INITGAME.DAT holds them
  *   ENDSHAPE.FLX  the intro's pictures (STATIC/ENDSHAPE.FLX), each in the engine's form as a
- *               picture (E_PICTURES_TITLE: a 24-byte head, then its converted parts; a picture
+ *               picture (E_PICTURES_TITLE: a 32-byte head, then its converted parts; a picture
  *               wider than the converter reaches cut in bands, its frame 0 only)
  * both in the Jaguar's byte order. They go on the card in U7/ENGINE/. The original's files are
  * only read.
@@ -143,12 +143,18 @@ int eb_music_ended(void)
 	return 0;
 }
 
-void eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
+int eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
 {
 	(void) samples;
 	(void) n;
 	(void) volume;
 	(void) pan;
+	return -1;
+}
+
+void eb_sound_stop(int channel)
+{
+	(void) channel;
 }
 
 void eb_log(const char *text)
@@ -361,6 +367,10 @@ static int write_pictures(const char *data, const char *dir)
 				be16(h + 16 + 2 * k, (uint16_t) (k < p.parts ? p.dx[k] : 0));
 				be16(h + 20 + 2 * k, (uint16_t) (k < p.parts ? p.dy[k] : 0));
 			}
+			be16(h + 24, (uint16_t) p.left);
+			be16(h + 26, (uint16_t) p.above);
+			be16(h + 28, 0);
+			be16(h + 30, 0);
 			pictures++;
 		}
 		wr32(out + 0x80 + t * 8, n ? at : 0);

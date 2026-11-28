@@ -193,18 +193,26 @@ static struct {
  * and the blitter idle). From the card, the shapes' ring (too small for a view's shapes) read
  * again all the time, and walking stopped for up to two seconds. If the GameDrive does not keep
  * what is written (read back), the card's as before. */
-#define ROM_FILE "U7/ENGINE/SHAPES.FLX"
-#define ROM_START 0x80000UL             /* (the program's 512K before it) */
 #define ROM_SHOWN 0x5FFF00UL            /* banks 0-5 as they are, short of $DFFF00 (BUTCH's) */
 #define ROM_END 0x1000000UL
-static int32_t rom_size = -1;           /* -1: not there, the card's */
+/* the files kept there, each from its place (the GameDrive's byte): the shapes just past this
+ * program (512K in bank 0), the intro's sounds and pictures in banks 8-11, which pages 1-4 show
+ * while the intro plays (eb_intro_memory) */
+#define ROM_FILES 3
+#define ROM_INTRO 0x800000UL
+static const struct { const char *name; uint32_t start, most; } rom_files[ROM_FILES] = {
+	{ "U7/ENGINE/SHAPES.FLX", 0x80000UL, ROM_INTRO - 0x80000UL },
+	{ "U7/ENGINE/INTRO.FLX", ROM_INTRO, 0x300000UL },
+	{ "U7/ENGINE/ENDSHAPE.FLX", 0xB00000UL, 0x100000UL },
+};
+static int32_t rom_size[ROM_FILES] = { -1, -1, -1 };   /* -1: not there, the card's */
+static uint8_t intro_shown;
 static void blit_wait(void);
 
-/* n bytes at the file's place at into to, or from from into the GameDrive (to NULL) */
-static void rom_copy(uint32_t at, uint8_t *to, const uint8_t *from, uint32_t n)
+/* n bytes at the GameDrive's byte l into to, or from from into the GameDrive (to NULL) */
+static void rom_copy(uint32_t l, uint8_t *to, const uint8_t *from, uint32_t n)
 {
-	uint32_t l = ROM_START + at;
-	if (to != NULL && l + n <= ROM_SHOWN) {
+	if (to != NULL && !intro_shown && l + n <= ROM_SHOWN) {
 		memcpy(to, (const uint8_t *) 0x800000 + l, n);
 		return;
 	}
@@ -225,12 +233,27 @@ static void rom_copy(uint32_t at, uint8_t *to, const uint8_t *from, uint32_t n)
 }
 
 /* Where n bytes at the file's place at are to be read as they are, or NULL (the engine copies
- * them then): the shape file's first 5.5 MB, in the cartridge space. */
+ * them then): the shape file's first 5.5 MB, in the cartridge space; while the intro plays, its
+ * sounds and pictures (banks 8-11 shown at $900000-$CFFFFF). */
 const void *plat_file_direct(int16_t f, uint32_t at, uint32_t n)
 {
-	if (f < 0 || f >= FILES || !files[f].rom || ROM_START + at + n > ROM_SHOWN)
+	if (f < 0 || f >= FILES || !files[f].rom)
 		return NULL;
-	return (const uint8_t *) 0x800000 + ROM_START + at;
+	uint32_t l = rom_files[files[f].rom - 1].start + at;
+	if (intro_shown)
+		return l >= ROM_INTRO && l + n <= ROM_INTRO + 0x400000UL
+			? (const uint8_t *) 0x900000 + (l - ROM_INTRO) : NULL;
+	return l + n <= ROM_SHOWN ? (const uint8_t *) 0x800000 + l : NULL;
+}
+
+/* The intro's: pages 1-4 its sounds and pictures (banks 8-11), or banks 1-4 again (the shapes). */
+void eb_intro_memory(int on)
+{
+	gpu_finish();
+	blit_wait();
+	for (uint16_t page = 1; page <= 4; page++)
+		GD_ROMSetPage(page, (uint16_t) (on ? 7 + page : page));
+	intro_shown = (uint8_t) (on != 0);
 }
 static uint32_t file_clock;
 #ifdef ENGINE_STAGES
@@ -337,16 +360,27 @@ static void stage_clut(uint16_t back)
 #define STEP(n) ((void) 0)
 #endif
 
+/* Which of the GameDrive's memory's files name is, if it is there: its index, or -1. */
+static int rom_of(const char *name)
+{
+	for (int r = 0; r < ROM_FILES; r++)
+		if (rom_size[r] >= 0 && strcmp(name, rom_files[r].name) == 0)
+			return r;
+	return -1;
+}
+
 int16_t plat_file_open(const char *name, int16_t mode)
 {
 	for (int16_t i = 0; i < FILES; i++)
-		if (!files[i].open && rom_size >= 0 && mode != PLAT_WRITE && strcmp(name, ROM_FILE) == 0) {
+		if (!files[i].open && mode != PLAT_WRITE && rom_of(name) >= 0) {
 			/* (the GameDrive's memory's: no handle on the card) */
+			int r = rom_of(name);
 			strcpy(files[i].name, name);
-			files[i].open = files[i].rom = 1;
+			files[i].open = 1;
+			files[i].rom = (uint8_t) (r + 1);
 			files[i].live = files[i].writing = 0;
 			files[i].pos = 0;
-			files[i].size = rom_size;
+			files[i].size = rom_size[r];
 			return i;
 		}
 	for (int16_t i = 0; i < FILES; i++)
@@ -422,7 +456,7 @@ int32_t plat_file_read(int16_t f, void *buffer, int32_t count)
 		blit_wait();            /* (page 5 may be shown another bank meanwhile) */
 		if (count > files[f].size - files[f].pos)
 			count = files[f].size - files[f].pos;
-		rom_copy((uint32_t) files[f].pos, buffer, NULL, (uint32_t) count);
+		rom_copy(rom_files[files[f].rom - 1].start + (uint32_t) files[f].pos, buffer, NULL, (uint32_t) count);
 		files[f].pos += count;
 #ifdef ENGINE_STAGES
 		io_reads++;
@@ -666,7 +700,7 @@ int eb_music_ended(void)
 	return MCTL[M_ENDED] != 0;
 }
 
-void eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
+int eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
 {
 	int c = 0;
 	uint32_t least = 0xffffffff;
@@ -686,6 +720,13 @@ void eb_sound(const uint8_t *samples, uint32_t n, int volume, int pan)
 	ch[3] = (uint32_t) (volume * pan * 2 / 127);
 	ch[0] = (uint32_t) samples;
 	ch[1] = (uint32_t) samples + n * 2;
+	return c;
+}
+
+void eb_sound_stop(int c)
+{
+	if (c >= 0 && c < SOUND_CHANNELS)
+		SOUND_CHANNEL[c * 4 + 1] = SOUND_CHANNEL[c * 4];        /* its end where it is */
 }
 
 /* ---- the GPU: shapes_gpu.s and tiles_gpu.s, each run while the 68000 goes on ----
@@ -1414,6 +1455,39 @@ static uint32_t sum_frames;
 #else
 #define MARK(rgb) ((void) 0)
 #endif
+/* ---- the intro's frames (core/intro.c): drawn into the frames in turn, each shown with its
+ * palette, the blanks its clock ---- */
+static int intro_f;
+static uint32_t intro_shown_at;
+
+struct ESurface *eb_frame_next(void)
+{
+	return &surfaces[(intro_f + 1) % FRAMES];
+}
+
+int eb_frame_show(const uint8_t rgb[768], int ticks)
+{
+	static const uint32_t bit[6] = { 1UL << 20, 1UL << 21, 1UL << 22, 1UL << 23, PAD_A, PAD_B };
+	static const int key[6] = { E_KEY_UP, E_KEY_DOWN, E_KEY_LEFT, E_KEY_RIGHT, E_KEY_NEXT, E_KEY_BACK };
+	/* ticks blanks after the last shown (at least the next blank) */
+	while ((int32_t) (jag_ticks - (intro_shown_at + (uint32_t) (ticks > 0 ? ticks : 0))) < 0)
+		;
+	intro_f = (intro_f + 1) % FRAMES;
+	show(surfaces[intro_f].pixels);
+	set_palette(rgb);
+	intro_shown_at = jag_ticks;
+	uint32_t pressed = pad_take(&vbl_pressed);
+	for (int b = 0; b < 6; b++)
+		if (pressed & bit[b])
+			return key[b];
+	return 0;
+}
+
+uint32_t eb_blanks(void)
+{
+	return jag_ticks;
+}
+
 /* The new character the front made (its name and sex), when it made one. */
 static char chosen_name[15];
 static int chosen, chosen_male = 1;
@@ -1431,6 +1505,10 @@ static void front_run(void)
 	uint32_t ticked = jag_ticks;
 	int f = 0;
 
+	/* the original's start: its intro first (B ends it), then the menu */
+#ifndef ENGINE_NO_INTRO
+	e_intro_run();
+#endif
 	if (!e_front_open(0, 0, 0))
 		return;
 	eb_music_gain(E_MUSIC_GAIN_INTRO);
@@ -1460,8 +1538,13 @@ static void front_run(void)
 		if (r == E_FRONT_JOURNEY)
 			break;
 		if (r != E_FRONT_RUNNING) {
+			if (r == E_FRONT_INTRO) {
+				e_music_song(E_MUSIC_NONE);
+				e_intro_run();
+			}
 			if (!e_front_open(0, 0, 0))
 				break;
+			eb_music_gain(E_MUSIC_GAIN_INTRO);
 			e_music_song(FRONT_SONG);
 		}
 		struct ESurface *drawing = &surfaces[f = (f + 1) % FRAMES];
@@ -1859,18 +1942,30 @@ static void walk_update(void)
 }
 #endif
 
-/* The shape file read into the GameDrive's memory (the store, not yet the engine's, the room it
- * comes through), a bar along the screen as it goes; then a little read back to see it kept. */
+/* The files read into the GameDrive's memory (the store, not yet the engine's, the room they come
+ * through), a bar along the screen as they go; then a little of each read back to see it kept. */
 static void rom_load(void)
 {
-	uint16_t gd = GD_FOpen(ROM_FILE, GD_FOPEN_READ);
-	if ((int16_t) gd < 0)
-		return;
-	uint32_t size = GD_FSize(gd);
-	if (size == 0 || ROM_START + size > ROM_END) {
-		GD_FClose(gd);
-		return;
+	uint16_t gd[ROM_FILES];
+	uint32_t size[ROM_FILES], total = 0, done = 0;
+
+	for (int r = 0; r < ROM_FILES; r++) {
+		size[r] = 0;
+		gd[r] = GD_FOpen(rom_files[r].name, GD_FOPEN_READ);
+		if ((int16_t) gd[r] < 0)
+			continue;
+		size[r] = GD_FSize(gd[r]);
+		if (size[r] == 0 || size[r] > rom_files[r].most) {
+			GD_FClose(gd[r]);
+			gd[r] = 0xffff;
+			size[r] = 0;
+			continue;
+		}
+		GD_FClose(gd[r]);       /* (opened one at a time below: the GameDrive takes five) */
+		total += size[r];
 	}
+	if (total == 0)
+		return;
 	volatile uint16_t *clut = (volatile uint16_t *) 0xF00400;
 	clut[0] = 0x0000;
 	clut[1] = 0x8420;               /* (grey, 5R 5B 6G: the palette is not read yet) */
@@ -1881,45 +1976,50 @@ static void rom_load(void)
 	for (int y = H / 2 - 6; y <= H / 2 + 6; y++)
 		pixels[y * W + 40] = pixels[y * W + W - 41] = 1;
 	show(pixels);
-	GD_ROMWriteEnable(1);
-	uint32_t done = 0;
-	int ok = 1;
-	while (done < size) {
-		uint32_t n = size - done > READ_MOST ? READ_MOST : size - done;
-		if ((int16_t) GD_FRead(gd, store, n, GD_FREAD_CPU) < 0) {
-			ok = 0;
-			break;
-		}
-		rom_copy(done, NULL, store, n);
-		done += n;
-		/* the bar */
-		int filled = (int) ((uint64_t) done * (W - 84) / size);
-		for (int y = H / 2 - 4; y <= H / 2 + 4; y++)
-			memset(pixels + y * W + 42, 1, (size_t) filled);
-		if ((done & 0x3FFFF) < READ_MOST)
-			show(pixels);
-	}
-	GD_ROMWriteEnable(0);
-	for (uint16_t page = 1; page <= 5; page++)
-		GD_ROMSetPage(page, page);      /* (banks 0-5 as they are) */
-	if (ok) {
-		/* kept? a stretch at the start and at the end read back against the card's */
-		static const uint32_t looks[2] = { 0, 1 };
-		for (int k = 0; k < 2 && ok; k++) {
-			uint32_t at = looks[k] ? (size > 4096 ? size - 4096 : 0) : 0, n = size - at < 4096 ? size - at : 4096;
-			if ((int16_t) GD_FSeek(gd, GD_FSEEK_SET, (int32_t) at) < 0
-				|| (int16_t) GD_FRead(gd, store, n, GD_FREAD_CPU) < 0) {
+	for (int r = 0; r < ROM_FILES; r++) {
+		if (size[r] == 0)
+			continue;
+		uint16_t g = GD_FOpen(rom_files[r].name, GD_FOPEN_READ);
+		if ((int16_t) g < 0)
+			continue;
+		int ok = 1;
+		GD_ROMWriteEnable(1);
+		for (uint32_t at = 0; at < size[r]; ) {
+			uint32_t n = size[r] - at > READ_MOST ? READ_MOST : size[r] - at;
+			if ((int16_t) GD_FRead(g, store, n, GD_FREAD_CPU) < 0) {
 				ok = 0;
 				break;
 			}
-			rom_copy(at, store + 8192, NULL, n);
+			rom_copy(rom_files[r].start + at, NULL, store, n);
+			at += n;
+			done += n;
+			/* the bar */
+			int filled = (int) ((uint64_t) done * (W - 84) / total);
+			for (int y = H / 2 - 4; y <= H / 2 + 4; y++)
+				memset(pixels + y * W + 42, 1, (size_t) filled);
+			if ((done & 0x3FFFF) < READ_MOST)
+				show(pixels);
+		}
+		GD_ROMWriteEnable(0);
+		for (uint16_t page = 1; page <= 5; page++)
+			GD_ROMSetPage(page, page);      /* (banks 0-5 as they are) */
+		/* kept? a stretch at the start and at the end read back against the card's */
+		for (int k = 0; k < 2 && ok; k++) {
+			uint32_t at = k ? (size[r] > 4096 ? size[r] - 4096 : 0) : 0;
+			uint32_t n = size[r] - at < 4096 ? size[r] - at : 4096;
+			if ((int16_t) GD_FSeek(g, GD_FSEEK_SET, (int32_t) at) < 0
+				|| (int16_t) GD_FRead(g, store, n, GD_FREAD_CPU) < 0) {
+				ok = 0;
+				break;
+			}
+			rom_copy(rom_files[r].start + at, store + 8192, NULL, n);
 			if (memcmp(store, store + 8192, n) != 0)
 				ok = 0;
 		}
+		GD_FClose(g);
+		if (ok)
+			rom_size[r] = (int32_t) size[r];
 	}
-	GD_FClose(gd);
-	if (ok)
-		rom_size = (int32_t) size;
 	memset(pixels, 0, W * H);
 	show(pixels);
 }
