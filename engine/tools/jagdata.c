@@ -7,6 +7,9 @@
  *   CHUNKS.DAT  every world chunk's fixed statics, binned, as the engine makes them: the engine's
  *               own core does it here, shown STATIC/ alone (E_CHUNKS_TITLE)
  *   NPC.DAT     a new game's NPCs, and U7IREGxx its movable items, as INITGAME.DAT holds them
+ *   ENDSHAPE.FLX  the intro's pictures (STATIC/ENDSHAPE.FLX), each in the engine's form as a
+ *               picture (E_PICTURES_TITLE: a 24-byte head, then its converted parts; a picture
+ *               wider than the converter reaches cut in bands, its frame 0 only)
  * both in the Jaguar's byte order. They go on the card in U7/ENGINE/. The original's files are
  * only read.
  */
@@ -282,6 +285,98 @@ static uint8_t *slurp(const char *path, long *size)
 	return b;
 }
 
+static void wr16(uint8_t *p, uint16_t v)
+{
+	p[0] = (uint8_t) v;
+	p[1] = (uint8_t) (v >> 8);
+}
+
+static void be16(uint8_t *p, uint16_t v)
+{
+	p[0] = (uint8_t) (v >> 8);
+	p[1] = (uint8_t) v;
+}
+
+static void be32(uint8_t *p, uint32_t v)
+{
+	be16(p, (uint16_t) (v >> 16));
+	be16(p + 2, (uint16_t) v);
+}
+
+/* The intro's pictures: STATIC/ENDSHAPE.FLX's shapes made pictures (engine.h, e_picture_), each
+ * entry a head (big-endian: parts, width, height, 0, each part's place in the room after the head
+ * and its hot spot's from the picture's) and the room, its parts in the Jaguar's order. */
+static int write_pictures(const char *data, const char *dir)
+{
+	char path[1024];
+	long in_size;
+	FILE *f;
+
+	snprintf(path, sizeof path, "%s/STATIC/ENDSHAPE.FLX", data);
+	uint8_t *in = slurp(path, &in_size);
+	uint32_t count = rd32(in + 0x54), room_size = 0x80 + count * 8u, largest = 0;
+	for (uint32_t t = 0; t < count; t++) {
+		uint32_t size = rd32(in + 0x80 + t * 8 + 4);
+		room_size += size * 3u + 4 * E_CONVERT_SLACK + E_PICTURE_HEAD + 8;
+		if (size > largest)
+			largest = size;
+	}
+	uint8_t *out = calloc(1, room_size), *raw = malloc(largest + 8), *cut = malloc(largest * 2 + 1024);
+	if (out == NULL || raw == NULL || cut == NULL)
+		return 1;
+	memcpy(out, in, 0x80);
+	memset(out, 0, 0x50);
+	memcpy(out, E_PICTURES_TITLE, strlen(E_PICTURES_TITLE));
+	uint32_t at = (0x80 + count * 8u + 7) & ~7u, pictures = 0;
+	for (uint32_t t = 0; t < count; t++) {
+		uint32_t from = rd32(in + 0x80 + t * 8), size = rd32(in + 0x80 + t * 8 + 4), n = 0;
+		if (size >= 16 && from + size <= (uint32_t) in_size) {
+			memcpy(raw, in + from, size);
+			/* (the original reads its frame offsets in real mode: their low 20 bits; one of
+			 * ENDSHAPE's has stray high bits) */
+			uint32_t frames = (rd32(raw + 4) & 0xfffff) / 4 - 1;
+			for (uint32_t k = 0; k < frames; k++)
+				wr32(raw + 4 + 4 * k, rd32(raw + 4 + 4 * k) & 0xfffff);
+			struct EPicture p;
+			uint8_t *room = out + at + E_PICTURE_HEAD;
+			if (!e_picture_convert(raw, size, cut, largest * 2 + 1024, room, room_size - at - E_PICTURE_HEAD, &p)) {
+				fprintf(stderr, "ENDSHAPE %u: not made a picture\n", t);
+				return 1;
+			}
+			n = E_PICTURE_HEAD + e_picture_used(room, &p);
+			for (int k = 0; k < p.parts; k++) {
+				uint32_t psize = ((uint32_t *) (room + p.at[k]))[0];
+				if (e_little_endian() && !e_swap_shape(room + p.at[k], psize, 0)) {
+					fprintf(stderr, "ENDSHAPE %u: not well formed\n", t);
+					return 1;
+				}
+			}
+			uint8_t *h = out + at;
+			be16(h, p.parts);
+			be16(h + 2, (uint16_t) p.w);
+			be16(h + 4, (uint16_t) p.h);
+			be16(h + 6, 0);
+			for (int k = 0; k < E_PICTURE_PARTS; k++) {
+				be32(h + 8 + 4 * k, k < p.parts ? p.at[k] : 0);
+				be16(h + 16 + 2 * k, (uint16_t) (k < p.parts ? p.dx[k] : 0));
+				be16(h + 20 + 2 * k, (uint16_t) (k < p.parts ? p.dy[k] : 0));
+			}
+			pictures++;
+		}
+		wr32(out + 0x80 + t * 8, n ? at : 0);
+		wr32(out + 0x80 + t * 8 + 4, n);
+		at = (at + n + 7) & ~7u;
+	}
+	(void) wr16;
+	snprintf(path, sizeof path, "%s/ENDSHAPE.FLX", dir);
+	if ((f = fopen(path, "wb")) == NULL || fwrite(out, 1, at, f) != at || fclose(f) != 0) {
+		fprintf(stderr, "cannot write %s\n", path);
+		return 1;
+	}
+	printf("%s: %u bytes, %u pictures\n", path, at, pictures);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	char path[1024];
@@ -359,5 +454,5 @@ int main(int argc, char **argv)
 		objects, made / 1024, raw_total / 1024, refused);
 	if (refused != 0)
 		return 1;
-	return write_chunks(argv[1], argv[2]) || write_npcs(argv[1], argv[2]);
+	return write_chunks(argv[1], argv[2]) || write_npcs(argv[1], argv[2]) || write_pictures(argv[1], argv[2]);
 }

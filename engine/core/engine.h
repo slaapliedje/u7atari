@@ -416,6 +416,16 @@ struct EPicture {
 	int16_t dx[E_PICTURE_PARTS], dy[E_PICTURE_PARTS];   /* its hot spot's from the picture's */
 };
 int e_picture_load(const char *dir, const char *file, int n, uint8_t *room, uint32_t size, struct EPicture *p);
+/* A picture as the data's tools write them (ENGINE/ENDSHAPE.FLX, the intro's): a head of
+ * E_PICTURE_HEAD bytes (parts, w, h, 0, at[2], dx[2], dy[2], in the CPU's order), then its room.
+ * p from the head; the room is entry + E_PICTURE_HEAD. */
+#define E_PICTURES_TITLE "U7 engine pictures 1"
+#define E_PICTURE_HEAD 24
+void e_picture_head(const uint8_t *entry, struct EPicture *p);
+/* The same from a raw shape of the caller's (size bytes at raw; cut: room to cut bands in, as
+ * big as the shape): the data's tools, for shapes bigger than the core's scratch room. */
+int e_picture_convert(const uint8_t *raw, uint32_t size, uint8_t *cut, uint32_t cut_room, uint8_t *room,
+	uint32_t room_size, struct EPicture *p);
 /* The room's bytes it took (from the room's start to its last part's end). */
 uint32_t e_picture_used(const uint8_t *room, const struct EPicture *p);
 /* Frame fr (frame 0 if cut in bands) with its hot spot at x, y. */

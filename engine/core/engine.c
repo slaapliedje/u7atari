@@ -2903,26 +2903,20 @@ static uint32_t cut_raw(const uint8_t *s, uint32_t size, int lo, int hi, int cx,
 
 /* Entry n of the shape file dir/file read and converted into room bytes at out (cut in bands if
  * need be): 1 and g. */
-static int load_picture(const char *dir, const char *file, int n, uint8_t *out, uint32_t room, struct EPicture *g)
+/* A raw shape (size bytes at raw) converted into room bytes at out, cut in bands (through cut,
+ * cut_room bytes) if need be: 1 and g. */
+static int convert_picture(const uint8_t *raw, uint32_t size, uint8_t *cut, uint32_t cut_room, uint8_t *out,
+	uint32_t room, struct EPicture *g)
 {
-	uint8_t head[8], *raw = scratch, *cut = scratch + SCRATCH / 2;
 	uint32_t used = 0;
 
 	g->parts = 0;
-	int16_t f = open_file(dir, file);
-	if (f < 0)
-		return 0;
-	int ok = read_at(f, 0x80 + 8 * (uint32_t) n, head, 8);
-	uint32_t at = rd32(head), size = rd32(head + 4);
-	ok = ok && size > 16 && size <= SCRATCH / 2 && read_at(f, at, raw, size);
-	plat_file_close(f);
-	if (!ok)
+	if (size < 16)
 		return 0;
 	uint32_t p = rd32(raw + 4);
 	if (p + 8 > size)
 		return 0;
 	int right = rds16(raw + p), left = rds16(raw + p + 2), up = rds16(raw + p + 4), down = rds16(raw + p + 6);
-	g->n = (int16_t) n;
 	g->w = (int16_t) (right + left + 1);
 	g->h = (int16_t) (up + down + 1);
 	uint32_t made = convert_size(raw, size);
@@ -2938,7 +2932,7 @@ static int load_picture(const char *dir, const char *file, int n, uint8_t *out, 
 	int cy = (down - up) / 2;
 	for (int lo = -left; lo <= right && g->parts < GUMP_PARTS; lo += 256) {
 		int hi = lo + 256 > right + 1 ? right + 1 : lo + 256, cx = lo + 128, k = g->parts;
-		uint32_t c = cut_raw(raw, size, lo, hi, cx, cy, cut, SCRATCH / 2);
+		uint32_t c = cut_raw(raw, size, lo, hi, cx, cy, cut, cut_room);
 		made = c ? convert_size(cut, c) : 0;
 		if (made == 0 || used + made + E_CONVERT_SLACK > room
 			|| !convert_into(cut, c, out + used, made + E_CONVERT_SLACK))
@@ -2950,6 +2944,47 @@ static int load_picture(const char *dir, const char *file, int n, uint8_t *out, 
 		used = (used + made + E_CONVERT_SLACK + 7) & ~7u;
 	}
 	return g->parts > 0;
+}
+
+/* Entry n of the shape file dir/file read and converted into room bytes at out (cut in bands if
+ * need be): 1 and g. */
+static int load_picture(const char *dir, const char *file, int n, uint8_t *out, uint32_t room, struct EPicture *g)
+{
+	uint8_t head[8], *raw = scratch, *cut = scratch + SCRATCH / 2;
+
+	g->parts = 0;
+	int16_t f = open_file(dir, file);
+	if (f < 0)
+		return 0;
+	int ok = read_at(f, 0x80 + 8 * (uint32_t) n, head, 8);
+	uint32_t at = rd32(head), size = rd32(head + 4);
+	ok = ok && size > 16 && size <= SCRATCH / 2 && read_at(f, at, raw, size);
+	plat_file_close(f);
+	g->n = (int16_t) n;
+	return ok && convert_picture(raw, size, cut, SCRATCH / 2, out, room, g);
+}
+
+void e_picture_head(const uint8_t *entry, struct EPicture *p)
+{
+	const uint16_t *h = (const uint16_t *) entry;
+	const uint32_t *at = (const uint32_t *) (entry + 8);
+
+	p->n = -1;
+	p->parts = (uint8_t) h[0];
+	p->w = (int16_t) h[1];
+	p->h = (int16_t) h[2];
+	for (int k = 0; k < E_PICTURE_PARTS; k++) {
+		p->at[k] = at[k];
+		p->dx[k] = (int16_t) h[8 + k];
+		p->dy[k] = (int16_t) h[10 + k];
+	}
+}
+
+int e_picture_convert(const uint8_t *raw, uint32_t size, uint8_t *cut, uint32_t cut_room, uint8_t *room,
+	uint32_t room_size, struct EPicture *p)
+{
+	p->n = -1;
+	return convert_picture(raw, size, cut, cut_room, room, room_size, p);
 }
 
 /* Gump n read and converted into room bytes at out (cut in bands if need be): 1 and g. */
